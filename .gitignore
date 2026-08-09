@@ -1,0 +1,35 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+
+# Runtime data, downloaded models, databases, and logs
+backend/data/embeddings/
+backend/data/chroma/
+backend/data/*.db
+backend/*.log
+*.log
+
+# Local agent/design-review tooling
+.claude/
+.impeccable/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

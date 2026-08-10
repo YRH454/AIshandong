@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
-  Code2, FileDown, FileQuestion, FileText, FolderOpen, Image, LayoutTemplate, Library, Map as MapIcon,
-  Menu, Mic, NotebookTabs, Paperclip, PenLine, Presentation, Save, Search, Settings2,
-  Sparkles, Star, Tags, Trees, Video, Waves, X,
+  Code2, FileDown, FileQuestion, FileText, FolderOpen, History, Image, LayoutTemplate, Library, Map as MapIcon,
+  Menu, Mic, NotebookTabs, Paperclip, PenLine, Presentation, RotateCcw, Save, Search, Settings2,
+  Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -12,13 +12,20 @@ import remarkGfm from 'remark-gfm'
 import mascot from './assets/xuejing-slime-logo.png'
 import {
   favoriteLearningArtifact,
+  findLearningArtifactDuplicates,
   generateLearningDocument,
   getLearningArtifacts,
+  getLearningArtifactVersions,
   getTutorHistory,
   getTutorSessions,
+  permanentlyDeleteLearningArtifact,
   readTutorStream,
+  restoreLearningArtifact,
+  restoreLearningArtifactVersion,
   saveLearningArtifact,
   streamTutorChat,
+  trashLearningArtifact,
+  updateLearningArtifact,
 } from './services/api'
 import type { LearningArtifactRecord, LearningState, TutorMessage, TutorSessionSummary } from './services/api'
 import './App.css'
@@ -37,6 +44,7 @@ type IconName =
   | 'file-question'
   | 'file'
   | 'folder'
+  | 'history'
   | 'image'
   | 'layout'
   | 'library'
@@ -48,19 +56,24 @@ type IconName =
   | 'pen'
   | 'play'
   | 'presentation'
+  | 'restore'
   | 'save'
   | 'search'
   | 'settings'
   | 'spark'
   | 'star'
   | 'tags'
+  | 'trash'
   | 'trees'
   | 'video'
   | 'waves'
   | 'x'
 
 type View = 'welcome' | 'chat' | 'library'
-type LibraryMode = 'recent' | 'course' | 'favorite'
+type LibraryMode = 'recent' | 'course' | 'favorite' | 'trash'
+type SaveMode = 'save' | 'edit'
+type SaveStrategy = 'version' | 'update' | 'separate'
+type DeleteMode = 'trash' | 'permanent'
 type GenerationCategory = 'universal' | 'quick' | 'deep' | 'practice' | 'review' | 'submit'
 type ArtifactKind =
   | 'notes' | 'practice' | 'map' | 'interactive' | 'video'
@@ -103,11 +116,19 @@ type Artifact = {
   sessionId?: number
   course: string
   topic: string
+  recommendedCourse: string
+  recommendedTopic: string
+  classificationSource: LearningArtifactRecord['classification_source']
+  classificationConfidence: number
+  classificationOverridden: boolean
   saved: boolean
   favorite: boolean
+  versionGroupId: number
   version: number
+  createdAt?: string
   updatedAt?: string
-  status?: 'draft' | 'saved' | 'generating' | 'error'
+  deletedAt?: string
+  status?: 'draft' | 'saved' | 'deleted' | 'generating' | 'error'
   purpose?: DocumentPurpose
   depth?: DocumentDepth
   style?: DocumentStyle
@@ -181,6 +202,7 @@ const lucideIcons: Record<IconName, LucideIcon> = {
   'file-question': FileQuestion,
   file: FileText,
   folder: FolderOpen,
+  history: History,
   image: Image,
   layout: LayoutTemplate,
   library: Library,
@@ -192,12 +214,14 @@ const lucideIcons: Record<IconName, LucideIcon> = {
   pen: PenLine,
   play: CirclePlay,
   presentation: Presentation,
+  restore: RotateCcw,
   save: Save,
   search: Search,
   settings: Settings2,
   spark: Sparkles,
   star: Star,
   tags: Tags,
+  trash: Trash2,
   trees: Trees,
   video: Video,
   waves: Waves,
@@ -293,6 +317,13 @@ function formatFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function formatLibraryDate(value?: string) {
+  if (!value) return ''
+  const date = new Date(value.replace(' ', 'T'))
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(date)
+}
+
 function artifactFromRecord(record: LearningArtifactRecord): Artifact {
   const source = record.source_prompt || '本次对话'
   return {
@@ -308,10 +339,18 @@ function artifactFromRecord(record: LearningArtifactRecord): Artifact {
     source: source.length > 72 ? `${source.slice(0, 72)}…` : source,
     course: record.course_name || '未分类课程',
     topic: record.topic_name || '未分类主题',
+    recommendedCourse: record.recommended_course_name || record.course_name || '未分类课程',
+    recommendedTopic: record.recommended_topic_name || record.topic_name || '未分类主题',
+    classificationSource: record.classification_source || 'fallback',
+    classificationConfidence: record.classification_confidence || 0,
+    classificationOverridden: record.classification_overridden,
     saved: record.status === 'saved',
     favorite: record.is_favorite,
+    versionGroupId: record.version_group_id || record.id,
     version: record.version || 1,
+    createdAt: record.created_at,
     updatedAt: record.updated_at,
+    deletedAt: record.deleted_at,
     status: record.status,
     purpose: record.purpose,
     depth: record.depth,
@@ -373,16 +412,33 @@ function App() {
   const [documentGenerating, setDocumentGenerating] = useState(false)
   const [expandedArtifactId, setExpandedArtifactId] = useState<string | null>(null)
   const [saveTarget, setSaveTarget] = useState<Artifact | null>(null)
+  const [saveMode, setSaveMode] = useState<SaveMode>('save')
+  const [saveRecommendedCourse, setSaveRecommendedCourse] = useState('未分类课程')
+  const [saveRecommendedTopic, setSaveRecommendedTopic] = useState('未分类主题')
+  const [saveRecommendationSource, setSaveRecommendationSource] = useState<LearningArtifactRecord['classification_source']>('fallback')
   const [saveTitle, setSaveTitle] = useState('')
   const [saveCourse, setSaveCourse] = useState('')
   const [saveTopic, setSaveTopic] = useState('')
   const [saveLocationOpen, setSaveLocationOpen] = useState(false)
   const [saveBusy, setSaveBusy] = useState(false)
+  const [duplicateMatches, setDuplicateMatches] = useState<Artifact[]>([])
+  const [duplicateStrategy, setDuplicateStrategy] = useState<SaveStrategy>('version')
+  const [duplicateCheckComplete, setDuplicateCheckComplete] = useState(false)
   const [libraryItems, setLibraryItems] = useState<Artifact[]>([])
+  const [trashedItems, setTrashedItems] = useState<Artifact[]>([])
   const [libraryPreviewId, setLibraryPreviewId] = useState<string | null>(null)
   const [libraryMode, setLibraryMode] = useState<LibraryMode>('recent')
   const [librarySearch, setLibrarySearch] = useState('')
   const [libraryTopic, setLibraryTopic] = useState<{ course: string; topic: string } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Artifact | null>(null)
+  const [deleteMode, setDeleteMode] = useState<DeleteMode>('trash')
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [undoTrashId, setUndoTrashId] = useState<number | null>(null)
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false)
+  const [versionHistoryBusy, setVersionHistoryBusy] = useState(false)
+  const [versionItems, setVersionItems] = useState<Artifact[]>([])
+  const [versionPreview, setVersionPreview] = useState<Artifact | null>(null)
+  const [versionRestoreId, setVersionRestoreId] = useState<number | null>(null)
   const [notice, setNotice] = useState('')
   const [theme, setTheme] = useState<ThemeId>(() => {
     const saved = localStorage.getItem('rhyme-theme') ?? localStorage.getItem('xuejing-theme')
@@ -394,6 +450,12 @@ function App() {
   }, [theme])
 
   useEffect(() => {
+    setVersionHistoryOpen(false)
+    setVersionItems([])
+    setVersionPreview(null)
+  }, [libraryPreviewId])
+
+  useEffect(() => {
     let cancelled = false
     async function restoreLatestConversation() {
       try {
@@ -401,9 +463,13 @@ function App() {
         if (cancelled) return
         const restoredSessions = data.sessions || []
         setSessions(restoredSessions)
-        const savedData = await getLearningArtifacts(LOCAL_USER_ID, { status: 'saved' }).catch(() => ({ artifacts: [] }))
+        const [savedData, deletedData] = await Promise.all([
+          getLearningArtifacts(LOCAL_USER_ID, { status: 'saved' }).catch(() => ({ artifacts: [] })),
+          getLearningArtifacts(LOCAL_USER_ID, { status: 'deleted' }).catch(() => ({ artifacts: [] })),
+        ])
         if (cancelled) return
         setLibraryItems(savedData.artifacts.map(artifactFromRecord))
+        setTrashedItems(deletedData.artifacts.map(artifactFromRecord))
         if (restoredSessions.length > 0) {
           const latest = restoredSessions[0]
           const [history, artifactData] = await Promise.all([
@@ -465,14 +531,15 @@ function App() {
     }
     return candidates.filter(item => item.category === generatorCategory)
   }, [generatorCategory, generatorSearch])
+  const activeLibraryItems = libraryMode === 'trash' ? trashedItems : libraryItems
   const filteredLibraryItems = useMemo(() => {
     const query = librarySearch.trim().toLowerCase()
-    return libraryItems.filter(item => {
+    return activeLibraryItems.filter(item => {
       if (libraryMode === 'favorite' && !item.favorite) return false
       if (!query) return true
       return `${item.title}${item.summary}${item.course}${item.topic}${item.details.join('')}`.toLowerCase().includes(query)
     })
-  }, [libraryItems, libraryMode, librarySearch])
+  }, [activeLibraryItems, libraryMode, librarySearch])
   const libraryCourseGroups = useMemo(() => {
     const courses = filteredLibraryItems.reduce<Record<string, Record<string, Artifact[]>>>((groups, item) => {
       groups[item.course] ||= {}
@@ -481,10 +548,22 @@ function App() {
     }, {})
     return Object.entries(courses)
   }, [filteredLibraryItems])
-  const libraryPreview = libraryItems.find(item => item.id === libraryPreviewId) || null
+  const libraryPreview = [...libraryItems, ...trashedItems].find(item => item.id === libraryPreviewId) || null
+  const readerArtifact = versionPreview || libraryPreview
   const libraryTopicItems = libraryTopic
     ? filteredLibraryItems.filter(item => item.course === libraryTopic.course && item.topic === libraryTopic.topic)
     : []
+  const libraryCourseOptions = useMemo(
+    () => [...new Set(libraryItems.map(item => item.course).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    [libraryItems],
+  )
+  const libraryTopicOptions = useMemo(
+    () => [...new Set(libraryItems
+      .filter(item => item.course === saveCourse)
+      .map(item => item.topic)
+      .filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    [libraryItems, saveCourse],
+  )
 
   function newChat() {
     if (sending) {
@@ -651,8 +730,14 @@ function App() {
       source: turn.prompt,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
+      recommendedCourse: learningState.subject || '未分类课程',
+      recommendedTopic: learningState.current_topic || '本次学习',
+      classificationSource: 'learning_state',
+      classificationConfidence: 0.9,
+      classificationOverridden: false,
       saved: false,
       favorite: false,
+      versionGroupId: 0,
       version: 1,
       status: 'generating',
       ...documentSetup,
@@ -695,41 +780,127 @@ function App() {
     }
   }
 
-  function openSave(artifact: Artifact) {
+  function resetDuplicateDecision() {
+    setDuplicateMatches([])
+    setDuplicateStrategy('version')
+    setDuplicateCheckComplete(false)
+  }
+
+  function closeSave() {
+    setSaveTarget(null)
+    resetDuplicateDecision()
+  }
+
+  function openSave(artifact: Artifact, mode: SaveMode = 'save') {
+    const stateCourse = learningState.subject || ''
+    const stateTopic = learningState.current_topic || learningState.knowledge_points[0] || ''
+    const artifactCourse = artifact.recommendedCourse || artifact.course || ''
+    const artifactTopic = artifact.recommendedTopic || artifact.topic || ''
+    const recommendedCourse = artifactCourse && artifactCourse !== '未分类课程'
+      ? artifactCourse
+      : stateCourse || '未分类课程'
+    const recommendedTopic = artifactTopic && artifactTopic !== '未分类主题' && artifactTopic !== '本次学习'
+      ? artifactTopic
+      : stateTopic || '未分类主题'
+    const recommendationSource = artifact.classificationSource === 'fallback' && stateCourse && stateTopic
+      ? 'learning_state'
+      : artifact.classificationSource
     setSaveTarget(artifact)
+    setSaveMode(mode)
+    setSaveRecommendedCourse(recommendedCourse)
+    setSaveRecommendedTopic(recommendedTopic)
+    setSaveRecommendationSource(recommendationSource)
     setSaveTitle(artifact.title)
-    setSaveCourse(artifact.course === '未分类课程' ? learningState.subject || artifact.course : artifact.course || learningState.subject || '未分类课程')
-    setSaveTopic(artifact.topic === '未分类主题' ? learningState.current_topic || learningState.knowledge_points[0] || artifact.topic : artifact.topic || learningState.current_topic || '未分类主题')
-    setSaveLocationOpen(false)
+    setSaveCourse(mode === 'edit' ? artifact.course : recommendedCourse)
+    setSaveTopic(mode === 'edit' ? artifact.topic : recommendedTopic)
+    setSaveLocationOpen(mode === 'edit' || recommendedCourse === '未分类课程' || recommendedTopic === '未分类主题')
+    resetDuplicateDecision()
   }
 
   async function confirmSave() {
     if (!saveTarget || !saveTitle.trim() || !saveCourse.trim() || !saveTopic.trim()) return
     setSaveBusy(true)
     try {
-      const savedArtifact = saveTarget.backendId
-        ? artifactFromRecord((await saveLearningArtifact(
-            saveTarget.backendId,
+      const target = saveTarget
+      let resolvedStrategy: SaveStrategy = 'separate'
+      let duplicateArtifactId: number | undefined
+      if (saveMode === 'save' && target.backendId) {
+        if (!duplicateCheckComplete) {
+          const result = await findLearningArtifactDuplicates(
+            target.backendId,
             LOCAL_USER_ID,
             saveTitle.trim(),
             saveCourse.trim(),
             saveTopic.trim(),
-          )).artifact)
-        : {
+          )
+          const matches = result.duplicates.map(artifactFromRecord)
+          setDuplicateMatches(matches)
+          setDuplicateCheckComplete(true)
+          if (matches.length > 0) {
+            setDuplicateStrategy('version')
+            return
+          }
+        } else if (duplicateMatches.length > 0) {
+          resolvedStrategy = duplicateStrategy
+          duplicateArtifactId = duplicateMatches[0].backendId
+        }
+      }
+
+      let savedArtifact: Artifact
+      if (target.backendId) {
+        const response = saveMode === 'edit'
+          ? await updateLearningArtifact(
+            target.backendId,
+            LOCAL_USER_ID,
+            saveTitle.trim(),
+            saveCourse.trim(),
+            saveTopic.trim(),
+          )
+          : await saveLearningArtifact(
+            target.backendId,
+            LOCAL_USER_ID,
+            saveTitle.trim(),
+            saveCourse.trim(),
+            saveTopic.trim(),
+            resolvedStrategy,
+            duplicateArtifactId,
+          )
+        savedArtifact = artifactFromRecord(response.artifact)
+      } else {
+        savedArtifact = {
             ...saveTarget,
             title: saveTitle.trim(),
             course: saveCourse.trim(),
             topic: saveTopic.trim(),
+            recommendedCourse: saveRecommendedCourse,
+            recommendedTopic: saveRecommendedTopic,
+            classificationSource: saveRecommendationSource,
+            classificationOverridden: saveCourse.trim() !== saveRecommendedCourse || saveTopic.trim() !== saveRecommendedTopic,
             saved: true,
             status: 'saved' as const,
           }
+      }
       setTurns(current => current.map(turn => ({
         ...turn,
-        artifacts: turn.artifacts.map(item => item.id === savedArtifact.id ? savedArtifact : item),
+        artifacts: turn.artifacts
+          .map(item => item.id === target.id || item.id === savedArtifact.id ? savedArtifact : item)
+          .filter((item, index, items) => items.findIndex(entry => entry.id === item.id) === index),
       })))
-      setLibraryItems(current => [savedArtifact, ...current.filter(item => item.id !== savedArtifact.id)])
-      setSaveTarget(null)
-      setNotice(`已整理到 ${savedArtifact.course} / ${savedArtifact.topic}`)
+      setLibraryItems(current => [savedArtifact, ...current.filter(item => (
+        item.id !== savedArtifact.id && item.versionGroupId !== savedArtifact.versionGroupId
+      ))])
+      closeSave()
+      if (saveMode === 'edit') {
+        setNotice(`已调整到 ${savedArtifact.course} / ${savedArtifact.topic}`)
+      } else if (resolvedStrategy === 'version') {
+        setNotice(`已保存为 v${savedArtifact.version}，资料库继续显示最新版`)
+      } else if (resolvedStrategy === 'update') {
+        setNotice('已用本次内容更新原资料')
+      } else if (duplicateMatches.length > 0) {
+        setNotice('已作为独立资料保存')
+      } else {
+        setNotice(`${savedArtifact.classificationOverridden ? '已按你的选择整理到' : '已整理到'} ${savedArtifact.course} / ${savedArtifact.topic}`)
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '保存学习资料失败')
     } finally {
@@ -754,6 +925,124 @@ function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '更新收藏状态失败')
     }
+  }
+
+  async function toggleVersionHistory(artifact: Artifact) {
+    if (!artifact.backendId) return
+    if (versionHistoryOpen) {
+      setVersionHistoryOpen(false)
+      setVersionPreview(null)
+      return
+    }
+    setVersionHistoryBusy(true)
+    try {
+      const result = await getLearningArtifactVersions(artifact.backendId, LOCAL_USER_ID)
+      setVersionItems(result.versions.map(artifactFromRecord))
+      setVersionHistoryOpen(true)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '获取版本记录失败')
+    } finally {
+      setVersionHistoryBusy(false)
+    }
+  }
+
+  async function restoreVersion(artifact: Artifact) {
+    if (!artifact.backendId) return
+    setVersionRestoreId(artifact.backendId)
+    try {
+      const restored = artifactFromRecord((await restoreLearningArtifactVersion(
+        artifact.backendId,
+        LOCAL_USER_ID,
+      )).artifact)
+      setLibraryItems(current => [restored, ...current.filter(item => item.versionGroupId !== restored.versionGroupId)])
+      setTurns(current => current.map(turn => ({
+        ...turn,
+        artifacts: turn.artifacts.map(item => item.versionGroupId === restored.versionGroupId ? restored : item),
+      })))
+      setLibraryPreviewId(restored.id)
+      setVersionPreview(null)
+      setVersionHistoryOpen(false)
+      setNotice(`已将 v${artifact.version} 恢复为最新的 v${restored.version}`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '恢复这个版本失败')
+    } finally {
+      setVersionRestoreId(null)
+    }
+  }
+
+  function switchLibraryMode(mode: LibraryMode) {
+    setLibraryMode(mode)
+    setLibraryPreviewId(null)
+    setLibraryTopic(null)
+  }
+
+  function openDeleteConfirmation(artifact: Artifact, mode: DeleteMode) {
+    setDeleteTarget(artifact)
+    setDeleteMode(mode)
+  }
+
+  async function confirmDeleteArtifact() {
+    if (!deleteTarget?.backendId) return
+    setDeleteBusy(true)
+    try {
+      if (deleteMode === 'permanent') {
+        await permanentlyDeleteLearningArtifact(deleteTarget.backendId, LOCAL_USER_ID)
+        setTrashedItems(current => current.filter(item => item.versionGroupId !== deleteTarget.versionGroupId))
+        setLibraryPreviewId(null)
+        setNotice('资料已永久删除')
+      } else {
+        const deletedArtifact = artifactFromRecord((await trashLearningArtifact(
+          deleteTarget.backendId,
+          LOCAL_USER_ID,
+        )).artifact)
+        setLibraryItems(current => current.filter(item => item.versionGroupId !== deletedArtifact.versionGroupId))
+        setTrashedItems(current => [deletedArtifact, ...current.filter(item => item.versionGroupId !== deletedArtifact.versionGroupId)])
+        setTurns(current => current.map(turn => ({
+          ...turn,
+          artifacts: turn.artifacts.filter(item => item.versionGroupId !== deletedArtifact.versionGroupId),
+        })))
+        setLibraryPreviewId(null)
+        setLibraryTopic(null)
+        setUndoTrashId(deletedArtifact.backendId || null)
+        setNotice('已移到回收站，可撤销')
+      }
+      setDeleteTarget(null)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : deleteMode === 'permanent' ? '永久删除资料失败' : '移到回收站失败')
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
+  async function restoreArtifact(artifact: Artifact, fromUndo = false) {
+    if (!artifact.backendId) return
+    try {
+      const restoredArtifact = artifactFromRecord((await restoreLearningArtifact(
+        artifact.backendId,
+        LOCAL_USER_ID,
+      )).artifact)
+      setTrashedItems(current => current.filter(item => item.versionGroupId !== restoredArtifact.versionGroupId))
+      setLibraryItems(current => [restoredArtifact, ...current.filter(item => item.versionGroupId !== restoredArtifact.versionGroupId)])
+      setTurns(current => current.map(turn => turn.id === restoredArtifact.qaId && !turn.artifacts.some(item => item.versionGroupId === restoredArtifact.versionGroupId)
+        ? { ...turn, artifacts: [...turn.artifacts, restoredArtifact] }
+        : turn))
+      setLibraryPreviewId(null)
+      setLibraryMode('recent')
+      setUndoTrashId(null)
+      setNotice(fromUndo ? '已撤销删除，资料已恢复' : '资料已恢复到资料库')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '恢复资料失败')
+    }
+  }
+
+  async function undoLastTrash() {
+    const artifact = trashedItems.find(item => item.backendId === undoTrashId)
+    if (!artifact) {
+      setUndoTrashId(null)
+      setNotice('这份资料已经不在回收站中')
+      return
+    }
+    await restoreArtifact(artifact, true)
   }
 
   async function openArtifactSource(artifact: Artifact) {
@@ -993,26 +1282,67 @@ function App() {
                   </button>
                   <div className="library-reader-head">
                     <div>
-                      <span>{libraryPreview.course} / {libraryPreview.topic}</span>
-                      <h1>{libraryPreview.title}</h1>
-                      <small>学习资料{libraryPreview.version > 1 ? ` · v${libraryPreview.version}` : ''}</small>
+                      <span>{libraryPreview.status === 'deleted' ? '回收站 / ' : ''}{readerArtifact?.course} / {readerArtifact?.topic}</span>
+                      <h1>{readerArtifact?.title}</h1>
+                      <small>{versionPreview ? `历史版本 v${versionPreview.version}` : libraryPreview.status === 'deleted' ? '已移入回收站' : '学习资料'}{!versionPreview && libraryPreview.version > 1 ? ` · v${libraryPreview.version}` : ''}</small>
                     </div>
-                    <button
-                      className={libraryPreview.favorite ? 'reader-favorite active' : 'reader-favorite'}
-                      type="button"
-                      aria-pressed={libraryPreview.favorite}
-                      onClick={() => void toggleArtifactFavorite(libraryPreview)}
-                    >
-                      <Icon name="star" size={16} />{libraryPreview.favorite ? '已收藏' : '收藏'}
-                    </button>
+                    {libraryPreview.status !== 'deleted' && (
+                      <div className="reader-head-actions">
+                        {libraryPreview.version > 1 && (
+                          <button className={versionHistoryOpen ? 'reader-version active' : 'reader-version'} type="button" aria-expanded={versionHistoryOpen} onClick={() => void toggleVersionHistory(libraryPreview)} disabled={versionHistoryBusy}>
+                            <Icon name="history" size={16} />{versionHistoryBusy ? '加载中…' : '版本记录'}
+                          </button>
+                        )}
+                        <button
+                          className={libraryPreview.favorite ? 'reader-favorite active' : 'reader-favorite'}
+                          type="button"
+                          aria-pressed={libraryPreview.favorite}
+                          onClick={() => void toggleArtifactFavorite(libraryPreview)}
+                        >
+                          <Icon name="star" size={16} />{libraryPreview.favorite ? '已收藏' : '收藏'}
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <p>{libraryPreview.summary}</p>
+                  {versionHistoryOpen && (
+                    <section className="version-history" aria-label="版本记录">
+                      <div className="version-history-head"><b>版本记录</b><button type="button" aria-label="关闭版本记录" onClick={() => { setVersionHistoryOpen(false); setVersionPreview(null) }}><Icon name="x" size={14} /></button></div>
+                      <div className="version-list">
+                        {versionItems.map(item => (
+                          <div className={versionPreview?.id === item.id ? 'version-row selected' : 'version-row'} key={item.id}>
+                            <button className="version-main" type="button" onClick={() => setVersionPreview(item)}>
+                              <span>v{item.version}</span>
+                              <span><b>{item.title}</b><small>{item.version === libraryPreview.version ? '当前最新版' : formatLibraryDate(item.createdAt || item.updatedAt)}</small></span>
+                            </button>
+                            {item.version < libraryPreview.version && (
+                              <button className="version-restore" type="button" disabled={versionRestoreId !== null} onClick={() => void restoreVersion(item)}>{versionRestoreId === item.backendId ? '恢复中…' : '恢复为最新版'}</button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                  {versionPreview && (
+                    <div className="version-preview-notice"><span>正在查看 v{versionPreview.version}，内容不会自动覆盖最新版。</span><button type="button" onClick={() => setVersionPreview(null)}>返回最新版</button></div>
+                  )}
+                  <p>{readerArtifact?.summary}</p>
                   <div className="library-reader-content">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{libraryPreview.content || ''}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{readerArtifact?.content || ''}</ReactMarkdown>
                   </div>
                   <div className="library-reader-actions">
-                    <button type="button" onClick={() => void openArtifactSource(libraryPreview)}><Icon name="paperclip" size={14} />回到来源对话</button>
-                    <span>来源：{libraryPreview.source}</span>
+                    {libraryPreview.status === 'deleted' ? (
+                      <div className="library-reader-action-group">
+                        <button type="button" onClick={() => void restoreArtifact(libraryPreview)}><Icon name="restore" size={14} />恢复资料</button>
+                        <button className="danger-action" type="button" onClick={() => openDeleteConfirmation(libraryPreview, 'permanent')}><Icon name="trash" size={14} />永久删除</button>
+                      </div>
+                    ) : (
+                      <div className="library-reader-action-group">
+                        <button type="button" onClick={() => void openArtifactSource(libraryPreview)}><Icon name="paperclip" size={14} />回到来源对话</button>
+                        <button type="button" onClick={() => openSave(libraryPreview, 'edit')}><Icon name="pen" size={14} />整理资料</button>
+                        <button className="danger-action" type="button" onClick={() => openDeleteConfirmation(libraryPreview, 'trash')}><Icon name="trash" size={14} />删除资料</button>
+                      </div>
+                    )}
+                    <span>来源：{readerArtifact?.source}</span>
                   </div>
                 </article>
               ) : libraryTopic ? (
@@ -1041,24 +1371,31 @@ function App() {
               ) : (
                 <>
                   <div className="library-heading">
-                    <div><h1>资料库</h1><p>按课程和主题自动整理。</p></div>
-                    <span>{libraryItems.length} 份资料</span>
+                    <div><h1>{libraryMode === 'trash' ? '回收站' : '资料库'}</h1><p>{libraryMode === 'trash' ? '删除的资料可以恢复，也可以永久清除。' : '按课程和主题自动整理。'}</p></div>
+                    <span>{activeLibraryItems.length} 份资料</span>
                   </div>
 
                   <div className="library-toolbar">
                     <label className="library-search">
                       <Icon name="search" size={16} />
-                      <input value={librarySearch} onChange={event => setLibrarySearch(event.target.value)} placeholder="搜索标题、课程或知识点" aria-label="搜索资料" />
+                      <input value={librarySearch} onChange={event => setLibrarySearch(event.target.value)} placeholder={libraryMode === 'trash' ? '搜索回收站' : '搜索标题、课程或知识点'} aria-label={libraryMode === 'trash' ? '搜索回收站' : '搜索资料'} />
                       {librarySearch && <button type="button" aria-label="清空资料搜索" onClick={() => setLibrarySearch('')}><Icon name="x" size={14} /></button>}
                     </label>
                     <div className="library-modes" aria-label="资料视图">
-                      <button type="button" aria-pressed={libraryMode === 'recent'} onClick={() => setLibraryMode('recent')}>最近</button>
-                      <button type="button" aria-pressed={libraryMode === 'course'} onClick={() => setLibraryMode('course')}>按课程</button>
-                      <button type="button" aria-pressed={libraryMode === 'favorite'} onClick={() => setLibraryMode('favorite')}><Icon name="star" size={14} />收藏</button>
+                      <button type="button" aria-pressed={libraryMode === 'recent'} onClick={() => switchLibraryMode('recent')}>最近</button>
+                      <button type="button" aria-pressed={libraryMode === 'course'} onClick={() => switchLibraryMode('course')}>按课程</button>
+                      <button type="button" aria-pressed={libraryMode === 'favorite'} onClick={() => switchLibraryMode('favorite')}><Icon name="star" size={14} />收藏</button>
+                      <button className="trash-mode" type="button" aria-pressed={libraryMode === 'trash'} onClick={() => switchLibraryMode('trash')}><Icon name="trash" size={14} />回收站{trashedItems.length > 0 ? ` ${trashedItems.length}` : ''}</button>
                     </div>
                   </div>
 
-                  {libraryItems.length === 0 ? (
+                  {libraryMode === 'trash' && trashedItems.length === 0 ? (
+                    <div className="library-zero library-trash-empty">
+                      <Icon name="trash" size={20} />
+                      <p>回收站是空的。</p>
+                      <small>从资料阅读页删除的内容会暂时保留在这里。</small>
+                    </div>
+                  ) : libraryMode !== 'trash' && libraryItems.length === 0 ? (
                     <div className="library-empty">
                       <span><Icon name="library" size={24} /></span>
                       <h2>还没有保存资料</h2>
@@ -1097,9 +1434,9 @@ function App() {
                         const option = artifactOptions.find(entry => entry.kind === item.kind)
                         return (
                           <button className="library-row" key={item.id} onClick={() => setLibraryPreviewId(item.id)}>
-                            <span className="library-row-icon"><Icon name={option?.icon || 'file'} size={17} /></span>
-                            <span className="library-row-copy"><b>{item.title}</b><small>{item.course} / {item.topic} · {option?.label || '学习资料'}{item.version > 1 ? ` · v${item.version}` : ''}</small></span>
-                            {item.favorite && <span className="library-row-star" aria-label="已收藏"><Icon name="star" size={14} /></span>}
+                            <span className="library-row-icon"><Icon name={libraryMode === 'trash' ? 'trash' : option?.icon || 'file'} size={17} /></span>
+                            <span className="library-row-copy"><b>{item.title}</b><small>{libraryMode === 'trash' ? `${item.course} / ${item.topic}${item.deletedAt ? ` · ${formatLibraryDate(item.deletedAt)} 删除` : ''}` : `${item.course} / ${item.topic} · ${option?.label || '学习资料'}${item.version > 1 ? ` · v${item.version}` : ''}`}</small></span>
+                            {libraryMode !== 'trash' && item.favorite && <span className="library-row-star" aria-label="已收藏"><Icon name="star" size={14} /></span>}
                             <Icon name="chevron" size={16} />
                           </button>
                         )
@@ -1253,35 +1590,94 @@ function App() {
 
       {saveTarget && (
         <div className="sheet-layer">
-          <button className="sheet-backdrop" aria-label="取消保存" onClick={() => setSaveTarget(null)} />
+          <button className="sheet-backdrop" aria-label="取消保存" onClick={closeSave} />
           <aside className="save-sheet" role="dialog" aria-modal="true" aria-labelledby="save-title">
             <div className="sheet-head">
-              <div><h2 id="save-title">保存到资料库</h2><p>RHYME 已根据内容推荐归档位置。</p></div>
-              <button className="icon-button" aria-label="取消保存" onClick={() => setSaveTarget(null)}><Icon name="x" size={18} /></button>
+              <div>
+                <h2 id="save-title">{saveMode === 'edit' ? '整理资料' : '保存到资料库'}</h2>
+                <p>{saveMode === 'edit' ? '名称和归属可以随时调整。' : '智能体已经根据当前学习内容推荐位置。'}</p>
+              </div>
+              <button className="icon-button" aria-label="取消保存" onClick={closeSave}><Icon name="x" size={18} /></button>
             </div>
             <label className="field-label" htmlFor="artifact-title">资料名称</label>
-            <input id="artifact-title" className="text-field" value={saveTitle} onChange={event => setSaveTitle(event.target.value)} />
+            <input id="artifact-title" className="text-field" value={saveTitle} onChange={event => { setSaveTitle(event.target.value); resetDuplicateDecision() }} />
             <div className="save-path-block">
               <div className="save-path-label">
-                <span>建议位置</span>
+                <span>{saveMode === 'edit' ? '当前位置' : '建议位置'}</span>
                 <button type="button" onClick={() => setSaveLocationOpen(current => !current)}>{saveLocationOpen ? '收起' : '修改'}</button>
               </div>
               <div className="save-path-preview">
                 <Icon name="book" size={16} /><b>{saveCourse || '未分类课程'}</b><Icon name="chevron" size={14} /><b>{saveTopic || '未分类主题'}</b>
               </div>
+              {saveMode === 'save' && (
+                <div className="save-path-context">
+                  <span><Icon name="spark" size={13} />{
+                    saveRecommendationSource === 'memory' ? '按你之前的整理习惯推荐'
+                      : saveRecommendationSource === 'library' ? '匹配到资料库中的已有主题'
+                        : saveRecommendationSource === 'learning_state' ? '根据当前课程和学习主题推荐'
+                          : saveRecommendationSource === 'llm' ? '智能体根据资料内容推荐'
+                            : '暂未识别明确归属，可以自行填写'
+                  }</span>
+                  {(saveCourse.trim() !== saveRecommendedCourse.trim() || saveTopic.trim() !== saveRecommendedTopic.trim()) && (
+                    <b>将按你的选择保存</b>
+                  )}
+                </div>
+              )}
               {saveLocationOpen && (
                 <div className="save-path-fields">
-                  <label>课程<input value={saveCourse} onChange={event => setSaveCourse(event.target.value)} placeholder="例如：数据结构" /></label>
-                  <label>主题<input value={saveTopic} onChange={event => setSaveTopic(event.target.value)} placeholder="例如：递归" /></label>
+                  <label>课程<input list="library-course-options" value={saveCourse} onChange={event => { setSaveCourse(event.target.value); resetDuplicateDecision() }} placeholder="选择或输入课程" /></label>
+                  <label>主题<input list="library-topic-options" value={saveTopic} onChange={event => { setSaveTopic(event.target.value); resetDuplicateDecision() }} placeholder="选择或输入主题" /></label>
+                  <datalist id="library-course-options">{libraryCourseOptions.map(course => <option key={course} value={course} />)}</datalist>
+                  <datalist id="library-topic-options">{libraryTopicOptions.map(topic => <option key={topic} value={topic} />)}</datalist>
                 </div>
               )}
             </div>
+            {saveMode === 'save' && duplicateMatches.length > 0 && (
+              <section className="duplicate-panel" aria-labelledby="duplicate-title">
+                <div className="duplicate-head">
+                  <span><Icon name="history" size={16} /></span>
+                  <div><b id="duplicate-title">发现相似资料</b><small>同一课程和主题下已有相近内容，请选择保存方式。</small></div>
+                </div>
+                <div className="duplicate-existing">
+                  <b>{duplicateMatches[0].title}</b>
+                  <span>{duplicateMatches[0].course} / {duplicateMatches[0].topic} · 当前 v{duplicateMatches[0].version}</span>
+                </div>
+                <div className="duplicate-options" role="radiogroup" aria-label="选择重复资料的保存方式">
+                  <button type="button" role="radio" aria-checked={duplicateStrategy === 'version'} onClick={() => setDuplicateStrategy('version')}>
+                    <span><b>保存为新版本</b><small>保留旧内容，资料库只显示最新的 v{duplicateMatches[0].version + 1}</small></span><em>推荐</em>
+                  </button>
+                  <button type="button" role="radio" aria-checked={duplicateStrategy === 'update'} onClick={() => setDuplicateStrategy('update')}>
+                    <span><b>更新原资料</b><small>用本次生成内容覆盖当前最新版</small></span>
+                  </button>
+                  <button type="button" role="radio" aria-checked={duplicateStrategy === 'separate'} onClick={() => setDuplicateStrategy('separate')}>
+                    <span><b>单独保存</b><small>作为另一份独立资料保留</small></span>
+                  </button>
+                </div>
+              </section>
+            )}
             <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>{saveTarget.source}</b></div>
             <div className="sheet-actions">
-              <button type="button" onClick={() => setSaveTarget(null)}>取消</button>
-              <button type="button" className="primary" onClick={() => void confirmSave()} disabled={!saveTitle.trim() || !saveCourse.trim() || !saveTopic.trim() || saveBusy}><Icon name="save" size={16} />{saveBusy ? '保存中…' : '确认保存'}</button>
+              <button type="button" onClick={closeSave}>取消</button>
+              <button type="button" className="primary" onClick={() => void confirmSave()} disabled={!saveTitle.trim() || !saveCourse.trim() || !saveTopic.trim() || saveBusy}><Icon name="save" size={16} />{saveBusy ? (duplicateCheckComplete ? '保存中…' : '检查中…') : saveMode === 'edit' ? '保存调整' : duplicateMatches.length > 0 ? '按选择保存' : '确认保存'}</button>
             </div>
           </aside>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="confirm-layer">
+          <button className="confirm-backdrop" aria-label="取消删除" onClick={() => !deleteBusy && setDeleteTarget(null)} />
+          <section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description">
+            <span className="confirm-icon"><Icon name="trash" size={19} /></span>
+            <h2 id="delete-dialog-title">{deleteMode === 'permanent' ? '永久删除这份资料？' : '将这份资料移到回收站？'}</h2>
+            <p id="delete-dialog-description">{deleteMode === 'permanent'
+              ? `“${deleteTarget.title}”删除后无法恢复。`
+              : `“${deleteTarget.title}”会从资料库中移除，你仍可在回收站恢复。`}</p>
+            <div className="confirm-actions">
+              <button type="button" autoFocus disabled={deleteBusy} onClick={() => setDeleteTarget(null)}>取消</button>
+              <button className="danger" type="button" disabled={deleteBusy} onClick={() => void confirmDeleteArtifact()}>{deleteBusy ? '处理中…' : deleteMode === 'permanent' ? '永久删除' : '移到回收站'}</button>
+            </div>
+          </section>
         </div>
       )}
 
@@ -1306,7 +1702,16 @@ function App() {
         </div>
       )}
 
-      {notice && <button className="feedback-toast" onClick={() => setNotice('')} aria-label="关闭提示"><Icon name="check" size={15} />{notice}<Icon name="x" size={13} /></button>}
+      {notice && (
+        <div className="feedback-toast" role="status" aria-live="polite">
+          <Icon name="check" size={15} />
+          <span>{notice}</span>
+          {notice === '已移到回收站，可撤销' && undoTrashId && (
+            <button className="toast-action" type="button" onClick={() => void undoLastTrash()}>撤销</button>
+          )}
+          <button className="toast-close" type="button" aria-label="关闭提示" onClick={() => { setNotice(''); setUndoTrashId(null) }}><Icon name="x" size={13} /></button>
+        </div>
+      )}
     </div>
   )
 }

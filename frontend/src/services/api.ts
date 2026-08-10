@@ -200,16 +200,26 @@ export interface LearningArtifactRecord {
   style: 'plain' | 'notes' | 'exam'
   course_name: string
   topic_name: string
-  status: 'draft' | 'saved'
+  recommended_course_name: string
+  recommended_topic_name: string
+  classification_source: 'memory' | 'learning_state' | 'library' | 'llm' | 'fallback'
+  classification_confidence: number
+  classification_overridden: boolean
+  classification_keywords: string[]
+  status: 'draft' | 'saved' | 'deleted'
+  course_id?: number
+  topic_id?: number
+  version_group_id: number
   version: number
   is_favorite: boolean
+  deleted_at: string
   created_at: string
   updated_at: string
 }
 
 export async function getLearningArtifacts(
   userId: number,
-  options: { sessionId?: number; status?: 'all' | 'draft' | 'saved' } = {},
+  options: { sessionId?: number; status?: 'all' | 'draft' | 'saved' | 'deleted' } = {},
 ) {
   const params = new URLSearchParams({ user_id: String(userId), status: options.status || 'all' })
   if (options.sessionId !== undefined) params.set('session_id', String(options.sessionId))
@@ -246,15 +256,91 @@ export async function saveLearningArtifact(
   title: string,
   courseName: string,
   topicName: string,
+  saveStrategy: 'separate' | 'version' | 'update' = 'separate',
+  duplicateArtifactId?: number,
 ) {
   const res = await fetch(`${API_BASE}/artifacts/${artifactId}/save`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      title,
+      course_name: courseName,
+      topic_name: topicName,
+      save_strategy: saveStrategy,
+      duplicate_artifact_id: duplicateArtifactId,
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '保存学习资料失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+}
+
+export async function findLearningArtifactDuplicates(
+  artifactId: number,
+  userId: number,
+  title: string,
+  courseName: string,
+  topicName: string,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/duplicates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      artifact_id: artifactId,
+      title,
+      course_name: courseName,
+      topic_name: topicName,
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '检查重复资料失败')
+  }
+  return res.json() as Promise<{ duplicates: Array<LearningArtifactRecord & { similarity: number }> }>
+}
+
+export async function getLearningArtifactVersions(artifactId: number, userId: number) {
+  const params = new URLSearchParams({ user_id: String(userId) })
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/versions?${params}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '获取版本记录失败')
+  }
+  return res.json() as Promise<{ versions: LearningArtifactRecord[] }>
+}
+
+export async function restoreLearningArtifactVersion(artifactId: number, userId: number) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/restore-version`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '恢复这个版本失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+}
+
+export async function updateLearningArtifact(
+  artifactId: number,
+  userId: number,
+  title: string,
+  courseName: string,
+  topicName: string,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, title, course_name: courseName, topic_name: topicName }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail || '保存学习资料失败')
+    throw new Error(body.detail || '调整资料归属失败')
   }
   return res.json() as Promise<{ artifact: LearningArtifactRecord }>
 }
@@ -270,4 +356,39 @@ export async function favoriteLearningArtifact(artifactId: number, userId: numbe
     throw new Error(body.detail || '更新收藏状态失败')
   }
   return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+}
+
+export async function trashLearningArtifact(artifactId: number, userId: number) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/trash`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '移到回收站失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+}
+
+export async function restoreLearningArtifact(artifactId: number, userId: number) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/restore`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '恢复资料失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+}
+
+export async function permanentlyDeleteLearningArtifact(artifactId: number, userId: number) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}?user_id=${userId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '永久删除资料失败')
+  }
+  return res.json() as Promise<{ deleted: boolean; artifact_id: number }>
 }

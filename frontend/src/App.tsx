@@ -107,6 +107,11 @@ type InterfaceLanguage = 'zh-CN' | 'en'
 type InterfaceScale = 90 | 100 | 110 | 120 | 130
 type SettingsView = 'menu' | 'language' | 'theme' | 'scale'
 type SessionMenuMode = 'menu' | 'rename' | 'delete'
+type DeferredSessionChange = {
+  title?: string
+  is_pinned?: boolean
+  deleted?: boolean
+}
 
 type GeneratorOption = {
   kind: ArtifactKind
@@ -234,6 +239,7 @@ type PracticeRun = {
 }
 
 const LOCAL_USER_ID = 1
+const DEFERRED_SESSION_CHANGES_KEY = `rhyme-deferred-session-changes-${LOCAL_USER_ID}`
 const emptyLearningState: LearningState = {
   subject: '',
   goal: '',
@@ -242,6 +248,55 @@ const emptyLearningState: LearningState = {
   deadline: '',
   level: '',
   current_topic: '',
+}
+
+function readDeferredSessionChanges(): Record<number, DeferredSessionChange> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DEFERRED_SESSION_CHANGES_KEY) || '{}') as Record<string, DeferredSessionChange>
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([id, change]) => Number.isInteger(Number(id)) && change && typeof change === 'object')
+        .map(([id, change]) => [Number(id), change]),
+    )
+  } catch {
+    return {}
+  }
+}
+
+function writeDeferredSessionChanges(changes: Record<number, DeferredSessionChange>) {
+  localStorage.setItem(DEFERRED_SESSION_CHANGES_KEY, JSON.stringify(changes))
+}
+
+function isTemporarySessionMutationFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /(^|\D)(404|405|502|503|504)(\D|$)|method not allowed|not found|failed to fetch|network|networkerror|网络/i.test(message)
+}
+
+async function copyPlainText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Some browsers disallow the async Clipboard API on an insecure local page.
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  document.body.removeChild(textarea)
+  if (!copied) throw new Error('浏览器阻止了复制，请允许剪贴板权限后重试。')
+}
+
+function sortTutorSessions(sessions: TutorSessionSummary[]) {
+  return [...sessions].sort((left, right) => {
+    if (left.is_pinned !== right.is_pinned) return Number(right.is_pinned) - Number(left.is_pinned)
+    return (Date.parse(right.updated_at) || 0) - (Date.parse(left.updated_at) || 0)
+  })
 }
 
 const defaultDocumentSetup = (turnId: string): DocumentSetup => ({
@@ -782,6 +837,8 @@ function App() {
   const [sessionMenuMode, setSessionMenuMode] = useState<SessionMenuMode>('menu')
   const [sessionRenameDraft, setSessionRenameDraft] = useState('')
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
+  const deferredSessionChanges = useRef<Record<number, DeferredSessionChange>>(readDeferredSessionChanges())
+  const deferredSessionSyncing = useRef(false)
   const [sending, setSending] = useState(false)
   const [attachment, setAttachment] = useState<Attachment | null>(null)
   const [selectedKind, setSelectedKind] = useState<ArtifactKind | null>(null)
@@ -940,9 +997,12 @@ function App() {
     let cancelled = false
     async function restoreLatestConversation() {
       try {
-        const data = await getTutorSessions(LOCAL_USER_ID) as { sessions: TutorSessionSummary[] }
+        let data = await getTutorSessions(LOCAL_USER_ID) as { sessions: TutorSessionSummary[] }
         if (cancelled) return
-        const restoredSessions = data.sessions || []
+        if (await syncDeferredSessionChanges(data.sessions || [])) {
+          data = await getTutorSessions(LOCAL_USER_ID) as { sessions: TutorSessionSummary[] }
+        }
+        const restoredSessions = applyDeferredSessionChanges(data.sessions || [])
         setSessions(restoredSessions)
         const [savedData, deletedData] = await Promise.all([
           getLearningArtifacts(LOCAL_USER_ID, { status: 'saved' }).catch(() => ({ artifacts: [] })),
@@ -1219,11 +1279,90 @@ function App() {
 
   async function refreshSessions() {
     try {
-      const data = await getTutorSessions(LOCAL_USER_ID) as { sessions: TutorSessionSummary[] }
-      setSessions(data.sessions || [])
+      let data = await getTutorSessions(LOCAL_USER_ID) as { sessions: TutorSessionSummary[] }
+      const remoteSessions = data.sessions || []
+      if (await syncDeferredSessionChanges(remoteSessions)) {
+        data = await getTutorSessions(LOCAL_USER_ID) as { sessions: TutorSessionSummary[] }
+      }
+      setSessions(applyDeferredSessionChanges(data.sessions || []))
     } catch {
       setNotice('回答已保留，但历史列表暂时刷新失败。')
     }
+  }
+
+  function applyDeferredSessionChanges(remoteSessions: TutorSessionSummary[]) {
+    const changes = deferredSessionChanges.current
+    return sortTutorSessions(remoteSessions
+      .filter(session => !changes[session.id]?.deleted)
+      .map(session => {
+        const change = changes[session.id]
+        return change
+          ? { ...session, title: change.title ?? session.title, is_pinned: change.is_pinned ?? session.is_pinned }
+          : session
+      }))
+  }
+
+  function deferSessionChange(sessionIdToChange: number, change: DeferredSessionChange) {
+    const next = {
+      ...deferredSessionChanges.current,
+      [sessionIdToChange]: { ...deferredSessionChanges.current[sessionIdToChange], ...change },
+    }
+    deferredSessionChanges.current = next
+    writeDeferredSessionChanges(next)
+  }
+
+  function clearDeferredSessionChange(sessionIdToChange: number, fields?: Array<keyof DeferredSessionChange>) {
+    const current = deferredSessionChanges.current[sessionIdToChange]
+    if (!current) return
+    const next = { ...deferredSessionChanges.current }
+    if (!fields) {
+      delete next[sessionIdToChange]
+    } else {
+      const remaining = { ...current }
+      fields.forEach(field => delete remaining[field])
+      if (Object.keys(remaining).length) next[sessionIdToChange] = remaining
+      else delete next[sessionIdToChange]
+    }
+    deferredSessionChanges.current = next
+    writeDeferredSessionChanges(next)
+  }
+
+  async function syncDeferredSessionChanges(remoteSessions: TutorSessionSummary[]) {
+    if (deferredSessionSyncing.current) return false
+    deferredSessionSyncing.current = true
+    let synchronized = false
+    try {
+      const remoteIds = new Set(remoteSessions.map(session => session.id))
+      for (const [rawId, change] of Object.entries(deferredSessionChanges.current)) {
+        const deferredId = Number(rawId)
+        if (!Number.isFinite(deferredId)) continue
+        if (!remoteIds.has(deferredId)) {
+          clearDeferredSessionChange(deferredId)
+          continue
+        }
+        try {
+          if (change.deleted) {
+            await deleteTutorSession(LOCAL_USER_ID, deferredId)
+            clearDeferredSessionChange(deferredId)
+            synchronized = true
+            continue
+          }
+          const updates: { title?: string; is_pinned?: boolean } = {}
+          if (change.title !== undefined) updates.title = change.title
+          if (change.is_pinned !== undefined) updates.is_pinned = change.is_pinned
+          if (Object.keys(updates).length) {
+            await updateTutorSession(LOCAL_USER_ID, deferredId, updates)
+            clearDeferredSessionChange(deferredId)
+            synchronized = true
+          }
+        } catch {
+          // The UI stays usable offline; this change is retried after the local server returns.
+        }
+      }
+    } finally {
+      deferredSessionSyncing.current = false
+    }
+    return synchronized
   }
 
   function closeSessionMenu() {
@@ -1243,14 +1382,28 @@ function App() {
   }
 
   async function toggleSessionPin(item: TutorSessionSummary) {
+    const nextPinned = !item.is_pinned
     setSessionActionBusy(true)
+    setSessions(current => sortTutorSessions(current.map(session => session.id === item.id
+      ? { ...session, is_pinned: nextPinned, updated_at: new Date().toISOString() }
+      : session)))
     try {
-      await updateTutorSession(LOCAL_USER_ID, item.id, { is_pinned: !item.is_pinned })
+      await updateTutorSession(LOCAL_USER_ID, item.id, { is_pinned: nextPinned })
+      clearDeferredSessionChange(item.id, ['is_pinned'])
       await refreshSessions()
       setNotice(item.is_pinned ? '已取消置顶对话。' : '已置顶对话。')
       closeSessionMenu()
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '更新对话失败。')
+      if (isTemporarySessionMutationFailure(error)) {
+        deferSessionChange(item.id, { is_pinned: nextPinned })
+        setNotice('已在此设备更新置顶状态；本地服务恢复后会自动同步。')
+        closeSessionMenu()
+      } else {
+        setSessions(current => sortTutorSessions(current.map(session => session.id === item.id
+          ? { ...session, is_pinned: item.is_pinned, updated_at: item.updated_at }
+          : session)))
+        setNotice(error instanceof Error ? error.message : '更新对话失败。')
+      }
     } finally {
       setSessionActionBusy(false)
     }
@@ -1263,13 +1416,26 @@ function App() {
       return
     }
     setSessionActionBusy(true)
+    setSessions(current => sortTutorSessions(current.map(session => session.id === item.id
+      ? { ...session, title, updated_at: new Date().toISOString() }
+      : session)))
     try {
       await updateTutorSession(LOCAL_USER_ID, item.id, { title })
+      clearDeferredSessionChange(item.id, ['title'])
       await refreshSessions()
       setNotice('对话已重命名。')
       closeSessionMenu()
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '重命名失败。')
+      if (isTemporarySessionMutationFailure(error)) {
+        deferSessionChange(item.id, { title })
+        setNotice('已在此设备重命名；本地服务恢复后会自动同步。')
+        closeSessionMenu()
+      } else {
+        setSessions(current => sortTutorSessions(current.map(session => session.id === item.id
+          ? { ...session, title: item.title, updated_at: item.updated_at }
+          : session)))
+        setNotice(error instanceof Error ? error.message : '重命名失败。')
+      }
     } finally {
       setSessionActionBusy(false)
     }
@@ -1282,9 +1448,24 @@ function App() {
       const transcript = history.messages
         .map((message: TutorMessage) => `${message.role === 'user' ? t('我', 'Me') : 'RHYME'}：${message.content}`)
         .join('\n\n')
-      if (!navigator.clipboard?.writeText) throw new Error('当前浏览器无法访问剪贴板，请手动复制对话内容。')
-      await navigator.clipboard.writeText(`${t('RHYME 学习对话', 'RHYME learning chat')}｜${history.title}\n\n${transcript}`)
-      setNotice('完整对话已复制，可以直接粘贴分享。')
+      const shareText = `${t('RHYME 学习对话', 'RHYME learning chat')}｜${history.title}\n\n${transcript}`
+      if (typeof navigator.share === 'function') {
+        try {
+          await navigator.share({ title: history.title, text: shareText })
+          setNotice('已打开系统分享。')
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            setNotice('已取消分享。')
+            closeSessionMenu()
+            return
+          }
+          await copyPlainText(shareText)
+          setNotice('系统分享不可用，完整对话已复制。')
+        }
+      } else {
+        await copyPlainText(shareText)
+        setNotice('完整对话已复制，可以直接粘贴分享。')
+      }
       closeSessionMenu()
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '分享准备失败。')
@@ -1301,12 +1482,21 @@ function App() {
     setSessionActionBusy(true)
     try {
       await deleteTutorSession(LOCAL_USER_ID, item.id)
+      clearDeferredSessionChange(item.id)
       setSessions(current => current.filter(session => session.id !== item.id))
       if (sessionId === item.id) newChat()
       setNotice('对话记录已删除，已保存到资料库的资料不会受影响。')
       closeSessionMenu()
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '删除对话失败。')
+      if (isTemporarySessionMutationFailure(error)) {
+        deferSessionChange(item.id, { deleted: true })
+        setSessions(current => current.filter(session => session.id !== item.id))
+        if (sessionId === item.id) newChat()
+        setNotice('已从此设备移除对话；本地服务恢复后会自动永久删除。')
+        closeSessionMenu()
+      } else {
+        setNotice(error instanceof Error ? error.message : '删除对话失败。')
+      }
     } finally {
       setSessionActionBusy(false)
     }

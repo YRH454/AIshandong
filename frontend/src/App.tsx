@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
@@ -11,6 +11,8 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import mascot from './assets/xuejing-slime-logo.png'
 import { EditableKnowledgeMap } from './components/EditableKnowledgeMap'
+import { DynamicExplanationPlayer } from './components/DynamicExplanationPlayer'
+import { parseDynamicExplanation, type DynamicExplanationData, type DynamicExplanationScene } from './components/dynamicExplanation'
 import {
   createImageAnalysisArtifact,
   collaborateKnowledgeMap,
@@ -23,12 +25,15 @@ import {
   getKnowledgeMapProgress,
   getLearningArtifacts,
   getLearningArtifactVersions,
+  getLibraryTopicLearningState,
   getLibraryTopicReviews,
   getPracticeForArtifact,
   getTutorHistory,
   getTutorSessions,
+  generateDynamicExplanation,
   permanentlyDeleteLearningArtifact,
   readTutorStream,
+  recordLearningActivity,
   restoreLearningArtifact,
   restoreLearningArtifactVersion,
   saveLearningArtifact,
@@ -37,12 +42,14 @@ import {
   trashLearningArtifact,
   updateKnowledgeMap,
   updateKnowledgeMapNodeProgress,
+  updateInteractivePresentation,
   updateLearningArtifact,
   updateTutorSession,
   waitForGenerationJob,
+  regenerateInteractivePresentationScene,
 } from './services/api'
 import type {
-  ImageStudyAnalysis, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
+  ImageStudyAnalysis, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
   PracticeSetRecord, TutorMessage, TutorSessionSummary,
 } from './services/api'
 import './App.css'
@@ -857,10 +864,15 @@ function App() {
   const [pendingMapGenerationTurnId, setPendingMapGenerationTurnId] = useState<string | null>(null)
   const knowledgeMapGenerationLocked = useRef(false)
   const knowledgeMapRunnerRef = useRef<(turnId: string) => void>(() => {})
+  const [dynamicExplanationGeneratingTurnId, setDynamicExplanationGeneratingTurnId] = useState<string | null>(null)
+  const [pendingDynamicExplanationTurnId, setPendingDynamicExplanationTurnId] = useState<string | null>(null)
+  const dynamicExplanationGenerationLocked = useRef(false)
+  const dynamicExplanationRunnerRef = useRef<(turnId: string) => void>(() => {})
   const [mapProgressByArtifactId, setMapProgressByArtifactId] = useState<Record<string, KnowledgeMapProgressState>>({})
   const mapProgressFetches = useRef(new Set<string>())
   const [mapProgressSavingKey, setMapProgressSavingKey] = useState<string | null>(null)
   const [mapEditingArtifactId, setMapEditingArtifactId] = useState<string | null>(null)
+  const [presentationEditingArtifactId, setPresentationEditingArtifactId] = useState<string | null>(null)
   const [mapCollaborations, setMapCollaborations] = useState<Record<string, KnowledgeMapCollaboration>>({})
   const [mapCollaborationLoadingArtifactId, setMapCollaborationLoadingArtifactId] = useState<string | null>(null)
   const [mapReviewPracticeGeneratingArtifactId, setMapReviewPracticeGeneratingArtifactId] = useState<string | null>(null)
@@ -896,6 +908,8 @@ function App() {
   const [collapsedLibraryCourses, setCollapsedLibraryCourses] = useState<Set<string>>(() => new Set())
   const [expandedLibraryTopics, setExpandedLibraryTopics] = useState<Set<string>>(() => new Set())
   const [topicReviews, setTopicReviews] = useState<Record<string, LibraryTopicReview>>({})
+  const [libraryTopicState, setLibraryTopicState] = useState<LibraryTopicLearningState | null>(null)
+  const [libraryTopicStateLoading, setLibraryTopicStateLoading] = useState(false)
   const [topicPracticeGeneratingKey, setTopicPracticeGeneratingKey] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Artifact | null>(null)
   const [deleteMode, setDeleteMode] = useState<DeleteMode>('trash')
@@ -957,6 +971,10 @@ function App() {
   })
 
   useEffect(() => {
+    dynamicExplanationRunnerRef.current = runDynamicExplanationGeneration
+  })
+
+  useEffect(() => {
     if (!practiceSetupTurnId) return
     const frameId = window.requestAnimationFrame(() => {
       document.getElementById(`practice-setup-${practiceSetupTurnId}`)?.scrollIntoView({
@@ -972,6 +990,12 @@ function App() {
     setPendingMapGenerationTurnId(null)
     knowledgeMapRunnerRef.current(pendingMapGenerationTurnId)
   }, [pendingMapGenerationTurnId, sessionId, turns])
+
+  useEffect(() => {
+    if (!pendingDynamicExplanationTurnId || !sessionId || !turns.some(turn => turn.id === pendingDynamicExplanationTurnId)) return
+    setPendingDynamicExplanationTurnId(null)
+    dynamicExplanationRunnerRef.current(pendingDynamicExplanationTurnId)
+  }, [pendingDynamicExplanationTurnId, sessionId, turns])
 
   useEffect(() => {
     setVersionHistoryOpen(false)
@@ -1095,6 +1119,9 @@ function App() {
   const readerMapData = readerArtifact?.kind === 'map'
     ? parseKnowledgeMap(readerArtifact.content)
     : null
+  const readerDynamicExplanation = readerArtifact?.kind === 'interactive'
+    ? parseDynamicExplanation(readerArtifact.content)
+    : null
   const mapArtifacts = useMemo(() => {
     const candidates = [
       ...turns.flatMap(turn => turn.artifacts),
@@ -1140,6 +1167,7 @@ function App() {
   const libraryTopicMastery = libraryTopicItems[0]?.topicMastery || 0
   const libraryTopicReview = libraryTopic ? topicReviews[folderTopicKey(libraryTopic.course, libraryTopic.topic)] : undefined
   const libraryTopicDisplayMastery = libraryTopicReview?.mastery || libraryTopicMastery
+  const libraryTopicLearningMastery = libraryTopicState?.mastery || libraryTopicDisplayMastery
   const activePracticeQuestion = practiceRun?.practice.questions[practiceRun.activeIndex] || null
   const practiceAnsweredCount = practiceRun
     ? practiceRun.practice.questions.filter(question => practiceRun.answers[question.id]?.trim()).length
@@ -1167,11 +1195,35 @@ function App() {
     video: 'Video lesson',
   } as Partial<Record<ArtifactKind, string>>)[kind] || chinese)
 
+  function recordSavedArtifactActivity(artifact: Artifact, activityType = 'opened', activityData: Record<string, unknown> = {}) {
+    if (!artifact.saved || !artifact.backendId) return
+    void recordLearningActivity(artifact.backendId, LOCAL_USER_ID, activityType, activityData)
+      .then(() => {
+        if (libraryTopic?.course === artifact.course && libraryTopic?.topic === artifact.topic) {
+          void refreshLibraryTopicState()
+        }
+      })
+      .catch(() => {
+        // A reading action should remain instant even if progress sync is temporarily unavailable.
+      })
+  }
+
+  function openLibraryArtifact(artifact: Artifact) {
+    if (artifact.kind === 'map') {
+      openMapWorkspace(artifact, 'library')
+      return
+    }
+    setLibraryPreviewId(artifact.id)
+    setView('library')
+    recordSavedArtifactActivity(artifact)
+  }
+
   function openMapWorkspace(artifact: Artifact, returnView: MapWorkspaceReturnView) {
     setMapWorkspaceArtifactId(artifact.id)
     setMapWorkspaceReturnView(returnView)
     setExpandedArtifactId(null)
     setView('map-workspace')
+    recordSavedArtifactActivity(artifact)
   }
 
   function closeMapWorkspace() {
@@ -1223,6 +1275,37 @@ function App() {
     }
   }
 
+  const refreshLibraryTopicState = useCallback(async (target = libraryTopic) => {
+    if (!target) {
+      setLibraryTopicState(null)
+      return
+    }
+    setLibraryTopicStateLoading(true)
+    try {
+      const state = await getLibraryTopicLearningState(LOCAL_USER_ID, target.course, target.topic)
+      if (libraryTopic?.course === target.course && libraryTopic?.topic === target.topic) {
+        setLibraryTopicState(state)
+      }
+    } catch {
+      if (libraryTopic?.course === target.course && libraryTopic?.topic === target.topic) {
+        setLibraryTopicState(null)
+      }
+    } finally {
+      if (libraryTopic?.course === target.course && libraryTopic?.topic === target.topic) {
+        setLibraryTopicStateLoading(false)
+      }
+    }
+  }, [libraryTopic])
+
+  useEffect(() => {
+    if (!libraryTopic) {
+      setLibraryTopicState(null)
+      setLibraryTopicStateLoading(false)
+      return
+    }
+    void refreshLibraryTopicState(libraryTopic)
+  }, [libraryTopic, refreshLibraryTopicState])
+
   function newChat() {
     if (sending) {
       setNotice('请等待当前回答完成后再新建对话。')
@@ -1239,6 +1322,7 @@ function App() {
     setGeneratorCatalogOpen(false)
     setDocumentSetup(null)
     setPendingMapGenerationTurnId(null)
+    setPendingDynamicExplanationTurnId(null)
     setPracticeSetupTurnId(null)
     setPracticeRun(null)
     setExpandedArtifactId(null)
@@ -1266,6 +1350,7 @@ function App() {
       setView('chat')
       setDocumentSetup(null)
       setPendingMapGenerationTurnId(null)
+      setPendingDynamicExplanationTurnId(null)
       setPracticeSetupTurnId(null)
       setPracticeRun(null)
       setExpandedArtifactId(null)
@@ -1658,6 +1743,7 @@ function App() {
           if (requestedKind === 'notes') setDocumentSetup(defaultDocumentSetup(streamEvent.qa_id))
           else if (requestedKind === 'practice') setPracticeSetupTurnId(streamEvent.qa_id)
           else if (requestedKind === 'map') setPendingMapGenerationTurnId(streamEvent.qa_id)
+          else if (requestedKind === 'interactive') setPendingDynamicExplanationTurnId(streamEvent.qa_id)
           else if (requestedKind) {
             setNotice(`${artifactOptions.find(item => item.kind === requestedKind)?.label}将在后续阶段接通，当前先完成学习文档。`)
           }
@@ -1683,6 +1769,10 @@ function App() {
     }
     if (kind === 'map') {
       void runKnowledgeMapGeneration(turnId)
+      return
+    }
+    if (kind === 'interactive') {
+      void runDynamicExplanationGeneration(turnId)
       return
     }
     // 「专项训练」是练习测验的学习场景入口；当前先复用已完成的
@@ -1901,6 +1991,70 @@ function App() {
     }
   }
 
+  async function runDynamicExplanationGeneration(turnId: string) {
+    if (!sessionId || dynamicExplanationGeneratingTurnId || dynamicExplanationGenerationLocked.current) return
+    const turn = turns.find(item => item.id === turnId)
+    if (!turn || turn.id.startsWith('pending-')) {
+      setNotice('这条回答还没有保存完成，请稍后重试。')
+      return
+    }
+    const loadingId = `dynamic-explanation-generating-${Date.now()}`
+    const loadingArtifact: Artifact = {
+      id: loadingId,
+      kind: 'interactive',
+      title: '正在编排动态讲解…',
+      summary: '正在把核心过程拆成可播放的场景，并加入关键的理解检查。',
+      details: ['提炼从“为什么”到“怎么做”的讲解顺序', '为每一幕匹配概念、步骤、对比或示例图示'],
+      source: turn.prompt,
+      course: learningState.subject || '未分类课程',
+      topic: learningState.current_topic || '本次学习',
+      topicMastery: 0,
+      recommendedCourse: learningState.subject || '未分类课程',
+      recommendedTopic: learningState.current_topic || '本次学习',
+      classificationSource: 'learning_state',
+      classificationConfidence: 0.9,
+      classificationOverridden: false,
+      saved: false,
+      favorite: false,
+      versionGroupId: 0,
+      version: 1,
+      status: 'generating',
+      purpose: 'review',
+      depth: 'standard',
+      style: 'plain',
+    }
+    dynamicExplanationGenerationLocked.current = true
+    setDynamicExplanationGeneratingTurnId(turn.id)
+    setNotice('正在生成动态讲解：先组织讲解场景，再准备可互动的理解检查。')
+    setTurns(current => current.map(item => item.id === turn.id
+      ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
+      : item))
+    try {
+      const queued = await generateDynamicExplanation(LOCAL_USER_ID, sessionId, turn.id)
+      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
+      const artifact = artifactFromRecord(data.artifact)
+      setTurns(current => current.map(item => item.id === turn.id
+        ? { ...item, artifacts: item.artifacts.map(item => item.id === loadingId ? artifact : item) }
+        : item))
+      setExpandedArtifactId(artifact.id)
+      setNotice('动态讲解已生成。可直接播放，也可以保存到资料库后继续学习。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '动态讲解生成失败'
+      setTurns(current => current.map(item => item.id === turn.id
+        ? {
+            ...item,
+            artifacts: item.artifacts.map(item => item.id === loadingId
+              ? { ...item, title: '动态讲解生成失败', summary: message, details: ['可以重新生成，或先换一种资料形式。'], status: 'error' }
+              : item),
+          }
+        : item))
+      setNotice(message)
+    } finally {
+      dynamicExplanationGenerationLocked.current = false
+      setDynamicExplanationGeneratingTurnId(null)
+    }
+  }
+
   async function updateMapNodeStatus(artifact: Artifact, nodeId: string, status: KnowledgeMapNodeStatus) {
     if (!artifact.backendId) {
       setNotice('这份图解还没有准备完成，请稍后再标记学习状态。')
@@ -1925,6 +2079,9 @@ function App() {
     try {
       const updated = await updateKnowledgeMapNodeProgress(artifact.backendId, LOCAL_USER_ID, nodeId, status)
       setMapProgressByArtifactId(current => ({ ...current, [artifact.id]: updated }))
+      if (libraryTopic?.course === artifact.course && libraryTopic?.topic === artifact.topic) {
+        void refreshLibraryTopicState()
+      }
     } catch (error) {
       setMapProgressByArtifactId(current => {
         const next = { ...current }
@@ -1938,14 +2095,19 @@ function App() {
     }
   }
 
-  function replaceArtifactFromRecord(record: LearningArtifactRecord) {
+  function replaceArtifactFromRecord(record: LearningArtifactRecord, previousBackendId = record.id) {
     const replacement = artifactFromRecord(record)
-    const replace = (artifact: Artifact) => artifact.backendId === record.id ? replacement : artifact
+    const replace = (artifact: Artifact) => artifact.backendId === previousBackendId ? replacement : artifact
     setTurns(current => current.map(turn => ({ ...turn, artifacts: turn.artifacts.map(replace) })))
     setLibraryItems(current => current.map(replace))
     setTrashedItems(current => current.map(replace))
-    setVersionItems(current => current.map(replace))
-    setVersionPreview(current => current?.backendId === record.id ? replacement : current)
+    setVersionItems(current => {
+      if (previousBackendId === record.id) return current.map(replace)
+      if (current.some(item => item.backendId === record.id)) return current
+      return [replacement, ...current]
+    })
+    setVersionPreview(current => current?.backendId === previousBackendId ? replacement : current)
+    setLibraryPreviewId(current => current === `artifact-${previousBackendId}` ? replacement.id : current)
   }
 
   async function persistEditedKnowledgeMap(artifact: Artifact, map: KnowledgeMapData) {
@@ -1972,6 +2134,43 @@ function App() {
     } finally {
       setMapEditingArtifactId(current => current === artifact.id ? null : current)
     }
+  }
+
+  async function persistEditedInteractivePresentation(artifact: Artifact, presentation: DynamicExplanationData) {
+    if (!artifact.backendId) {
+      throw new Error('这份互动演示还没有可保存的资料记录，请稍后再试。')
+    }
+    setPresentationEditingArtifactId(artifact.id)
+    try {
+      const result = await updateInteractivePresentation(artifact.backendId, LOCAL_USER_ID, presentation)
+      replaceArtifactFromRecord(result.artifact, artifact.backendId)
+      setNotice(result.saved_as_version
+        ? `互动演示已保存为新版 v${result.artifact.version}`
+        : '互动演示编辑已保存')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存互动演示编辑失败'
+      setNotice(message)
+      throw error
+    } finally {
+      setPresentationEditingArtifactId(current => current === artifact.id ? null : current)
+    }
+  }
+
+  async function remakeInteractivePresentationScene(
+    artifact: Artifact,
+    presentation: DynamicExplanationData,
+    scene: DynamicExplanationScene,
+  ) {
+    if (!artifact.backendId) {
+      throw new Error('这份互动演示还没有可编辑的资料记录，请稍后再试。')
+    }
+    const result = await regenerateInteractivePresentationScene(
+      artifact.backendId,
+      LOCAL_USER_ID,
+      presentation,
+      scene.id,
+    )
+    return result.scene
   }
 
   async function runMapCollaboration(artifact: Artifact) {
@@ -2154,9 +2353,47 @@ function App() {
     }
   }
 
+  function topicNextStepLabel(action: LibraryTopicLearningState['next_step']['action']) {
+    const labels: Record<LibraryTopicLearningState['next_step']['action'], [string, string]> = {
+      open_material: ['继续阅读', 'Continue reading'],
+      continue_map: ['继续图解', 'Continue map'],
+      continue_explanation: ['继续动态讲解', 'Continue explanation'],
+      review_map: ['复习薄弱节点', 'Review weak nodes'],
+      start_practice: ['开始练习', 'Start practice'],
+      practice_weak_points: ['针对薄弱点再练', 'Practice weak points'],
+      review_material: ['回看重点', 'Review key points'],
+      complete: ['开始学习', 'Start learning'],
+    }
+    const [chinese, english] = labels[action]
+    return t(chinese, english)
+  }
+
+  async function continueTopicLearning() {
+    const nextStep = libraryTopicState?.next_step
+    if (!nextStep || nextStep.action === 'complete' || !libraryTopic) {
+      setNotice(t('这个主题还没有可继续的资料。', 'There is no material to continue in this topic yet.'))
+      return
+    }
+    const artifact = libraryTopicItems.find(item => item.backendId === nextStep.artifact_id)
+    if (!artifact) {
+      setNotice(t('推荐资料暂时不可用，请刷新资料库后再试。', 'The recommended material is unavailable. Please refresh the library.'))
+      return
+    }
+    if (nextStep.action === 'practice_weak_points') {
+      await startTopicWeakPractice(libraryTopic.course, libraryTopic.topic, libraryTopicItems)
+      return
+    }
+    if (nextStep.action === 'start_practice') {
+      await openPractice(artifact)
+      return
+    }
+    openLibraryArtifact(artifact)
+  }
+
   async function openPractice(artifact: Artifact) {
     if (!artifact.backendId || practiceLoadingArtifactId) return
     setPracticeLoadingArtifactId(artifact.id)
+    recordSavedArtifactActivity(artifact, 'opened', { surface: 'practice' })
     try {
       const data = await getPracticeForArtifact(artifact.backendId, LOCAL_USER_ID)
       setPracticeRun({
@@ -2216,6 +2453,7 @@ function App() {
         }
       }
       void refreshTopicReviews()
+      void refreshLibraryTopicState()
       setNotice(data.topic_mastery === null
         ? '练习已批改。保存到资料库后会回写主题掌握情况。'
         : '练习已批改，并已更新当前主题的掌握情况。')
@@ -2744,9 +2982,10 @@ function App() {
                       {turn.artifacts.map(artifact => {
                         const option = artifactOptions.find(item => item.kind === artifact.kind)
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
+                        const dynamicExplanation = artifact.kind === 'interactive' ? parseDynamicExplanation(artifact.content) : null
                         const mapProgress = mapProgressByArtifactId[artifact.id]
                         return (
-                          <article className={`artifact-card artifact-${artifact.status || 'draft'} ${artifact.kind !== 'map' && expandedArtifactId === artifact.id ? 'artifact-expanded' : ''}`} key={artifact.id}>
+                          <article className={`artifact-card artifact-${artifact.status || 'draft'} ${artifact.kind === 'interactive' ? 'artifact-dynamic' : ''} ${artifact.kind !== 'map' && artifact.kind !== 'interactive' && expandedArtifactId === artifact.id ? 'artifact-expanded' : ''}`} key={artifact.id}>
                             <div className="artifact-head">
                               <span className="artifact-icon"><Icon name={option?.icon || 'file'} size={18} /></span>
                               <div>
@@ -2766,7 +3005,20 @@ function App() {
                             <ul className="artifact-details">
                               {artifact.details.map(item => <li key={item}>{item}</li>)}
                             </ul>
-                            {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.content && expandedArtifactId === artifact.id && (
+                            {dynamicExplanation && (
+                              <DynamicExplanationPlayer
+                                data={dynamicExplanation}
+                                language={interfaceLanguage}
+                                onSceneStarted={(scene, index) => recordSavedArtifactActivity(artifact, 'scene_started', { scene_id: scene.id, scene_index: index + 1 })}
+                                onSceneCompleted={(scene, index) => recordSavedArtifactActivity(artifact, 'scene_completed', { scene_id: scene.id, scene_index: index + 1 })}
+                                onCompleted={() => recordSavedArtifactActivity(artifact, 'completed', { scene_count: dynamicExplanation.scenes.length })}
+                                onSavePresentation={presentation => persistEditedInteractivePresentation(artifact, presentation)}
+                                onRegenerateScene={(presentation, scene) => remakeInteractivePresentationScene(artifact, presentation, scene)}
+                                saving={presentationEditingArtifactId === artifact.id}
+                                saveAsVersion={artifact.saved}
+                              />
+                            )}
+                            {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.kind !== 'interactive' && artifact.content && expandedArtifactId === artifact.id && (
                               <div className="artifact-document">
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
                               </div>
@@ -2779,7 +3031,7 @@ function App() {
                                     <Trees size={15} />打开图解
                                   </button>
                                 )}
-                                {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.content && (
+                                {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.kind !== 'interactive' && artifact.content && (
                                   <button type="button" onClick={() => setExpandedArtifactId(current => current === artifact.id ? null : artifact.id)}>
                                     {expandedArtifactId === artifact.id ? '收起全文' : '展开全文'}
                                   </button>
@@ -2792,6 +3044,7 @@ function App() {
                                 <button type="button" onClick={() => {
                                   if (artifact.kind === 'practice') void runPracticeGeneration(turn.id)
                                   else if (artifact.kind === 'map') void runKnowledgeMapGeneration(turn.id)
+                                  else if (artifact.kind === 'interactive') void runDynamicExplanationGeneration(turn.id)
                                   else setDocumentSetup({
                                     turnId: turn.id,
                                     purpose: artifact.purpose || 'review',
@@ -2802,8 +3055,7 @@ function App() {
                                 {artifact.status !== 'error' && (
                                   <button className="artifact-save" type="button" onClick={() => {
                                     if (artifact.saved) {
-                                      setLibraryPreviewId(artifact.id)
-                                      setView('library')
+                                      openLibraryArtifact(artifact)
                                     } else openSave(artifact)
                                   }}>
                                     <Icon name={artifact.saved ? 'check' : 'save'} size={15} />
@@ -3002,7 +3254,7 @@ function App() {
                     <div className="version-preview-notice"><span>正在查看 v{versionPreview.version}，内容不会自动覆盖最新版。</span><button type="button" onClick={() => setVersionPreview(null)}>返回最新版</button></div>
                   )}
                   <p>{readerArtifact?.summary}</p>
-                  <div className={`library-reader-content ${readerMapData ? 'has-knowledge-map' : ''}`}>
+                  <div className={`library-reader-content ${readerMapData ? 'has-knowledge-map' : ''} ${readerDynamicExplanation ? 'has-dynamic-explanation' : ''}`}>
                     {readerArtifact?.kind === 'map'
                       ? readerMapData
                         ? <EditableKnowledgeMap
@@ -3023,7 +3275,21 @@ function App() {
                             onDismissSuggestion={suggestion => dismissMapSuggestion(readerArtifact.id, suggestion)}
                           />
                         : <p>这份图解内容无法读取，请回到来源对话重新生成。</p>
-                      : <ReactMarkdown remarkPlugins={[remarkGfm]}>{readerArtifact?.content || ''}</ReactMarkdown>}
+                      : readerArtifact?.kind === 'interactive'
+                        ? readerDynamicExplanation
+                          ? <DynamicExplanationPlayer
+                              data={readerDynamicExplanation}
+                              language={interfaceLanguage}
+                              onSceneStarted={versionPreview ? undefined : (scene, index) => recordSavedArtifactActivity(readerArtifact, 'scene_started', { scene_id: scene.id, scene_index: index + 1, surface: 'library' })}
+                              onSceneCompleted={versionPreview ? undefined : (scene, index) => recordSavedArtifactActivity(readerArtifact, 'scene_completed', { scene_id: scene.id, scene_index: index + 1, surface: 'library' })}
+                              onCompleted={versionPreview ? undefined : () => recordSavedArtifactActivity(readerArtifact, 'completed', { scene_count: readerDynamicExplanation.scenes.length, surface: 'library' })}
+                              onSavePresentation={versionPreview ? undefined : presentation => persistEditedInteractivePresentation(readerArtifact, presentation)}
+                              onRegenerateScene={versionPreview ? undefined : (presentation, scene) => remakeInteractivePresentationScene(readerArtifact, presentation, scene)}
+                              saving={presentationEditingArtifactId === readerArtifact.id}
+                              saveAsVersion={readerArtifact.saved}
+                            />
+                          : <p>这份动态讲解内容无法读取，请回到来源对话重新生成。</p>
+                        : <ReactMarkdown remarkPlugins={[remarkGfm]}>{readerArtifact?.content || ''}</ReactMarkdown>}
                   </div>
                   <div className="library-reader-actions">
                     {libraryPreview.status === 'deleted' ? (
@@ -3053,8 +3319,30 @@ function App() {
                   </button>
                   <div className="library-topic-heading">
                     <div><span>{libraryTopic.course}</span><h1>{libraryTopic.topic}</h1></div>
-                    <span>{libraryTopicDisplayMastery > 0 ? `掌握 ${libraryTopicDisplayMastery}% · ` : ''}{libraryTopicItems.length} 份资料</span>
+                    <span>{libraryTopicLearningMastery > 0 ? `掌握 ${libraryTopicLearningMastery}% · ` : ''}{libraryTopicItems.length} 份资料</span>
                   </div>
+                  {libraryTopicStateLoading ? (
+                    <section className="library-topic-progress loading" aria-label={t('正在整理主题学习状态', 'Preparing topic learning state')}>
+                      <span>{t('正在整理学习进度…', 'Preparing learning progress…')}</span>
+                    </section>
+                  ) : libraryTopicState ? (
+                    <section className="library-topic-progress" aria-label={t('主题学习进度', 'Topic learning progress')}>
+                      <div className="library-topic-progress-copy">
+                        <b>{t('继续学习', 'Continue learning')}</b>
+                        <p>{libraryTopicState.next_step.detail}</p>
+                        <div className="library-topic-progress-metrics">
+                          <span>{t(`资料 ${libraryTopicState.materials.opened}/${libraryTopicState.materials.total} 已打开`, `${libraryTopicState.materials.opened}/${libraryTopicState.materials.total} materials opened`)}</span>
+                          {libraryTopicState.map_progress.total > 0 && <span>{t(`图解 ${libraryTopicState.map_progress.mastered}/${libraryTopicState.map_progress.total} 已理解`, `Map ${libraryTopicState.map_progress.mastered}/${libraryTopicState.map_progress.total} understood`)}</span>}
+                          {libraryTopicState.practice.attempt_count > 0 && <span>{t(`最近练习 ${libraryTopicState.practice.recent_score} 分`, `Latest practice ${libraryTopicState.practice.recent_score}/100`)}</span>}
+                        </div>
+                      </div>
+                      {libraryTopicState.next_step.action !== 'complete' && (
+                        <button type="button" onClick={() => void continueTopicLearning()}>
+                          {topicNextStepLabel(libraryTopicState.next_step.action)}<Icon name="chevron" size={15} />
+                        </button>
+                      )}
+                    </section>
+                  ) : null}
                   {libraryTopicReview?.recent_score !== null && libraryTopicReview?.recent_score !== undefined && (
                     <section className="library-topic-review library-topic-review-detail" aria-label="主题复盘">
                       <div className="library-topic-review-summary">
@@ -3093,7 +3381,7 @@ function App() {
                       const mapData = item.kind === 'map' ? parseKnowledgeMap(item.content) : null
                       const mapProgress = mapProgressByArtifactId[item.id]
                       return (
-                        <button className="library-row" key={item.id} onClick={() => item.kind === 'map' ? openMapWorkspace(item, 'library') : setLibraryPreviewId(item.id)}>
+                        <button className="library-row" key={item.id} onClick={() => openLibraryArtifact(item)}>
                           <span className="library-row-icon"><Icon name={option?.icon || 'file'} size={17} /></span>
                           <span className="library-row-copy"><b>{item.title}</b><small>{option ? artifactLabel(option.kind, option.label) : t('学习资料', 'Learning material')}{item.version > 1 ? ` · v${item.version}` : ''}{mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''} · {item.summary}</small></span>
                           {item.favorite && <span className="library-row-star" aria-label={t('已收藏', 'Favorited')}><Icon name="star" size={14} /></span>}
@@ -3213,7 +3501,7 @@ function App() {
                                             const mapData = item.kind === 'map' ? parseKnowledgeMap(item.content) : null
                                             const mapProgress = mapProgressByArtifactId[item.id]
                                             return (
-                                              <button className="library-row library-tree-file" type="button" key={item.id} onClick={() => item.kind === 'map' ? openMapWorkspace(item, 'library') : setLibraryPreviewId(item.id)}>
+                                              <button className="library-row library-tree-file" type="button" key={item.id} onClick={() => openLibraryArtifact(item)}>
                                                 <span className="library-row-icon"><Icon name={option?.icon || 'file'} size={16} /></span>
                                                 <span className="library-row-copy"><b>{item.title}</b><small>{option?.label || '学习资料'}{item.version > 1 ? ` · v${item.version}` : ''}{mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''} · {item.summary}</small></span>
                                                 {item.favorite && <span className="library-row-star" aria-label="已收藏"><Icon name="star" size={14} /></span>}
@@ -3239,7 +3527,7 @@ function App() {
                       const mapData = item.kind === 'map' ? parseKnowledgeMap(item.content) : null
                       const mapProgress = mapProgressByArtifactId[item.id]
                       return (
-                          <button className="library-row" key={item.id} onClick={() => item.kind === 'map' ? openMapWorkspace(item, 'library') : setLibraryPreviewId(item.id)}>
+                          <button className="library-row" key={item.id} onClick={() => openLibraryArtifact(item)}>
                             <span className="library-row-icon"><Icon name={libraryMode === 'trash' ? 'trash' : option?.icon || 'file'} size={17} /></span>
                           <span className="library-row-copy"><b>{item.title}</b><small>{libraryMode === 'trash' ? `${item.course} / ${item.topic}${item.deletedAt ? ` · ${formatLibraryDate(item.deletedAt)} 删除` : ''}` : `${item.course} / ${item.topic} · ${option?.label || '学习资料'}${item.version > 1 ? ` · v${item.version}` : ''}${mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''}`}</small></span>
                             {libraryMode !== 'trash' && item.favorite && <span className="library-row-star" aria-label="已收藏"><Icon name="star" size={14} /></span>}

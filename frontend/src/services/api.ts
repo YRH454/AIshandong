@@ -1,3 +1,5 @@
+import type { DynamicExplanationData, DynamicExplanationScene } from '../components/dynamicExplanation'
+
 // RHYME — API 封装（后端精简版）
 export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api/v1'
 
@@ -34,7 +36,7 @@ export type GenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed'
 
 export interface GenerationJob<T = Record<string, never>> {
   job_id: string
-  kind: 'notes' | 'map' | 'practice'
+  kind: 'notes' | 'map' | 'practice' | 'interactive'
   status: GenerationJobStatus
   created_at: string
   started_at?: string
@@ -154,6 +156,19 @@ export async function generateKnowledgeMap(userId: number, sessionId: number, qa
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '知识图解生成失败')
+  }
+  return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> }>
+}
+
+export async function generateDynamicExplanation(userId: number, sessionId: number, qaId: string) {
+  const res = await fetch(`${API_BASE}/artifacts/generate-dynamic-explanation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, async_mode: true }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '动态讲解生成失败')
   }
   return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> }>
 }
@@ -401,6 +416,42 @@ export interface LibraryTopicReview {
   }>
 }
 
+export type TopicNextAction =
+  | 'open_material'
+  | 'continue_map'
+  | 'continue_explanation'
+  | 'review_map'
+  | 'start_practice'
+  | 'practice_weak_points'
+  | 'review_material'
+  | 'complete'
+
+export interface LibraryTopicLearningState {
+  course_name: string
+  topic_name: string
+  mastery: number
+  materials: {
+    total: number
+    opened: number
+    completed: number
+  }
+  map_progress: {
+    total: number
+    mastered: number
+    review: number
+    untouched: number
+  }
+  practice: {
+    attempt_count: number
+    recent_score: number | null
+    recent_completed_at: string
+    weak_points: string[]
+  }
+  active_artifact_id: number | null
+  last_activity: { type: string; at: string }
+  next_step: { action: TopicNextAction; artifact_id: number | null; detail: string }
+}
+
 export async function getLearningArtifacts(
   userId: number,
   options: { sessionId?: number; status?: 'all' | 'draft' | 'saved' | 'deleted' } = {},
@@ -417,6 +468,38 @@ export async function getLibraryTopicReviews(userId: number) {
   const res = await fetch(`${API_BASE}/artifacts/topics/reviews?${params}`)
   if (!res.ok) throw new Error('获取主题复习状态失败')
   return res.json() as Promise<{ reviews: LibraryTopicReview[] }>
+}
+
+export async function getLibraryTopicLearningState(userId: number, courseName: string, topicName: string) {
+  const params = new URLSearchParams({
+    user_id: String(userId),
+    course_name: courseName,
+    topic_name: topicName,
+  })
+  const res = await fetch(`${API_BASE}/artifacts/topics/state?${params}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '获取主题学习状态失败')
+  }
+  return res.json() as Promise<LibraryTopicLearningState>
+}
+
+export async function recordLearningActivity(
+  artifactId: number,
+  userId: number,
+  activityType: string,
+  activityData: Record<string, unknown> = {},
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/activity`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, activity_type: activityType, activity_data: activityData }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '记录学习状态失败')
+  }
+  return res.json() as Promise<{ activity: { artifact_id: number; activity_type: string } }>
 }
 
 export async function generateLearningDocument(
@@ -534,6 +617,41 @@ export async function updateKnowledgeMap(
     throw new Error(body.detail || '保存知识图解编辑失败')
   }
   return res.json() as Promise<{ artifact: LearningArtifactRecord; map_progress: KnowledgeMapProgress | null }>
+}
+
+export async function updateInteractivePresentation(
+  artifactId: number,
+  userId: number,
+  presentation: DynamicExplanationData,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, presentation }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '保存互动演示编辑失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord; saved_as_version: boolean }>
+}
+
+export async function regenerateInteractivePresentationScene(
+  artifactId: number,
+  userId: number,
+  presentation: DynamicExplanationData,
+  sceneId: string,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/regenerate-scene`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, presentation, scene_id: sceneId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || 'AI 重做这一页失败')
+  }
+  return res.json() as Promise<{ scene: DynamicExplanationScene }>
 }
 
 export async function collaborateKnowledgeMap(artifactId: number, userId: number) {

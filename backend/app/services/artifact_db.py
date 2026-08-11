@@ -450,6 +450,75 @@ def update_knowledge_map_content(artifact_id: int, user_id: int, content: str) -
     return get_artifact(artifact_id, user_id)
 
 
+def update_interactive_presentation_content(
+    artifact_id: int,
+    user_id: int,
+    content: str,
+    title: str,
+    summary: str,
+    highlights: list[str],
+) -> dict | None:
+    """Save an interactive presentation without overwriting an archived version.
+
+    Drafts are still part of the active conversation and can be updated in place. Once an
+    artifact lives in the library, an edit becomes the next version of that same artifact.
+    """
+    existing = get_artifact(artifact_id, user_id)
+    if not existing or existing.get("kind") != "interactive" or existing.get("status") == "deleted":
+        return None
+
+    if existing.get("status") == "draft":
+        execute(
+            "UPDATE learning_artifacts SET title = %s, summary = %s, highlights = %s, content = %s, "
+            "updated_at = NOW() WHERE id = %s AND user_id = %s AND status = 'draft'",
+            (title, summary, json.dumps(highlights, ensure_ascii=False), content, artifact_id, user_id),
+        )
+        return get_artifact(artifact_id, user_id)
+
+    if existing.get("status") != "saved":
+        return None
+
+    group_id = _version_group_id(existing)
+    latest_rows = query(
+        _ARTIFACT_SELECT
+        + "WHERE a.user_id = %s AND COALESCE(a.version_group_id, a.id) = %s "
+        "AND a.status = 'saved' ORDER BY a.version DESC, a.updated_at DESC LIMIT 1",
+        (user_id, group_id),
+    )
+    if not latest_rows:
+        return None
+    latest = _row(latest_rows[0])
+    new_id = insert("learning_artifacts", {
+        "user_id": existing["user_id"],
+        "session_id": existing["session_id"],
+        "qa_id": existing["qa_id"],
+        "kind": existing["kind"],
+        "title": title,
+        "summary": summary,
+        "highlights": json.dumps(highlights, ensure_ascii=False),
+        "content": content,
+        "source_prompt": existing["source_prompt"],
+        "purpose": existing["purpose"],
+        "depth": existing["depth"],
+        "style": existing["style"],
+        "course_id": existing["course_id"],
+        "topic_id": existing["topic_id"],
+        "recommended_course_name": existing["recommended_course_name"],
+        "recommended_topic_name": existing["recommended_topic_name"],
+        "classification_source": existing["classification_source"],
+        "classification_confidence": existing["classification_confidence"],
+        "classification_overridden": existing["classification_overridden"],
+        "classification_keywords": json.dumps(existing["classification_keywords"], ensure_ascii=False),
+        "source_map_artifact_id": existing.get("source_map_artifact_id"),
+        "folder": "",
+        "status": "saved",
+        "version_group_id": group_id,
+        "version": latest["version"] + 1,
+        "is_favorite": latest["is_favorite"],
+    })
+    return get_artifact(new_id, user_id)
+
+
 def set_artifact_favorite(artifact_id: int, user_id: int, favorite: bool) -> dict | None:
     existing = get_artifact(artifact_id, user_id)
     if not existing or existing.get("status") != "saved":

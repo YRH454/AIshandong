@@ -112,6 +112,7 @@ def submit_attempt(practice_set_id: int, user_id: int, answers: dict[str, str]) 
     })
     topic_mastery = refresh_topic_mastery_for_artifact(practice_set["artifact_id"], user_id)
     return {
+        "artifact_id": practice_set["artifact_id"],
         "attempt": {
             "id": attempt_id,
             "practice_set_id": practice_set_id,

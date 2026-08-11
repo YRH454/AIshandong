@@ -11,6 +11,11 @@ from app.agents.artifact_agent import generate_learning_document
 from app.agents.map_agent import generate_knowledge_map, normalize_edited_knowledge_map
 from app.agents.map_collaboration_agent import collaborate_on_knowledge_map
 from app.agents.practice_agent import generate_practice_set
+from app.agents.dynamic_explanation_agent import (
+    generate_dynamic_explanation,
+    normalize_dynamic_explanation,
+    regenerate_dynamic_explanation_scene,
+)
 from app.agents.library_agent import recommend_library_path
 from app.database import query
 from app.services.generation_jobs import get_generation_job, submit_generation_job
@@ -27,6 +32,7 @@ from app.services.artifact_db import (
     set_artifact_favorite,
     trash_artifact,
     update_knowledge_map_content,
+    update_interactive_presentation_content,
     update_artifact_metadata,
 )
 from app.services.practice_db import (
@@ -45,6 +51,7 @@ from app.services.map_db import (
     prune_map_progress,
     set_map_node_progress,
 )
+from app.services.learning_progress_db import get_topic_learning_state, record_learning_activity
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/artifacts", tags=["artifacts"])
@@ -86,6 +93,13 @@ class GenerateKnowledgeMapRequest(BaseModel):
     async_mode: bool = False
 
 
+class GenerateDynamicExplanationRequest(BaseModel):
+    user_id: int
+    session_id: int
+    qa_id: str
+    async_mode: bool = False
+
+
 class CreateImageAnalysisArtifactRequest(BaseModel):
     user_id: int
     session_id: int
@@ -105,6 +119,15 @@ class UpdateMapNodeProgressRequest(BaseModel):
 class UpdateKnowledgeMapRequest(BaseModel):
     user_id: int
     map: dict
+
+
+class UpdateInteractivePresentationRequest(BaseModel):
+    user_id: int
+    presentation: dict
+
+
+class RegenerateInteractiveSceneRequest(UpdateInteractivePresentationRequest):
+    scene_id: str = Field(min_length=1, max_length=80)
 
 
 class CollaborateKnowledgeMapRequest(BaseModel):
@@ -133,6 +156,12 @@ class ArtifactActionRequest(BaseModel):
     user_id: int
 
 
+class RecordLearningActivityRequest(BaseModel):
+    user_id: int
+    activity_type: str = Field(min_length=1, max_length=48, pattern="^[A-Za-z0-9_]+$")
+    activity_data: dict = Field(default_factory=dict)
+
+
 class DuplicateArtifactRequest(BaseModel):
     user_id: int
     artifact_id: int
@@ -151,6 +180,14 @@ def get_artifacts(user_id: int, session_id: int | None = None, status: str = "al
 @router.get("/topics/reviews")
 def get_topic_reviews(user_id: int):
     return {"reviews": list_topic_reviews(user_id)}
+
+
+@router.get("/topics/state")
+def get_topic_state(user_id: int, course_name: str, topic_name: str):
+    state = get_topic_learning_state(user_id, course_name.strip(), topic_name.strip())
+    if not state:
+        raise HTTPException(status_code=404, detail="主题不存在或还没有保存的资料")
+    return state
 
 
 @router.get("/generation-jobs/{job_id}")
@@ -174,7 +211,26 @@ def update_knowledge_map_node_progress(artifact_id: int, node_id: str, req: Upda
     progress = set_map_node_progress(artifact_id, req.user_id, node_id, req.status)
     if progress is None:
         raise HTTPException(status_code=404, detail="知识图解节点不存在或已失效")
+    record_learning_activity(
+        req.user_id,
+        artifact_id,
+        f"map_node_{req.status}",
+        {"node_id": node_id, "status": req.status},
+    )
     return progress
+
+
+@router.post("/{artifact_id}/activity")
+def record_artifact_activity(artifact_id: int, req: RecordLearningActivityRequest):
+    activity = record_learning_activity(
+        req.user_id,
+        artifact_id,
+        req.activity_type,
+        req.activity_data,
+    )
+    if not activity:
+        raise HTTPException(status_code=404, detail="资料不存在、尚未保存或已删除")
+    return {"activity": activity}
 
 
 @router.patch("/{artifact_id}/knowledge-map")
@@ -192,6 +248,47 @@ def update_knowledge_map(artifact_id: int, req: UpdateKnowledgeMapRequest):
         raise HTTPException(status_code=404, detail="知识图解不存在或已被删除")
     progress = prune_map_progress(artifact_id, req.user_id)
     return {"artifact": artifact, "map_progress": progress}
+
+
+@router.patch("/{artifact_id}/interactive-presentation")
+def update_interactive_presentation(artifact_id: int, req: UpdateInteractivePresentationRequest):
+    try:
+        presentation = normalize_dynamic_explanation(req.presentation)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    artifact = update_interactive_presentation_content(
+        artifact_id,
+        req.user_id,
+        json.dumps(presentation, ensure_ascii=False),
+        presentation["title"],
+        presentation["summary"],
+        presentation["highlights"],
+    )
+    if not artifact:
+        raise HTTPException(status_code=404, detail="互动演示不存在或已删除")
+    if artifact.get("status") == "saved":
+        record_learning_activity(req.user_id, artifact["id"], "presentation_edited")
+    return {"artifact": artifact, "saved_as_version": artifact["id"] != artifact_id}
+
+
+@router.post("/{artifact_id}/interactive-presentation/regenerate-scene")
+def regenerate_interactive_presentation_scene(artifact_id: int, req: RegenerateInteractiveSceneRequest):
+    artifact = get_artifact(artifact_id, req.user_id)
+    if not artifact or artifact.get("kind") != "interactive" or artifact.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="互动演示不存在或已删除")
+    try:
+        presentation = normalize_dynamic_explanation(req.presentation)
+        scene = regenerate_dynamic_explanation_scene(
+            presentation,
+            req.scene_id,
+            str(artifact.get("source_prompt") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("互动演示单页重做失败")
+        raise HTTPException(status_code=502, detail="AI 暂时无法重做这一页，请稍后再试") from exc
+    return {"scene": scene}
 
 
 @router.post("/{artifact_id}/knowledge-map/collaborate")
@@ -487,6 +584,114 @@ def generate_knowledge_map_artifact(req: GenerateKnowledgeMapRequest):
         raise HTTPException(status_code=502, detail="知识图解生成失败，请稍后重试") from exc
 
 
+@router.post("/generate-dynamic-explanation")
+def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest):
+    """Create a scene-based explanation that the browser can play without video generation."""
+    if req.async_mode:
+        sync_req = GenerateDynamicExplanationRequest(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            qa_id=req.qa_id,
+        )
+        return {
+            "job": submit_generation_job(
+                "interactive",
+                req.user_id,
+                lambda: generate_dynamic_explanation_artifact(sync_req),
+            )
+        }
+
+    request_started = time.perf_counter()
+    rows = query(
+        "SELECT messages, learning_state FROM chat_sessions "
+        "WHERE id = %s AND user_id = %s AND session_type = 'tutoring'",
+        (req.session_id, req.user_id),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有找到对应的学习对话")
+
+    messages = _json(rows[0].get("messages"), [])
+    learning_state = _json(rows[0].get("learning_state"), {})
+    assistant_index = next(
+        (index for index, message in enumerate(messages)
+         if message.get("role") == "assistant" and message.get("id") == req.qa_id),
+        None,
+    )
+    if assistant_index is None:
+        raise HTTPException(status_code=404, detail="没有找到这条回答，请刷新后重试")
+    assistant_message = messages[assistant_index]
+    user_message = next(
+        (message for message in reversed(messages[:assistant_index]) if message.get("role") == "user"),
+        None,
+    )
+    if not user_message:
+        raise HTTPException(status_code=400, detail="这条回答缺少原始问题，暂时无法生成动态讲解")
+
+    try:
+        generation_started = time.perf_counter()
+        generated = generate_dynamic_explanation(
+            question=str(user_message.get("content", "")),
+            answer=str(assistant_message.get("content", "")),
+            recent_context=messages[max(0, assistant_index - 4):assistant_index + 1],
+            learning_state=learning_state,
+        )
+        logger.info(
+            "[artifact-timing] kind=interactive sid=%s stage=generation seconds=%.3f",
+            req.session_id,
+            time.perf_counter() - generation_started,
+        )
+        classification_started = time.perf_counter()
+        recommendation = recommend_library_path(
+            user_id=req.user_id,
+            learning_state=learning_state,
+            title=generated["title"],
+            summary=generated["summary"],
+            source_prompt=str(user_message.get("content", "")),
+            highlights=generated["highlights"],
+        )
+        logger.info(
+            "[artifact-timing] kind=interactive sid=%s stage=classification seconds=%.3f",
+            req.session_id,
+            time.perf_counter() - classification_started,
+        )
+        persist_started = time.perf_counter()
+        artifact = create_artifact({
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "qa_id": req.qa_id,
+            "kind": "interactive",
+            "title": generated["title"],
+            "summary": generated["summary"],
+            "highlights": generated["highlights"],
+            "content": json.dumps(generated["explanation"], ensure_ascii=False),
+            "source_prompt": str(user_message.get("content", ""))[:5000],
+            "purpose": "review",
+            "depth": "standard",
+            "style": "plain",
+            "course_name": recommendation["course_name"],
+            "topic_name": recommendation["topic_name"],
+            "recommended_course_name": recommendation["course_name"],
+            "recommended_topic_name": recommendation["topic_name"],
+            "classification_source": recommendation["source"],
+            "classification_confidence": recommendation["confidence"],
+            "classification_keywords": recommendation["keywords"],
+            "keywords": recommendation["keywords"],
+            "status": "draft",
+        })
+        logger.info(
+            "[artifact-timing] kind=interactive sid=%s stage=persist seconds=%.3f total_seconds=%.3f",
+            req.session_id,
+            time.perf_counter() - persist_started,
+            time.perf_counter() - request_started,
+        )
+        return {"artifact": artifact}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("动态讲解生成失败")
+        raise HTTPException(status_code=502, detail="动态讲解生成失败，请稍后重试") from exc
+
+
 @router.post("/generate-practice")
 def generate_practice(req: GeneratePracticeRequest):
     if req.async_mode:
@@ -616,6 +821,15 @@ def submit_practice_attempt(practice_set_id: int, req: SubmitPracticeAttemptRequ
     result = submit_attempt(practice_set_id, req.user_id, req.answers)
     if not result:
         raise HTTPException(status_code=404, detail="练习集不存在或已无权访问")
+    record_learning_activity(
+        req.user_id,
+        result["artifact_id"],
+        "practice_submitted",
+        {
+            "score": result["attempt"].get("score"),
+            "weak_points": result["attempt"].get("weak_points", []),
+        },
+    )
     map_context = get_practice_map_context(practice_set_id, req.user_id)
     if map_context:
         result["map_progress"] = apply_practice_results(
@@ -657,6 +871,7 @@ def archive_artifact(artifact_id: int, req: SaveArtifactRequest):
     topic_mastery = refresh_topic_mastery_for_artifact(artifact["id"], req.user_id)
     if topic_mastery is not None:
         artifact["topic_mastery"] = topic_mastery
+    record_learning_activity(req.user_id, artifact["id"], "saved")
     return {"artifact": artifact, "topic_mastery": topic_mastery}
 
 

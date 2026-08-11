@@ -50,11 +50,13 @@ def startup():
     from app.services.artifact_db import init_tables as init_artifact_tables
     from app.services.map_db import init_tables as init_map_tables
     from app.services.practice_db import init_tables as init_practice_tables
+    from app.services.learning_progress_db import init_tables as init_learning_progress_tables
     init_core_tables()
     init_tables()
     init_artifact_tables()
     init_map_tables()
     init_practice_tables()
+    init_learning_progress_tables()
     # 预热 RAG 知识库索引（后台线程，不阻塞启动；失败静默回退关键词检索）
     def _prewarm_rag():
         try:

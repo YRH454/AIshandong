@@ -100,6 +100,7 @@ def init_tables():
     _ensure_column("learning_artifacts", "version_group_id", "INT")
     _ensure_column("learning_artifacts", "version", "INT NOT NULL DEFAULT 1")
     _ensure_column("learning_artifacts", "is_favorite", "TINYINT NOT NULL DEFAULT 0")
+    _ensure_column("learning_artifacts", "source_map_artifact_id", "INT")
     _ensure_column("learning_artifacts", "deleted_at", "DATETIME")
     execute(
         "UPDATE learning_artifacts SET version_group_id = id "
@@ -176,7 +177,7 @@ def create_artifact(data: dict) -> dict:
 
 
 _ARTIFACT_SELECT = (
-    "SELECT a.*, c.name AS course_name, t.name AS topic_name "
+    "SELECT a.*, c.name AS course_name, t.name AS topic_name, t.mastery AS topic_mastery "
     "FROM learning_artifacts a "
     "LEFT JOIN library_courses c ON c.id = a.course_id "
     "LEFT JOIN library_topics t ON t.id = a.topic_id "
@@ -253,18 +254,23 @@ def save_artifact(
     )
     if strategy == "update" and duplicate:
         execute(
+            "UPDATE practice_sets SET artifact_id = %s WHERE artifact_id = %s AND user_id = %s",
+            (duplicate["id"], artifact_id, user_id),
+        )
+        execute(
             "UPDATE learning_artifacts SET title = %s, summary = %s, highlights = %s, content = %s, "
             "source_prompt = %s, purpose = %s, depth = %s, style = %s, course_id = %s, topic_id = %s, "
             "recommended_course_name = %s, recommended_topic_name = %s, classification_source = %s, "
             "classification_confidence = %s, classification_overridden = %s, classification_keywords = %s, "
-            "updated_at = NOW() WHERE id = %s AND user_id = %s AND status = 'saved'",
+            "source_map_artifact_id = %s, updated_at = NOW() WHERE id = %s AND user_id = %s AND status = 'saved'",
             (
                 title, existing["summary"], json.dumps(existing["highlights"], ensure_ascii=False),
                 existing["content"], existing["source_prompt"], existing["purpose"], existing["depth"],
                 existing["style"], course_id, topic_id, existing["recommended_course_name"],
                 existing["recommended_topic_name"], existing["classification_source"],
                 existing["classification_confidence"], overridden,
-                json.dumps(existing["classification_keywords"], ensure_ascii=False), duplicate["id"], user_id,
+                json.dumps(existing["classification_keywords"], ensure_ascii=False), existing.get("source_map_artifact_id"),
+                duplicate["id"], user_id,
             ),
         )
         execute(
@@ -387,6 +393,7 @@ def restore_artifact_version(artifact_id: int, user_id: int) -> dict | None:
         "classification_confidence": selected["classification_confidence"],
         "classification_overridden": selected["classification_overridden"],
         "classification_keywords": json.dumps(selected["classification_keywords"], ensure_ascii=False),
+        "source_map_artifact_id": selected.get("source_map_artifact_id"),
         "folder": "",
         "status": "saved",
         "version_group_id": group_id,
@@ -428,6 +435,18 @@ def update_artifact_metadata(
     )
     if path_changed:
         _record_classification_feedback(existing, course_name, topic_name)
+    return get_artifact(artifact_id, user_id)
+
+
+def update_knowledge_map_content(artifact_id: int, user_id: int, content: str) -> dict | None:
+    """Persist learner edits for either a draft or an archived knowledge map."""
+    existing = get_artifact(artifact_id, user_id)
+    if not existing or existing.get("kind") != "map" or existing.get("status") == "deleted":
+        return None
+    execute(
+        "UPDATE learning_artifacts SET content = %s, updated_at = NOW() WHERE id = %s AND user_id = %s",
+        (content, artifact_id, user_id),
+    )
     return get_artifact(artifact_id, user_id)
 
 
@@ -575,9 +594,11 @@ def _row(row: dict) -> dict:
         "classification_confidence": float(row.get("classification_confidence") or 0),
         "classification_overridden": bool(row.get("classification_overridden", 0)),
         "classification_keywords": _json(row.get("classification_keywords"), []),
+        "source_map_artifact_id": row.get("source_map_artifact_id"),
         "status": row.get("status", "draft"),
         "course_id": row.get("course_id"),
         "topic_id": row.get("topic_id"),
+        "topic_mastery": int(row.get("topic_mastery") or 0),
         "version_group_id": int(row.get("version_group_id") or row["id"]),
         "version": int(row.get("version") or 1),
         "is_favorite": bool(row.get("is_favorite", 0)),

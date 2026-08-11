@@ -185,6 +185,7 @@ def init_core_tables():
             title VARCHAR(160) DEFAULT '',
             messages TEXT NOT NULL,
             learning_state TEXT NOT NULL DEFAULT '{}',
+            is_pinned TINYINT DEFAULT 0,
             is_active TINYINT DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -192,6 +193,7 @@ def init_core_tables():
     """)
     _ensure_column("chat_sessions", "title", "VARCHAR(160) DEFAULT ''")
     _ensure_column("chat_sessions", "learning_state", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column("chat_sessions", "is_pinned", "TINYINT DEFAULT 0")
 
 
 def _ensure_column(table: str, column: str, definition: str):

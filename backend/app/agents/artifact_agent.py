@@ -79,7 +79,12 @@ def generate_learning_document(
             ),
         },
     ]
-    response = chat_qwen(messages, temperature=0.35, max_tokens=5000, json_mode=True)
+    response = chat_qwen(
+        messages,
+        temperature=0.35,
+        max_tokens={"concise": 1800, "standard": 3000, "deep": 4600}.get(depth, 3000),
+        json_mode=True,
+    )
     raw = response.choices[0].message.content or ""
     result = _parse_json(raw)
     content = str(result.get("content", "")).strip()

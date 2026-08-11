@@ -12,6 +12,7 @@ RAG 知识库服务 — ChromaDB + BGE 中文嵌入（参考 A3LearnMake + AptAd
 """
 import os
 import logging
+from threading import RLock
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -37,48 +38,57 @@ class RAGService:
         self.persist_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "chroma")
         self.kb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "knowledge_base")
         self._ready = False
+        # Startup prewarming and a first request can overlap. Serialise model / index
+        # initialization so they never both load BGE or Chroma at the same time.
+        self._initialization_lock = RLock()
 
     # ── 懒加载 ──
 
     def _ensure_embedding(self):
         if self._embedding_model is not None:
             return
-        try:
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-            self._embedding_model = HuggingFaceEmbeddings(
-                model_name="BAAI/bge-small-zh-v1.5",
-                cache_folder="./data/embeddings",
-                model_kwargs={"device": "cpu"},
-            )
-            logger.info("BGE 嵌入模型加载完成")
-        except Exception as e:
-            logger.warning(f"BGE 嵌入模型加载失败: {e}，回退到简单 TF-IDF 检索")
-            self._embedding_model = None
+        with self._initialization_lock:
+            if self._embedding_model is not None:
+                return
+            try:
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+                self._embedding_model = HuggingFaceEmbeddings(
+                    model_name="BAAI/bge-small-zh-v1.5",
+                    cache_folder="./data/embeddings",
+                    model_kwargs={"device": "cpu"},
+                )
+                logger.info("BGE 嵌入模型加载完成")
+            except Exception as e:
+                logger.warning(f"BGE 嵌入模型加载失败: {e}，回退到简单 TF-IDF 检索")
+                self._embedding_model = None
 
     def _ensure_vectorstore(self):
         if self._vectorstore is not None and self._ready:
             return
-        os.makedirs(self.persist_dir, exist_ok=True)
-        self._ensure_embedding()
+        with self._initialization_lock:
+            if self._vectorstore is not None and self._ready:
+                return
+            os.makedirs(self.persist_dir, exist_ok=True)
+            self._ensure_embedding()
 
-        if self._embedding_model is None:
-            self._ready = False
-            return
+            if self._embedding_model is None:
+                self._ready = False
+                return
 
-        try:
-            from langchain_community.vectorstores import Chroma
-            if os.path.exists(os.path.join(self.persist_dir, "chroma.sqlite3")):
-                self._vectorstore = Chroma(
-                    persist_directory=self.persist_dir,
-                    embedding_function=self._embedding_model,
-                )
-                logger.info(f"ChromaDB 已加载，现有 {self._vectorstore._collection.count()} 条")
-            else:
-                self._build_index()
-            self._ready = True
-        except Exception as e:
-            logger.warning(f"ChromaDB 初始化失败: {e}")
-            self._ready = False
+            try:
+                from langchain_community.vectorstores import Chroma
+                if os.path.exists(os.path.join(self.persist_dir, "chroma.sqlite3")):
+                    self._vectorstore = Chroma(
+                        persist_directory=self.persist_dir,
+                        embedding_function=self._embedding_model,
+                    )
+                    logger.info(f"ChromaDB 已加载，现有 {self._vectorstore._collection.count()} 条")
+                else:
+                    self._build_index()
+                self._ready = True
+            except Exception as e:
+                logger.warning(f"ChromaDB 初始化失败: {e}")
+                self._ready = False
 
     # ── 索引构建 ──
 
@@ -208,8 +218,12 @@ class RAGService:
 
     @property
     def is_ready(self) -> bool:
-        self._ensure_vectorstore()
-        return self._ready
+        """Report readiness without triggering cold model/index initialization.
+
+        Chat uses this as a non-blocking gate while startup performs the costly
+        warm-up in the background. Once ready, normal semantic retrieval resumes.
+        """
+        return self._ready and self._vectorstore is not None
 
     @property
     def chunk_count(self) -> int:

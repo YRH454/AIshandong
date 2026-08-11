@@ -21,6 +21,28 @@ export async function loginApi(email: string, password: string) {
 }
 
 // ---- 聊天（流式）----
+export interface ImageStudyAnalysis {
+  title: string
+  summary: string
+  recognized_text: string
+  knowledge_points: string[]
+  course_name: string
+  topic_name: string
+}
+
+export type GenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed'
+
+export interface GenerationJob<T = Record<string, never>> {
+  job_id: string
+  kind: 'notes' | 'map' | 'practice'
+  status: GenerationJobStatus
+  created_at: string
+  started_at?: string
+  finished_at?: string
+  result?: T
+  error?: string
+}
+
 export interface TutorMessage {
   id?: string
   role: 'user' | 'assistant'
@@ -28,6 +50,7 @@ export interface TutorMessage {
   mode?: string
   timestamp?: number
   images?: string[]
+  image_analysis?: ImageStudyAnalysis
 }
 
 export interface LearningState {
@@ -45,6 +68,7 @@ export interface TutorSessionSummary {
   title: string
   preview: string
   message_count: number
+  is_pinned: boolean
   learning_state: LearningState
   created_at: string
   updated_at: string
@@ -57,7 +81,8 @@ export interface TutorHistory {
 }
 
 export type TutorStreamEvent =
-  | { type: 'start'; qa_id: string; mode: string }
+  | { type: 'start'; qa_id: string; mode: string; phase?: 'image_analysis' | 'retrieving' | 'answering'; image_analysis?: ImageStudyAnalysis }
+  | { type: 'status'; phase: 'image_analysis' | 'retrieving' | 'answering'; image_analysis?: ImageStudyAnalysis; image_error?: boolean }
   | { type: 'chunk'; content: string }
   | { type: 'done'; qa_id: string; session_id: number; learning_state: LearningState }
 
@@ -73,10 +98,85 @@ export async function newTutorSession(userId: number) {
   return res.json()
 }
 
+export async function updateTutorSession(
+  userId: number,
+  sessionId: number,
+  updates: { title?: string; is_pinned?: boolean },
+) {
+  const res = await fetch(`${API_BASE}/tutor/sessions/${sessionId}?user_id=${userId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '更新对话失败')
+  }
+  return res.json() as Promise<{ session_id: number; status: 'updated' }>
+}
+
+export async function deleteTutorSession(userId: number, sessionId: number) {
+  const res = await fetch(`${API_BASE}/tutor/sessions/${sessionId}?user_id=${userId}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '删除对话失败')
+  }
+  return res.json() as Promise<{ session_id: number; status: 'deleted' }>
+}
+
 export async function getTutorHistory(userId: number, sessionId: number) {
   const res = await fetch(`${API_BASE}/tutor/history?user_id=${userId}&session_id=${sessionId}`)
   if (!res.ok) throw new Error('获取历史失败')
   return res.json()
+}
+
+export async function createImageAnalysisArtifact(userId: number, sessionId: number, qaId: string) {
+  const res = await fetch(`${API_BASE}/artifacts/create-image-analysis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '保存图片解析失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+}
+
+export async function generateKnowledgeMap(userId: number, sessionId: number, qaId: string) {
+  const res = await fetch(`${API_BASE}/artifacts/generate-knowledge-map`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, async_mode: true }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '知识图解生成失败')
+  }
+  return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> }>
+}
+
+export async function getGenerationJob<T>(userId: number, jobId: string) {
+  const res = await fetch(`${API_BASE}/artifacts/generation-jobs/${jobId}?user_id=${userId}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '生成任务暂时无法读取')
+  }
+  return res.json() as Promise<GenerationJob<T>>
+}
+
+export async function waitForGenerationJob<T>(userId: number, job: GenerationJob<T>) {
+  let current = job
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (current.status === 'queued' || current.status === 'running') {
+    if (Date.now() > deadline) throw new Error('生成时间过长，请稍后在资料库中查看结果')
+    await new Promise<void>(resolve => window.setTimeout(resolve, 850))
+    current = await getGenerationJob<T>(userId, current.job_id)
+  }
+  if (current.status === 'failed' || !current.result) throw new Error(current.error || '生成没有完成，请稍后重试')
+  return current.result
 }
 
 // 流式聊天：返回 fetch Response 供 ReadableStream 消费
@@ -189,7 +289,7 @@ export interface LearningArtifactRecord {
   user_id: number
   session_id: number
   qa_id: string
-  kind: 'notes'
+  kind: string
   title: string
   summary: string
   highlights: string[]
@@ -202,19 +302,103 @@ export interface LearningArtifactRecord {
   topic_name: string
   recommended_course_name: string
   recommended_topic_name: string
-  classification_source: 'memory' | 'learning_state' | 'library' | 'llm' | 'fallback'
+  classification_source: 'memory' | 'learning_state' | 'library' | 'llm' | 'image_analysis' | 'fallback'
   classification_confidence: number
   classification_overridden: boolean
   classification_keywords: string[]
   status: 'draft' | 'saved' | 'deleted'
   course_id?: number
   topic_id?: number
+  topic_mastery?: number
   version_group_id: number
   version: number
   is_favorite: boolean
+  source_map_artifact_id?: number | null
   deleted_at: string
   created_at: string
   updated_at: string
+}
+
+export type KnowledgeMapNodeStatus = 'new' | 'review' | 'mastered'
+
+export interface KnowledgeMapProgress {
+  progress: Record<string, Exclude<KnowledgeMapNodeStatus, 'new'>>
+  summary: {
+    total: number
+    mastered: number
+    review: number
+    untouched: number
+  }
+}
+
+export type KnowledgeMapCollaborationSuggestion =
+  | { kind: 'edge'; from: string; to: string; label: string; reason: string }
+  | { kind: 'node_note'; node_id: string; field: 'detail' | 'example' | 'mistake'; value: string; reason: string }
+  | { kind: 'new_node'; label: string; detail: string; from: string; role: 'branch' | 'detail'; label_edge: string; reason: string }
+  | { kind: 'review'; node_id: string; reason: string }
+
+export interface KnowledgeMapCollaboration {
+  summary: string
+  suggestions: KnowledgeMapCollaborationSuggestion[]
+}
+
+export type PracticeQuestionType = 'single_choice' | 'true_false' | 'fill_blank'
+
+export interface PracticeQuestion {
+  id: string
+  type: PracticeQuestionType
+  prompt: string
+  options: string[]
+  knowledge_point: string
+}
+
+export interface PracticeSetRecord {
+  id: number
+  artifact_id: number
+  question_count: number
+  knowledge_points: string[]
+  questions: PracticeQuestion[]
+  created_at: string
+  updated_at: string
+}
+
+export interface PracticeAttemptSummary {
+  id: number
+  correct_count: number
+  total_count: number
+  score: number
+  weak_points: string[]
+  completed_at: string
+}
+
+export interface PracticeAttemptResult extends PracticeAttemptSummary {
+  practice_set_id: number
+  results: Array<{
+    question_id: string
+    answer: string
+    correct: boolean
+    correct_answer: string
+    explanation: string
+    knowledge_point: string
+  }>
+}
+
+export interface LibraryTopicReview {
+  course_name: string
+  topic_name: string
+  mastery: number
+  recent_score: number | null
+  recent_completed_at: string
+  attempt_count: number
+  weak_points: string[]
+  wrong_questions?: Array<{
+    prompt: string
+    knowledge_point: string
+    answer: string
+    correct_answer: string
+    explanation: string
+    completed_at: string
+  }>
 }
 
 export async function getLearningArtifacts(
@@ -226,6 +410,13 @@ export async function getLearningArtifacts(
   const res = await fetch(`${API_BASE}/artifacts?${params}`)
   if (!res.ok) throw new Error('获取学习资料失败')
   return res.json() as Promise<{ artifacts: LearningArtifactRecord[] }>
+}
+
+export async function getLibraryTopicReviews(userId: number) {
+  const params = new URLSearchParams({ user_id: String(userId) })
+  const res = await fetch(`${API_BASE}/artifacts/topics/reviews?${params}`)
+  if (!res.ok) throw new Error('获取主题复习状态失败')
+  return res.json() as Promise<{ reviews: LibraryTopicReview[] }>
 }
 
 export async function generateLearningDocument(
@@ -241,13 +432,121 @@ export async function generateLearningDocument(
   const res = await fetch(`${API_BASE}/artifacts/generate-document`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, ...settings }),
+    body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, ...settings, async_mode: true }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '学习文档生成失败')
   }
-  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+  return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> }>
+}
+
+export async function generatePracticeSet(
+  userId: number,
+  sessionId: number,
+  qaId: string,
+  focusPoints: string[] = [],
+  sourceMapArtifactId?: number,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/generate-practice`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      session_id: sessionId,
+      qa_id: qaId,
+      question_count: 5,
+      focus_points: focusPoints,
+      source_map_artifact_id: sourceMapArtifactId,
+      async_mode: true,
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '练习测验生成失败')
+  }
+  return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord; practice: PracticeSetRecord }> }>
+}
+
+export async function getPracticeForArtifact(artifactId: number, userId: number) {
+  const params = new URLSearchParams({ user_id: String(userId) })
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/practice?${params}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '获取练习集失败')
+  }
+  return res.json() as Promise<{ practice: PracticeSetRecord; attempts: PracticeAttemptSummary[] }>
+}
+
+export async function submitPracticeAttempt(practiceSetId: number, userId: number, answers: Record<string, string>) {
+  const res = await fetch(`${API_BASE}/artifacts/practice-sets/${practiceSetId}/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, answers }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '提交练习失败')
+  }
+  return res.json() as Promise<{ attempt: PracticeAttemptResult; topic_mastery: number | null; map_progress?: KnowledgeMapProgress | null }>
+}
+
+export async function getKnowledgeMapProgress(artifactId: number, userId: number) {
+  const params = new URLSearchParams({ user_id: String(userId) })
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/map-progress?${params}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '获取知识图解进度失败')
+  }
+  return res.json() as Promise<KnowledgeMapProgress>
+}
+
+export async function updateKnowledgeMapNodeProgress(
+  artifactId: number,
+  userId: number,
+  nodeId: string,
+  status: KnowledgeMapNodeStatus,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/map-progress/${encodeURIComponent(nodeId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, status }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '更新知识图解进度失败')
+  }
+  return res.json() as Promise<KnowledgeMapProgress>
+}
+
+export async function updateKnowledgeMap(
+  artifactId: number,
+  userId: number,
+  map: object,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, map }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '保存知识图解编辑失败')
+  }
+  return res.json() as Promise<{ artifact: LearningArtifactRecord; map_progress: KnowledgeMapProgress | null }>
+}
+
+export async function collaborateKnowledgeMap(artifactId: number, userId: number) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/collaborate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '智能协作检查失败')
+  }
+  return res.json() as Promise<KnowledgeMapCollaboration>
 }
 
 export async function saveLearningArtifact(
@@ -275,7 +574,7 @@ export async function saveLearningArtifact(
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '保存学习资料失败')
   }
-  return res.json() as Promise<{ artifact: LearningArtifactRecord }>
+  return res.json() as Promise<{ artifact: LearningArtifactRecord; topic_mastery?: number | null }>
 }
 
 export async function findLearningArtifactDuplicates(

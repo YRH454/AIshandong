@@ -4,6 +4,8 @@ import json
 import time
 import random
 import logging
+import re
+from threading import Thread
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -31,6 +33,92 @@ def _json_object(value, default):
         return default
 
 
+def _clean_image_value(value, limit: int = 1200) -> str:
+    """Normalize values returned by the vision model before storing them in chat history."""
+    return " ".join(str(value or "").strip().split())[:limit]
+
+
+def _parse_image_analysis(raw: str) -> dict:
+    """Accept strict JSON when available, with a useful safe fallback for imperfect model output."""
+    text = str(raw or "").strip()
+    candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        start, end = candidate.find("{"), candidate.rfind("}")
+        try:
+            parsed = json.loads(candidate[start:end + 1]) if start >= 0 and end > start else {}
+        except json.JSONDecodeError:
+            parsed = {}
+
+    if not isinstance(parsed, dict):
+        parsed = {}
+    points = parsed.get("knowledge_points", [])
+    if not isinstance(points, list):
+        points = []
+    knowledge_points = [
+        _clean_image_value(point, 80)
+        for point in points
+        if _clean_image_value(point, 80)
+    ][:5]
+    recognized_text = _clean_image_value(parsed.get("recognized_text"), 4000)
+    summary = _clean_image_value(parsed.get("summary"), 360)
+    title = _clean_image_value(parsed.get("title"), 80)
+    return {
+        "title": title or "图片学习内容",
+        "summary": summary or (recognized_text[:180] if recognized_text else "已识别图片内容，可继续讲解或生成练习。"),
+        "recognized_text": recognized_text or _clean_image_value(text, 4000),
+        "knowledge_points": knowledge_points,
+        "course_name": _clean_image_value(parsed.get("course_name"), 80),
+        "topic_name": _clean_image_value(parsed.get("topic_name"), 80),
+    }
+
+
+def _image_analysis_prompt(question: str) -> str:
+    return f"""你是一位大学课程助教。请识别学生上传的学习图片，并且只返回一个合法 JSON 对象，不要 Markdown、不要解释。
+
+学生问题：{question or '请讲解这张图片'}
+
+JSON 格式：
+{{
+  "title": "不超过 20 字的题目或内容名称",
+  "summary": "一句话说明图片的学习内容",
+  "recognized_text": "尽可能忠实提取的题干、选项、公式、代码或重点文字；看不清处标注不清晰",
+  "knowledge_points": ["最多 5 个具体知识点"],
+  "course_name": "明确可判断的课程名，否则留空",
+  "topic_name": "最具体的学习主题，否则留空"
+}}"""
+
+
+def _refresh_learning_state_in_background(
+    *,
+    session_id: int,
+    user_id: int,
+    question: str,
+    answer: str,
+    previous_state: dict,
+) -> None:
+    """Keep adaptive learning memory off the response-critical path."""
+    started = time.perf_counter()
+    try:
+        updated_state = extract_learning_state(
+            question=question,
+            answer=answer,
+            previous=previous_state,
+        )
+        execute(
+            "UPDATE chat_sessions SET learning_state = %s, updated_at = NOW() WHERE id = %s AND user_id = %s",
+            (json.dumps(updated_state, ensure_ascii=False), session_id, user_id),
+        )
+        logger.info(
+            "[chat-timing] sid=%s stage=learning_state_background seconds=%.3f",
+            session_id,
+            time.perf_counter() - started,
+        )
+    except Exception:
+        logger.exception("background learning-state update failed: sid=%s", session_id)
+
+
 # ─── 数据模型 ────────────────────────────────────────
 
 class ChatRequest(BaseModel):
@@ -49,14 +137,19 @@ class FeedbackRequest(BaseModel):
     helpful: bool
 
 
+class UpdateSessionRequest(BaseModel):
+    title: str | None = None
+    is_pinned: bool | None = None
+
+
 # ─── 会话管理 ────────────────────────────────────────
 
 @router.get("/sessions")
 def list_sessions(user_id: int):
     """列出用户所有辅导会话"""
     rows = query(
-        "SELECT id, title, messages, learning_state, created_at, updated_at FROM chat_sessions "
-        "WHERE user_id = %s AND session_type = 'tutoring' ORDER BY updated_at DESC",
+        "SELECT id, title, messages, learning_state, is_pinned, created_at, updated_at FROM chat_sessions "
+        "WHERE user_id = %s AND session_type = 'tutoring' ORDER BY is_pinned DESC, updated_at DESC",
         (user_id,)
     )
     sessions = []
@@ -75,6 +168,7 @@ def list_sessions(user_id: int):
             "title": r.get("title") or preview or "新对话",
             "preview": preview or r.get("title") or "新对话",
             "message_count": len(msgs),
+            "is_pinned": bool(r.get("is_pinned")),
             "learning_state": normalize_learning_state(_json_object(r.get("learning_state"), {})),
             "created_at": str(r["created_at"]),
             "updated_at": str(r["updated_at"]),
@@ -93,6 +187,56 @@ def new_session(user_id: int):
         "learning_state": json.dumps({}, ensure_ascii=False),
     })
     return {"session_id": sid}
+
+
+@router.patch("/sessions/{session_id}")
+def update_session(session_id: int, req: UpdateSessionRequest, user_id: int):
+    """Rename or pin a tutoring session owned by the current user."""
+    if req.title is None and req.is_pinned is None:
+        raise HTTPException(status_code=400, detail="没有需要更新的会话信息")
+
+    rows = query(
+        "SELECT id FROM chat_sessions WHERE id = %s AND user_id = %s AND session_type = 'tutoring'",
+        (session_id, user_id),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    changes: list[str] = []
+    values: list[object] = []
+    if req.title is not None:
+        title = " ".join(req.title.strip().split())[:160]
+        if not title:
+            raise HTTPException(status_code=400, detail="对话名称不能为空")
+        changes.append("title = %s")
+        values.append(title)
+    if req.is_pinned is not None:
+        changes.append("is_pinned = %s")
+        values.append(req.is_pinned)
+
+    values.extend([session_id, user_id])
+    execute(
+        f"UPDATE chat_sessions SET {', '.join(changes)}, updated_at = NOW() "
+        "WHERE id = %s AND user_id = %s",
+        tuple(values),
+    )
+    return {"session_id": session_id, "status": "updated"}
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: int, user_id: int):
+    """Permanently remove a chat record; saved learning artifacts are retained."""
+    rows = query(
+        "SELECT id FROM chat_sessions WHERE id = %s AND user_id = %s AND session_type = 'tutoring'",
+        (session_id, user_id),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="会话不存在或已删除")
+    execute(
+        "DELETE FROM chat_sessions WHERE id = %s AND user_id = %s AND session_type = 'tutoring'",
+        (session_id, user_id),
+    )
+    return {"session_id": session_id, "status": "deleted"}
 
 
 # ─── 历史记录 ────────────────────────────────────────
@@ -119,14 +263,22 @@ def get_history(user_id: int, session_id: int):
 @router.post("/chat")
 def tutor_chat(req: ChatRequest):
     """发送消息并流式返回AI回答"""
+    request_started = time.perf_counter()
     uid = req.user_id
     sid = req.session_id
     question = req.message.strip()
     mode = req.mode
     parent_id = req.parent_id
+    images = req.images or []
 
     if not question:
         raise HTTPException(status_code=400, detail="消息不能为空")
+
+    if images:
+        # 与独立视觉接口使用同一组限制：最多 3 张、单张 data URL 不超过 8 MB。
+        # 这一步必须在写入会话前完成，避免无效图片留下半条历史记录。
+        from app.api.vision import _validate_images
+        _validate_images(images)
 
     # 垃圾输入检测（纯乱敲/乱码在写库前拦截）
     from app.safety.garbage_detector import detect_garbage_input
@@ -176,38 +328,16 @@ def tutor_chat(req: ChatRequest):
     for m in messages_history[-6:]:
         conv_history.append({"role": m["role"], "content": m["content"]})
 
-    # 图片模式：先做视觉理解，把理解结果注入上下文
+    # Delay the expensive vision and RAG work until the SSE connection is open.
     vision_context = None
-    if req.images:
-        try:
-            from app.services.llm import chat_qwen_vision
-            images = [{"type": "image_url", "image_url": {"url": img}} for img in req.images]
-            vision_context = chat_qwen_vision(
-                [{"role": "user", "content": question or "请描述这张图片并讲解相关知识"}],
-                images, temperature=0.3, max_tokens=1024,
-            )
-        except Exception as e:
-            logger.error(f"视觉理解失败: {e}")
-            vision_context = None
-
-    # 构建LLM消息
-    llm_messages = build_tutor_messages(
-        question=question,
-        mode=mode,
-        user_id=uid,
-        history=conv_history,
-        parent_qa=parent_qa,
-        learning_state=learning_state,
-    )
-    # 若有图片理解结果，作为上下文注入系统消息之后
-    if vision_context:
-        llm_messages.insert(1, {"role": "system", "content": f"学生上传了图片，你对图片的理解如下，请结合回答：\n{vision_context}"})
-
+    image_analysis = None
     # 生成QA ID
     qa_id = f"qa_{int(time.time() * 1000)}_{random.randint(100, 999)}"
 
     # 先持久化用户消息：即使客户端中途断开，问题也不会丢失
     user_msg = {"role": "user", "content": question, "id": f"u_{qa_id}", "mode": mode, "timestamp": time.time()}
+    if images:
+        user_msg["images"] = images
     if parent_id:
         user_msg["parent_id"] = parent_id
     messages_history.append(user_msg)
@@ -222,16 +352,85 @@ def tutor_chat(req: ChatRequest):
 
     def event_gen():
         full_answer = ""
+        stream_started = None
+        first_chunk_at = None
+        # event_gen assigns this after image analysis, so it must be initialized
+        # inside the generator for ordinary text-only turns as well.
+        vision_context = None
 
-        # 开始事件
-        yield f"data: {json.dumps({'type': 'start', 'qa_id': qa_id, 'mode': mode}, ensure_ascii=False)}\n\n"
+        # Send this before model, image, or RAG work so the client can react at once.
+        start_event = {
+            'type': 'start',
+            'qa_id': qa_id,
+            'mode': mode,
+            'phase': 'image_analysis' if images else 'retrieving',
+        }
+        yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
+        logger.info("[chat-timing] sid=%s stage=sse_start seconds=%.3f", sid, time.perf_counter() - request_started)
+
+        if images:
+            yield f"data: {json.dumps({'type': 'status', 'phase': 'image_analysis'}, ensure_ascii=False)}\n\n"
+            vision_started = time.perf_counter()
+            try:
+                from app.services.llm import chat_qwen_vision
+                vision_images = [{"type": "image_url", "image_url": {"url": image}} for image in images]
+                raw_image_analysis = chat_qwen_vision(
+                    [{"role": "user", "content": _image_analysis_prompt(question)}],
+                    vision_images,
+                    temperature=0.3,
+                    max_tokens=1024,
+                )
+                image_analysis = _parse_image_analysis(raw_image_analysis)
+                vision_context = "\n".join(filter(None, [
+                    image_analysis["summary"],
+                    f"识别文字：{image_analysis['recognized_text']}" if image_analysis["recognized_text"] else "",
+                    f"知识点：{'、'.join(image_analysis['knowledge_points'])}" if image_analysis["knowledge_points"] else "",
+                ]))
+                user_msg["image_analysis"] = image_analysis
+                execute(
+                    "UPDATE chat_sessions SET messages = %s, updated_at = NOW() WHERE id = %s",
+                    (json.dumps(messages_history, ensure_ascii=False), sid),
+                )
+                yield f"data: {json.dumps({'type': 'status', 'phase': 'retrieving', 'image_analysis': image_analysis}, ensure_ascii=False)}\n\n"
+                logger.info("[chat-timing] sid=%s stage=vision seconds=%.3f", sid, time.perf_counter() - vision_started)
+            except Exception:
+                logger.exception("vision understanding failed: sid=%s", sid)
+                yield f"data: {json.dumps({'type': 'status', 'phase': 'retrieving', 'image_error': True}, ensure_ascii=False)}\n\n"
+
+        yield f"data: {json.dumps({'type': 'status', 'phase': 'retrieving'}, ensure_ascii=False)}\n\n"
+        context_started = time.perf_counter()
+        llm_messages = build_tutor_messages(
+            question=question,
+            mode=mode,
+            user_id=uid,
+            history=conv_history,
+            parent_qa=parent_qa,
+            learning_state=learning_state,
+        )
+        logger.info(
+            "[chat-timing] sid=%s stage=context seconds=%.3f",
+            sid,
+            time.perf_counter() - context_started,
+        )
+        if vision_context:
+            llm_messages.insert(1, {"role": "system", "content": f"学生上传了图片，你对图片的理解如下，请结合回答：\n{vision_context}"})
+        yield f"data: {json.dumps({'type': 'status', 'phase': 'answering'}, ensure_ascii=False)}\n\n"
 
         try:
+            stream_started = time.perf_counter()
             stream = stream_tutor_answer(llm_messages, mode=mode)
             for chunk in stream:
                 delta = chunk.choices[0].delta
                 text = delta.content if delta and delta.content else ""
                 if text:
+                    if first_chunk_at is None:
+                        first_chunk_at = time.perf_counter()
+                        logger.info(
+                            "[chat-timing] sid=%s stage=first_token model_seconds=%.3f total_seconds=%.3f",
+                            sid,
+                            first_chunk_at - stream_started,
+                            first_chunk_at - request_started,
+                        )
                     full_answer += text
                     yield f"data: {json.dumps({'type': 'chunk', 'content': text}, ensure_ascii=False)}\n\n"
         except Exception as e:
@@ -244,6 +443,7 @@ def tutor_chat(req: ChatRequest):
                 logger.warning("千问流已返回正文，忽略结束阶段的连接异常并保存完整回答")
 
         # 安全审核：对生成内容进行 5 层过滤
+        filter_started = time.perf_counter()
         filtered_answer, audit_result = filter_content(
             full_answer,
             user_id=uid,
@@ -251,6 +451,7 @@ def tutor_chat(req: ChatRequest):
             content_type="code" if mode == "code" else "text",
             user_input=question,
         )
+        logger.info("[chat-timing] sid=%s stage=filter seconds=%.3f", sid, time.perf_counter() - filter_started)
 
         # 保存AI回复（保存审核后的版本）
         ai_msg = {"role": "assistant", "content": filtered_answer, "id": qa_id, "mode": mode, "timestamp": time.time()}
@@ -259,27 +460,40 @@ def tutor_chat(req: ChatRequest):
 
         messages_history.append(ai_msg)
 
-        updated_learning_state = extract_learning_state(
-            question=question,
-            answer=filtered_answer,
-            previous=learning_state,
-        )
-
+        persist_started = time.perf_counter()
         try:
             execute(
-                "UPDATE chat_sessions SET title = %s, messages = %s, learning_state = %s, updated_at = NOW() WHERE id = %s",
+                "UPDATE chat_sessions SET title = %s, messages = %s, updated_at = NOW() WHERE id = %s",
                 (
                     session_title or question[:80],
                     json.dumps(messages_history, ensure_ascii=False),
-                    json.dumps(updated_learning_state, ensure_ascii=False),
                     sid,
                 )
             )
         except Exception as e:
             logger.error(f"保存辅导会话失败: {e}")
+        logger.info(
+            "[chat-timing] sid=%s stage=persist seconds=%.3f total_seconds=%.3f first_token_seen=%s",
+            sid,
+            time.perf_counter() - persist_started,
+            time.perf_counter() - request_started,
+            first_chunk_at is not None,
+        )
+
+        Thread(
+            target=_refresh_learning_state_in_background,
+            kwargs={
+                "session_id": sid,
+                "user_id": uid,
+                "question": question,
+                "answer": filtered_answer,
+                "previous_state": learning_state,
+            },
+            daemon=True,
+        ).start()
 
         # 完成事件
-        yield f"data: {json.dumps({'type': 'done', 'qa_id': qa_id, 'session_id': sid, 'learning_state': updated_learning_state}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'qa_id': qa_id, 'session_id': sid, 'learning_state': learning_state}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

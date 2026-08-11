@@ -69,10 +69,10 @@ def get_qwen_client(model: str):
     return qwen
 
 
-def chat_qwen_stream(messages: list, temperature=0.7, max_tokens=2048):
+def chat_qwen_stream(messages: list, temperature=0.7, max_tokens=2048, model: str | None = None):
     """流式调用千问"""
     return qwen.chat.completions.create(
-        model=QWEN_MODEL, messages=messages,
+        model=MODEL_REGISTRY.get(model or QWEN_MODEL, model or QWEN_MODEL), messages=messages,
         temperature=temperature, max_tokens=max_tokens,
         stream=True,
     )

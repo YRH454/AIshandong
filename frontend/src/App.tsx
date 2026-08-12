@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
   Code2, FileDown, FileQuestion, FileText, FolderOpen, History, Image, LayoutTemplate, Library, Map as MapIcon,
   Languages, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
-  Ellipsis, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
+  Ellipsis, Maximize2, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -14,6 +14,7 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import mascot from './assets/xuejing-slime-logo.png'
 import { EditableKnowledgeMap } from './components/EditableKnowledgeMap'
+import type { KnowledgeMapData as ImmersiveKnowledgeMapData, KnowledgeMapProgressState as ImmersiveKnowledgeMapProgressState } from './components/EditableKnowledgeMap'
 import { DynamicExplanationPlayer, type DynamicExplanationProgress } from './components/DynamicExplanationPlayer'
 import { LearningDocumentBooklet, type StudyBookletDocument } from './components/LearningDocumentBooklet'
 import { parseDynamicExplanation, type DynamicExplanationData, type DynamicExplanationScene } from './components/dynamicExplanation'
@@ -65,6 +66,8 @@ import type {
   PracticeSetRecord, StudyPackBlueprint, TutorMessage, TutorSessionSummary,
 } from './services/api'
 import './App.css'
+
+const KnowledgeMapImmersiveSpace = lazy(() => import('./components/KnowledgeMapImmersiveSpace'))
 
 type IconName =
   | 'archive'
@@ -238,6 +241,11 @@ type KnowledgeMapData = {
   nodes: KnowledgeMapNode[]
   edges: Array<{ from: string; to: string; label?: string }>
   learning_path: string[]
+}
+
+type ImmersiveMapTarget = {
+  artifactId: string
+  returnView: MapWorkspaceReturnView
 }
 
 type KnowledgeMapProgressState = Pick<KnowledgeMapProgress, 'progress' | 'summary'>
@@ -1046,6 +1054,7 @@ function App() {
   const [mapReviewPracticeGeneratingArtifactId, setMapReviewPracticeGeneratingArtifactId] = useState<string | null>(null)
   const [mapWorkspaceArtifactId, setMapWorkspaceArtifactId] = useState<string | null>(null)
   const [mapWorkspaceReturnView, setMapWorkspaceReturnView] = useState<MapWorkspaceReturnView>('chat')
+  const [immersiveMapTarget, setImmersiveMapTarget] = useState<ImmersiveMapTarget | null>(null)
   const [practiceSetupTurnId, setPracticeSetupTurnId] = useState<string | null>(null)
   const [practiceGenerating, setPracticeGenerating] = useState(false)
   const practiceGenerationLocked = useRef(false)
@@ -1339,6 +1348,14 @@ function App() {
   const readerMapProgress = readerArtifact ? mapProgressByArtifactId[readerArtifact.id] : undefined
   const readerMapSavingNodeId = readerArtifact && mapProgressSavingKey?.startsWith(`${readerArtifact.id}:`)
     ? mapProgressSavingKey.slice(readerArtifact.id.length + 1)
+    : null
+  const immersiveMapArtifact = immersiveMapTarget
+    ? mapArtifacts.find(artifact => artifact.id === immersiveMapTarget.artifactId) || null
+    : null
+  const immersiveMapData = immersiveMapArtifact ? parseKnowledgeMap(immersiveMapArtifact.content) : null
+  const immersiveMapProgress = immersiveMapArtifact ? mapProgressByArtifactId[immersiveMapArtifact.id] : undefined
+  const immersiveMapSavingNodeId = immersiveMapArtifact && mapProgressSavingKey?.startsWith(`${immersiveMapArtifact.id}:`)
+    ? mapProgressSavingKey.slice(immersiveMapArtifact.id.length + 1)
     : null
 
   useEffect(() => {
@@ -1637,6 +1654,19 @@ function App() {
 
   function closeMapWorkspace() {
     setView(mapWorkspaceReturnView)
+  }
+
+  function openImmersiveMap(artifact: Artifact, returnView: MapWorkspaceReturnView) {
+    if (!parseKnowledgeMap(artifact.content)) {
+      setNotice('这份图解内容暂时无法进入沉浸空间，请重新生成后再试。')
+      return
+    }
+    setImmersiveMapTarget({ artifactId: artifact.id, returnView })
+    recordSavedArtifactActivity(artifact, 'immersive_map_opened', { surface: returnView })
+  }
+
+  function closeImmersiveMap() {
+    setImmersiveMapTarget(null)
   }
 
   function openSettings() {
@@ -4369,7 +4399,7 @@ function App() {
                             {artifact.status !== 'generating' && (
                               <div className="artifact-actions">
                                 {artifact.kind === 'map' && mapData && (
-                                  <button type="button" onClick={() => openMapWorkspace(artifact, 'chat')}>
+                                  <button type="button" onClick={() => openImmersiveMap(artifact, 'chat')}>
                                     <Trees size={15} />打开图解
                                   </button>
                                 )}
@@ -4576,6 +4606,7 @@ function App() {
                       <p>{mapWorkspaceArtifact.summary}</p>
                     </div>
                     <div className="map-workspace-actions">
+                      <button type="button" onClick={() => openImmersiveMap(mapWorkspaceArtifact, mapWorkspaceReturnView)}><Maximize2 size={15} />{t('进入沉浸空间', 'Open immersive space')}</button>
                       {mapWorkspaceArtifact.saved ? (
                         <button type="button" onClick={() => { setLibraryPreviewId(null); setView('library') }}><Icon name="library" size={15} />{t('查看资料库', 'View library')}</button>
                       ) : mapWorkspaceArtifact.status !== 'error' ? (
@@ -4614,6 +4645,25 @@ function App() {
                 </div>
               )}
             </section>
+          )}
+
+          {immersiveMapArtifact && immersiveMapData && immersiveMapTarget && (
+            <Suspense fallback={<div className="immersive-map-loading" role="status" aria-live="polite"><Sparkles size={20} /><span>{t('正在准备沉浸学习空间…', 'Preparing immersive study space…')}</span></div>}>
+              <KnowledgeMapImmersiveSpace
+                data={immersiveMapData as ImmersiveKnowledgeMapData}
+                title={immersiveMapArtifact.title}
+                course={immersiveMapArtifact.course}
+                topic={immersiveMapArtifact.topic}
+                language={interfaceLanguage}
+                progress={immersiveMapProgress as ImmersiveKnowledgeMapProgressState | undefined}
+                progressSavingNodeId={immersiveMapSavingNodeId}
+                reviewPracticeGenerating={mapReviewPracticeGeneratingArtifactId === immersiveMapArtifact.id}
+                onStatusChange={(nodeId, status) => void updateMapNodeStatus(immersiveMapArtifact, nodeId, status)}
+                onReviewPractice={() => void runMapReviewPractice(immersiveMapArtifact, immersiveMapData)}
+                onOpenCanvas={() => openMapWorkspace(immersiveMapArtifact, immersiveMapTarget.returnView)}
+                onExit={closeImmersiveMap}
+              />
+            </Suspense>
           )}
 
           {view === 'library' && (

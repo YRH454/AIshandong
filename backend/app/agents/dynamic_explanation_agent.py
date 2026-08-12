@@ -19,9 +19,12 @@ _VISUAL_TYPES = {
     "error-lab",
     "map",
     "recap",
+    "code-trace",
+    "timeline",
+    "network",
 }
 _PALETTES = {"sage", "cobalt", "ember", "plum", "ink"}
-_FALLBACK_VISUAL_TYPES = ("concept", "journey", "stack", "contrast", "lab", "error-lab", "map", "recap")
+_FALLBACK_VISUAL_TYPES = ("concept", "journey", "stack", "code-trace", "contrast", "lab", "timeline", "network", "map", "recap")
 
 
 def _clean(value: object, limit: int) -> str:
@@ -68,7 +71,7 @@ def _normalize_visual(value: object, visual_type: str, key_point: str, narration
     raw = value if isinstance(value, dict) else {}
     items = [_clean(item, 84) for item in raw.get("items", []) if _clean(item, 84)][:5]
     headline = _clean(raw.get("headline"), 92) or key_point
-    if visual_type in {"sequence", "journey", "stack"} and len(items) < 2:
+    if visual_type in {"sequence", "journey", "stack", "code-trace", "timeline", "network"} and len(items) < 2:
         items = [key_point, "把这一层和下一步连起来理解"]
     if visual_type in {"concept", "map", "recap"} and not items:
         items = [key_point]
@@ -128,7 +131,7 @@ def normalize_dynamic_explanation(raw: object) -> dict:
     highlights = [_clean(item, 100) for item in raw.get("highlights", []) if _clean(item, 100)][:5]
     palette = _clean(raw.get("palette"), 16).lower()
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "title": title,
         "summary": summary,
         "highlights": highlights or [scene["key_point"] for scene in scenes[:3]],
@@ -169,7 +172,7 @@ def regenerate_dynamic_explanation_scene(
                     "Do not return markdown, a list of slides, or presentation-level fields.\n"
                     "The JSON must contain title, narration, key_point, visual_type, visual, check, suggested_seconds. "
                     "visual_type must be one of concept, journey, sequence, stack, compare, contrast, example, lab, pitfall, "
-                    "error-lab, map, recap. visual must contain headline, items (up to 5 short concrete labels), before, after, example. "
+                    "error-lab, map, recap, code-trace, timeline, network. visual must contain headline, items (up to 5 short concrete labels), before, after, example. "
                     "narration should be 70-220 Chinese characters. Do not add invented course facts. A check is optional and, "
                     "if included, must have 2-4 options with the answer exactly matching one option."
                 ),
@@ -221,11 +224,13 @@ def generate_dynamic_explanation(
                 "Each scene must contain title, narration, key_point, visual_type, visual, check, suggested_seconds. narration is "
                 "a concise spoken explanation of 70 to 220 Chinese characters. key_point is one memorable sentence. "
                 "suggested_seconds is 20 to 90.\n"
-                "visual_type must be one of concept, journey, sequence, stack, compare, contrast, example, lab, pitfall, error-lab, map, recap. "
+                "visual_type must be one of concept, journey, sequence, stack, compare, contrast, example, lab, pitfall, error-lab, map, recap, code-trace, timeline, network. "
                 "Use several genuinely different visual types when the topic has enough material. concept shows relationships around a core; "
                 "journey or sequence shows ordered change; stack shows nested layers or calls; compare or contrast exposes a meaningful before/after; "
                 "example or lab lets the learner inspect a concrete case; pitfall or error-lab demonstrates a real wrong path and correction; "
-                "map or recap compresses the ideas into a take-away structure.\n"
+                "map or recap compresses the ideas into a take-away structure. Use code-trace when code, an algorithm, recursion, "
+                "or variables need to be stepped through: items must be concrete calls, statements, or state snapshots. Use timeline "
+                "when order in time or stages matters. Use network when an idea, packet, signal, or responsibility moves through connected nodes.\n"
                 "visual must contain headline, items (up to 5 short concrete labels), before, after, example. The labels must name real steps, "
                 "relationships, calls, cases, or checks from the supplied answer. Never fill visuals with generic labels such as 'understand better' "
                 "or 'keep learning'. A scene's text and visual should reveal different parts of the same idea instead of repeating each other.\n"

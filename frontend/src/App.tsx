@@ -9,9 +9,13 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import mascot from './assets/xuejing-slime-logo.png'
 import { EditableKnowledgeMap } from './components/EditableKnowledgeMap'
-import { DynamicExplanationPlayer } from './components/DynamicExplanationPlayer'
+import { DynamicExplanationPlayer, type DynamicExplanationProgress } from './components/DynamicExplanationPlayer'
+import { LearningDocumentBooklet, type StudyBookletDocument } from './components/LearningDocumentBooklet'
 import { parseDynamicExplanation, type DynamicExplanationData, type DynamicExplanationScene } from './components/dynamicExplanation'
 import {
   createImageAnalysisArtifact,
@@ -20,9 +24,11 @@ import {
   favoriteLearningArtifact,
   findLearningArtifactDuplicates,
   generateLearningDocument,
+  generateStudyPackBlueprint,
   generateKnowledgeMap,
   generatePracticeSet,
   getKnowledgeMapProgress,
+  getInteractivePresentationProgress,
   getLearningArtifacts,
   getLearningArtifactVersions,
   getLibraryTopicLearningState,
@@ -33,24 +39,30 @@ import {
   generateDynamicExplanation,
   permanentlyDeleteLearningArtifact,
   readTutorStream,
+  recordInteractivePresentationCheckpoint,
   recordLearningActivity,
   restoreLearningArtifact,
   restoreLearningArtifactVersion,
+  saveExternalVideoResource,
   saveLearningArtifact,
+  saveDocumentPack,
+  saveLearningLoop,
+  searchExternalVideos,
   submitPracticeAttempt,
   streamTutorChat,
   trashLearningArtifact,
   updateKnowledgeMap,
   updateKnowledgeMapNodeProgress,
   updateInteractivePresentation,
+  updateInteractivePresentationProgress,
   updateLearningArtifact,
   updateTutorSession,
   waitForGenerationJob,
   regenerateInteractivePresentationScene,
 } from './services/api'
 import type {
-  ImageStudyAnalysis, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
-  PracticeSetRecord, TutorMessage, TutorSessionSummary,
+  ExternalVideoResource, ImageStudyAnalysis, InteractivePresentationProgress, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
+  PracticeSetRecord, StudyPackBlueprint, TutorMessage, TutorSessionSummary,
 } from './services/api'
 import './App.css'
 
@@ -101,7 +113,7 @@ type SaveStrategy = 'version' | 'update' | 'separate'
 type DeleteMode = 'trash' | 'permanent'
 type GenerationCategory = 'universal' | 'quick' | 'deep' | 'practice' | 'review' | 'submit'
 type ArtifactKind =
-  | 'notes' | 'practice' | 'map' | 'interactive' | 'video'
+  | 'notes' | 'practice' | 'map' | 'interactive' | 'video' | 'external_video'
   | 'summary' | 'question' | 'compare' | 'audio'
   | 'chapter' | 'page-guide' | 'formula' | 'glossary' | 'study-pack' | 'plan'
   | 'similar' | 'variants' | 'special' | 'mock' | 'coding' | 'oral'
@@ -172,7 +184,12 @@ type Artifact = {
   purpose?: DocumentPurpose
   depth?: DocumentDepth
   style?: DocumentStyle
+  documentTemplate?: LearningArtifactRecord['document_template']
   sourceMapArtifactId?: number
+  learningLoopId?: string
+  learningLoopStep?: LearningLoopStep
+  documentPackId?: string
+  documentPackTemplate?: DocumentTemplateId
 }
 
 type ChatTurn = {
@@ -228,12 +245,90 @@ type KnowledgeMapProgressState = Pick<KnowledgeMapProgress, 'progress' | 'summar
 type DocumentPurpose = 'review' | 'preview' | 'exam'
 type DocumentDepth = 'concise' | 'standard' | 'deep'
 type DocumentStyle = 'plain' | 'notes' | 'exam'
+type DocumentTemplateId = LearningArtifactRecord['document_template']
 type DocumentSetup = {
   turnId: string
-  purpose: DocumentPurpose
-  depth: DocumentDepth
-  style: DocumentStyle
+  template: DocumentTemplateId
 }
+
+type DocumentPackSetup = {
+  turnId: string
+  templates: DocumentTemplateId[]
+}
+
+type DocumentPackPlanningState = {
+  packId: string
+  templates: DocumentTemplateId[]
+}
+
+type LearningLoopStep = 'notes' | 'map' | 'interactive' | 'practice'
+type LearningLoopSaveTarget = {
+  turnId: string
+  loopId: string
+  artifacts: Artifact[]
+}
+
+type DocumentPackSaveTarget = {
+  turnId: string
+  packId: string
+  artifacts: Artifact[]
+}
+
+type DocumentPackBookletTarget = {
+  packId: string
+  turnId?: string
+  course: string
+  topic: string
+  persisted: boolean
+}
+
+type VideoSearchContext = {
+  turnId?: string
+  sessionId: number
+  query: string
+  course: string
+  topic: string
+}
+
+type ExternalVideoSaveTarget = {
+  video: ExternalVideoResource
+  context: VideoSearchContext
+}
+
+type InlineVideoSearch = {
+  context: VideoSearchContext
+  results: ExternalVideoResource[]
+  searchUrl: string
+  loading: boolean
+  error: string
+}
+
+type ExternalVideoContent = {
+  platform: 'bilibili'
+  platform_label: string
+  url: string
+  cover_url?: string
+  creator?: string
+  duration?: string
+  view_count?: string
+  description?: string
+  search_query?: string
+}
+
+const learningLoopSteps: Array<{
+  kind: LearningLoopStep
+  label: string
+  labelEn: string
+  detail: string
+  detailEn: string
+  generating: string
+  generatingEn: string
+}> = [
+  { kind: 'notes', label: '学习文档', labelEn: 'Learning document', detail: '先建立概念与重点', detailEn: 'Build the core understanding', generating: '正在整理讲义', generatingEn: 'Preparing the guide' },
+  { kind: 'map', label: '知识图解', labelEn: 'Knowledge map', detail: '再梳理关系与脉络', detailEn: 'Connect relationships and structure', generating: '正在搭建图解', generatingEn: 'Building the map' },
+  { kind: 'interactive', label: '动态讲解', labelEn: 'Interactive explanation', detail: '用场景推演形成直觉', detailEn: 'Build intuition through scenes', generating: '正在编排讲解', generatingEn: 'Staging the explanation' },
+  { kind: 'practice', label: '练习检验', labelEn: 'Practice check', detail: '最后检验并定位薄弱点', detailEn: 'Check mastery and locate weak points', generating: '等待图解后生成练习', generatingEn: 'Waiting for the map, then building practice' },
+]
 
 type PracticeRun = {
   artifact: Artifact
@@ -306,28 +401,59 @@ function sortTutorSessions(sessions: TutorSessionSummary[]) {
   })
 }
 
-const defaultDocumentSetup = (turnId: string): DocumentSetup => ({
+type DocumentTemplateDefinition = {
+  id: DocumentTemplateId
+  label: string
+  labelEn: string
+  description: string
+  descriptionEn: string
+  group: 'understand' | 'organize' | 'review'
+  icon: IconName
+}
+
+const documentTemplates: DocumentTemplateDefinition[] = [
+  { id: 'quick_overview', label: '一页速览', labelEn: 'Quick overview', description: '两分钟抓住主线、重点和下一步', descriptionEn: 'The main thread, essentials, and next step in two minutes', group: 'understand', icon: 'file' },
+  { id: 'problem_walkthrough', label: '题目精讲', labelEn: 'Problem walkthrough', description: '从条件、思路到易错路径逐步拆开', descriptionEn: 'Unpack conditions, reasoning, and common wrong paths', group: 'understand', icon: 'file-question' },
+  { id: 'concept_comparison', label: '概念对比', labelEn: 'Concept comparison', description: '用对照表分清相近概念与边界', descriptionEn: 'Separate similar concepts with a useful comparison', group: 'understand', icon: 'layout' },
+  { id: 'system_guide', label: '系统讲义', labelEn: 'System guide', description: '完整整理知识结构、例子和自测', descriptionEn: 'A durable guide with structure, examples, and checks', group: 'organize', icon: 'notebook' },
+  { id: 'formula_handbook', label: '公式手册', labelEn: 'Formula handbook', description: '公式、符号、条件与典型应用', descriptionEn: 'Formulas, notation, conditions, and applications', group: 'organize', icon: 'clipboard' },
+  { id: 'glossary', label: '术语表', labelEn: 'Glossary', description: '术语定义、英文、关联与易混点', descriptionEn: 'Terms, English names, connections, and confusions', group: 'organize', icon: 'tags' },
+  { id: 'exam_cram', label: '考前速记', labelEn: 'Exam cram', description: '压缩高频结论、陷阱和答题句式', descriptionEn: 'High-yield conclusions, traps, and answer phrasing', group: 'review', icon: 'spark' },
+]
+
+const documentTemplateGroups = [
+  { id: 'understand', label: '快速理解', labelEn: 'Understand quickly' },
+  { id: 'organize', label: '系统整理', labelEn: 'Organize systematically' },
+  { id: 'review', label: '考前复习', labelEn: 'Review before an exam' },
+] as const
+
+const documentTemplateById = Object.fromEntries(
+  documentTemplates.map(template => [template.id, template]),
+) as Record<DocumentTemplateId, DocumentTemplateDefinition>
+
+function recommendDocumentTemplate(prompt = '', response = ''): DocumentTemplateId {
+  const source = `${prompt}\n${response}`.toLowerCase()
+  if (/(考前速记|考前冲刺|最后.{0,6}分钟|背诵清单|临考)/.test(source)) return 'exam_cram'
+  if (/(公式|定理|方程|函数|导数|积分|矩阵|概率|计算)/.test(source)) return 'formula_handbook'
+  if (/(区别|对比|比较|不同|异同|vs\.?)/.test(source)) return 'concept_comparison'
+  if (/(题目|例题|求解|怎么算|解题|为什么选|证明)/.test(source)) return 'problem_walkthrough'
+  if (/(术语|名词|概念.*英文|英文.*概念|缩写)/.test(source)) return 'glossary'
+  if (/(总结|速览|一页|简要|简单说|快速了解|通俗|是什么|基础)/.test(source)) return 'quick_overview'
+  return 'system_guide'
+}
+
+const defaultDocumentSetup = (turnId: string, prompt = '', response = ''): DocumentSetup => ({
   turnId,
-  purpose: 'review',
-  depth: 'standard',
-  style: 'plain',
+  template: recommendDocumentTemplate(prompt, response),
 })
 
-const documentPurposes: Array<{ id: DocumentPurpose; label: string }> = [
-  { id: 'review', label: '课后复习' },
-  { id: 'preview', label: '课前预习' },
-  { id: 'exam', label: '考前冲刺' },
-]
-const documentDepths: Array<{ id: DocumentDepth; label: string }> = [
-  { id: 'concise', label: '精简' },
-  { id: 'standard', label: '标准' },
-  { id: 'deep', label: '深入' },
-]
-const documentStyles: Array<{ id: DocumentStyle; label: string }> = [
-  { id: 'plain', label: '通俗讲解' },
-  { id: 'notes', label: '课堂笔记' },
-  { id: 'exam', label: '考试重点' },
-]
+function recommendedDocumentPackTemplates(prompt = '', response = ''): DocumentTemplateId[] {
+  const source = `${prompt}\n${response}`.toLowerCase()
+  const templates: DocumentTemplateId[] = ['system_guide', 'formula_handbook', 'glossary', 'exam_cram']
+  if (/(题目|例题|求解|怎么计算|解题|证明)/.test(source)) templates.splice(1, 0, 'problem_walkthrough')
+  if (/(区别|对比|比较|不同|异同|vs\.?)/.test(source)) templates.splice(1, 0, 'concept_comparison')
+  return templates
+}
 
 const lucideIcons: Record<IconName, LucideIcon> = {
   archive: Archive,
@@ -412,8 +538,8 @@ const artifactOptions: GeneratorOption[] = [
     title: '动态讲解', summary: 'HTML · 分步播放 · 含互动检查', details: ['分步展示变量、流程或解题过程', '支持暂停、重播和调节速度', '可加入点击解释与中途测验'],
   },
   {
-    kind: 'video', label: '讲解视频', description: '配音、字幕和动态画面', icon: 'video', category: 'universal', format: 'MP4',
-    title: '讲解视频', summary: 'MP4 · 配音 · 字幕 · 约 3 分钟', details: ['先生成讲解脚本和镜头结构', '严谨内容优先由动态页面渲染', '辅助场景可调用视频生成模型'],
+    kind: 'external_video', label: '课程视频', description: '查找可直接观看的 B站课程', icon: 'video', category: 'universal', format: 'B站 · 原视频',
+    title: '课程视频', summary: 'B站检索 · 原视频链接 · 可收藏', details: ['按当前课程和主题查找真实视频', '直接打开原视频页面，不下载或搬运', '收藏后可从资料库继续学习'],
   },
 
   { kind: 'summary', label: '一页速览', description: '快速抓住核心内容', icon: 'file', category: 'quick', format: '在线 · PDF', title: '一页速览', summary: '核心结论 · 阅读顺序 · 约 2 分钟', details: ['压缩为一页重点', '标出必须先懂的概念', '给出下一步阅读建议'] },
@@ -525,6 +651,29 @@ function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
       nodes,
       edges: edges.length ? edges : nodes.slice(1).map(node => ({ from: nodes[0].id, to: node.id, label: '' })),
       learning_path: learningPath.length ? learningPath : nodes.map(node => node.id),
+    }
+  } catch {
+    return null
+  }
+}
+
+function parseExternalVideoContent(content?: string): ExternalVideoContent | null {
+  if (!content) return null
+  try {
+    const value = JSON.parse(content) as Partial<ExternalVideoContent>
+    if (value.platform !== 'bilibili' || typeof value.url !== 'string' || !value.url.startsWith('https://www.bilibili.com/video/')) {
+      return null
+    }
+    return {
+      platform: 'bilibili',
+      platform_label: typeof value.platform_label === 'string' ? value.platform_label : 'B站',
+      url: value.url,
+      cover_url: typeof value.cover_url === 'string' ? value.cover_url : '',
+      creator: typeof value.creator === 'string' ? value.creator : '',
+      duration: typeof value.duration === 'string' ? value.duration : '',
+      view_count: typeof value.view_count === 'string' ? value.view_count : '',
+      description: typeof value.description === 'string' ? value.description : '',
+      search_query: typeof value.search_query === 'string' ? value.search_query : '',
     }
   } catch {
     return null
@@ -794,7 +943,12 @@ function artifactFromRecord(record: LearningArtifactRecord): Artifact {
     purpose: record.purpose,
     depth: record.depth,
     style: record.style,
+    documentTemplate: record.document_template,
     sourceMapArtifactId: record.source_map_artifact_id || undefined,
+    learningLoopId: record.learning_loop_id || undefined,
+    learningLoopStep: record.learning_loop_step || undefined,
+    documentPackId: record.document_pack_id || undefined,
+    documentPackTemplate: record.document_pack_template || undefined,
   }
 }
 
@@ -854,12 +1008,19 @@ function App() {
   const [generatorTurnId, setGeneratorTurnId] = useState<string | null>(null)
   const [generatorCategory, setGeneratorCategory] = useState<Exclude<GenerationCategory, 'universal'>>('quick')
   const [generatorSearch, setGeneratorSearch] = useState('')
+  const [inlineVideoSearches, setInlineVideoSearches] = useState<Record<string, InlineVideoSearch>>({})
   const [recording, setRecording] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('rhyme-sidebar-collapsed') === 'true')
+  const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
   const [documentSetup, setDocumentSetup] = useState<DocumentSetup | null>(null)
   const [documentGenerating, setDocumentGenerating] = useState(false)
+  const [documentPackSetup, setDocumentPackSetup] = useState<DocumentPackSetup | null>(null)
+  const [documentPackGeneratingTurnId, setDocumentPackGeneratingTurnId] = useState<string | null>(null)
+  const [documentPackPlanningByTurn, setDocumentPackPlanningByTurn] = useState<Record<string, DocumentPackPlanningState>>({})
+  const documentPackGenerationLocked = useRef(false)
   const [knowledgeMapGeneratingTurnId, setKnowledgeMapGeneratingTurnId] = useState<string | null>(null)
   const [pendingMapGenerationTurnId, setPendingMapGenerationTurnId] = useState<string | null>(null)
   const knowledgeMapGenerationLocked = useRef(false)
@@ -868,8 +1029,15 @@ function App() {
   const [pendingDynamicExplanationTurnId, setPendingDynamicExplanationTurnId] = useState<string | null>(null)
   const dynamicExplanationGenerationLocked = useRef(false)
   const dynamicExplanationRunnerRef = useRef<(turnId: string) => void>(() => {})
+  const [learningLoopGeneratingTurnId, setLearningLoopGeneratingTurnId] = useState<string | null>(null)
+  const learningLoopGenerationLocked = useRef(false)
+  const [learningLoopActiveStepByTurn, setLearningLoopActiveStepByTurn] = useState<Record<string, LearningLoopStep>>({})
+  const [immersiveOpenRequest, setImmersiveOpenRequest] = useState<{ artifactId: string; revision: number } | null>(null)
   const [mapProgressByArtifactId, setMapProgressByArtifactId] = useState<Record<string, KnowledgeMapProgressState>>({})
   const mapProgressFetches = useRef(new Set<string>())
+  const [presentationProgressByArtifactId, setPresentationProgressByArtifactId] = useState<Record<string, InteractivePresentationProgress>>({})
+  const presentationProgressFetches = useRef(new Set<string>())
+  const presentationProgressSaveTokens = useRef<Record<string, number>>({})
   const [mapProgressSavingKey, setMapProgressSavingKey] = useState<string | null>(null)
   const [mapEditingArtifactId, setMapEditingArtifactId] = useState<string | null>(null)
   const [presentationEditingArtifactId, setPresentationEditingArtifactId] = useState<string | null>(null)
@@ -887,6 +1055,11 @@ function App() {
   const [imageAnalysisSavingTurnId, setImageAnalysisSavingTurnId] = useState<string | null>(null)
   const [expandedArtifactId, setExpandedArtifactId] = useState<string | null>(null)
   const [saveTarget, setSaveTarget] = useState<Artifact | null>(null)
+  const [learningLoopSaveTarget, setLearningLoopSaveTarget] = useState<LearningLoopSaveTarget | null>(null)
+  const [documentPackSaveTarget, setDocumentPackSaveTarget] = useState<DocumentPackSaveTarget | null>(null)
+  const [documentPackBooklet, setDocumentPackBooklet] = useState<DocumentPackBookletTarget | null>(null)
+  const [documentPackBookletActiveId, setDocumentPackBookletActiveId] = useState<string | null>(null)
+  const [externalVideoSaveTarget, setExternalVideoSaveTarget] = useState<ExternalVideoSaveTarget | null>(null)
   const [saveMode, setSaveMode] = useState<SaveMode>('save')
   const [saveRecommendedCourse, setSaveRecommendedCourse] = useState('未分类课程')
   const [saveRecommendedTopic, setSaveRecommendedTopic] = useState('未分类主题')
@@ -945,6 +1118,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem('rhyme-interface-scale', String(interfaceScale))
   }, [interfaceScale])
+
+  useEffect(() => {
+    localStorage.setItem('rhyme-sidebar-collapsed', String(sidebarCollapsed))
+  }, [sidebarCollapsed])
+
+  useEffect(() => {
+    localStorage.setItem('rhyme-learning-guide-open', String(learningGuideOpen))
+  }, [learningGuideOpen])
 
   useEffect(() => {
     if (sessionMenuId === null) return
@@ -1122,6 +1303,9 @@ function App() {
   const readerDynamicExplanation = readerArtifact?.kind === 'interactive'
     ? parseDynamicExplanation(readerArtifact.content)
     : null
+  const readerExternalVideo = readerArtifact?.kind === 'external_video'
+    ? parseExternalVideoContent(readerArtifact.content)
+    : null
   const mapArtifacts = useMemo(() => {
     const candidates = [
       ...turns.flatMap(turn => turn.artifacts),
@@ -1134,6 +1318,16 @@ function App() {
     ))
     return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
   }, [libraryItems, mapWorkspaceArtifactId, readerArtifact, trashedItems, turns])
+  const interactivePresentationArtifacts = useMemo(() => {
+    const candidates = [
+      ...turns.flatMap(turn => turn.artifacts),
+      ...libraryItems,
+      ...(readerArtifact ? [readerArtifact] : []),
+    ].filter((artifact): artifact is Artifact => (
+      artifact.kind === 'interactive' && artifact.saved && Boolean(artifact.backendId)
+    ))
+    return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
+  }, [libraryItems, readerArtifact, turns])
   const mapWorkspaceArtifact = mapWorkspaceArtifactId
     ? mapArtifacts.find(artifact => artifact.id === mapWorkspaceArtifactId) || null
     : null
@@ -1161,8 +1355,73 @@ function App() {
     })
     return () => { cancelled = true }
   }, [mapArtifacts, mapProgressByArtifactId])
+  useEffect(() => {
+    let cancelled = false
+    interactivePresentationArtifacts.forEach(artifact => {
+      if (!artifact.backendId || presentationProgressByArtifactId[artifact.id] || presentationProgressFetches.current.has(artifact.id)) return
+      presentationProgressFetches.current.add(artifact.id)
+      void getInteractivePresentationProgress(artifact.backendId, LOCAL_USER_ID)
+        .then(progress => {
+          if (!cancelled) {
+            setPresentationProgressByArtifactId(current => (
+              current[artifact.id] ? current : { ...current, [artifact.id]: progress }
+            ))
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => presentationProgressFetches.current.delete(artifact.id))
+    })
+    return () => { cancelled = true }
+  }, [interactivePresentationArtifacts, presentationProgressByArtifactId])
   const libraryTopicItems = libraryTopic
     ? filteredLibraryItems.filter(item => item.course === libraryTopic.course && item.topic === libraryTopic.topic)
+    : []
+  const libraryTopicLearningLoops = (() => {
+    const groups = libraryTopicItems.reduce<Record<string, Artifact[]>>((result, artifact) => {
+      if (!artifact.learningLoopId) return result
+      result[artifact.learningLoopId] = [...(result[artifact.learningLoopId] || []), artifact]
+      return result
+    }, {})
+    return Object.entries(groups)
+      .map(([id, artifacts]) => ({
+        id,
+        artifacts,
+        newestAt: Math.max(...artifacts.map(item => new Date(item.updatedAt || item.createdAt || 0).getTime() || 0)),
+      }))
+      .sort((first, second) => second.newestAt - first.newestAt)
+  })()
+  const libraryTopicDocumentPacks = (() => {
+    const groups = libraryTopicItems.reduce<Record<string, Artifact[]>>((result, artifact) => {
+      if (!artifact.documentPackId) return result
+      result[artifact.documentPackId] = [...(result[artifact.documentPackId] || []), artifact]
+      return result
+    }, {})
+    return Object.entries(groups)
+      .map(([id, artifacts]) => ({
+        id,
+        artifacts,
+        newestAt: Math.max(...artifacts.map(item => new Date(item.updatedAt || item.createdAt || 0).getTime() || 0)),
+      }))
+      .sort((first, second) => second.newestAt - first.newestAt)
+  })()
+  const documentPackBookletDocuments = documentPackBooklet
+    ? (() => {
+        const candidates = [
+          ...turns.flatMap(turn => turn.artifacts),
+          ...libraryItems,
+          ...trashedItems,
+        ].filter(artifact => artifact.documentPackId === documentPackBooklet.packId)
+        return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
+          .map((artifact): StudyBookletDocument => ({
+            id: artifact.id,
+            title: artifact.title,
+            summary: artifact.summary,
+            content: artifact.content,
+            details: artifact.details,
+            status: artifact.status,
+            documentTemplate: artifact.documentPackTemplate || artifact.documentTemplate,
+          }))
+      })()
     : []
   const libraryTopicMastery = libraryTopicItems[0]?.topicMastery || 0
   const libraryTopicReview = libraryTopic ? topicReviews[folderTopicKey(libraryTopic.course, libraryTopic.topic)] : undefined
@@ -1187,13 +1446,67 @@ function App() {
   const appFrameStyle = { '--ui-scale': interfaceScale / 100 } as CSSProperties
   const activeInterfaceStyle = interfaceStyles.find(item => item.id === interfaceStyle) || interfaceStyles[0]
   const activeInterfaceScale = interfaceScales.find(item => item.value === interfaceScale) || interfaceScales[1]
+  const learningGuideTurn = turns.at(-1)
+  const learningGuideArtifacts = learningGuideTurn?.artifacts || []
+  const hasGuideArtifact = (kind: ArtifactKind) => learningGuideArtifacts.some(artifact => (
+    artifact.kind === kind && artifact.status !== 'generating' && artifact.status !== 'error'
+  ))
+  const hasGuideVideo = Boolean(learningGuideTurn && inlineVideoSearches[learningGuideTurn.id]?.results.length)
+  const learningGuideSteps = learningGuideTurn ? [
+    {
+      id: 'notes',
+      label: t('学习文档', 'Learning document'),
+      detail: t('先梳理核心概念与重点', 'Clarify the essential concepts first'),
+      icon: FileText,
+      complete: hasGuideArtifact('notes'),
+      action: () => { setView('chat'); setDocumentSetup(defaultDocumentSetup(learningGuideTurn.id, learningGuideTurn.prompt, learningGuideTurn.response)); setGenerateOpen(false) },
+    },
+    {
+      id: 'map',
+      label: t('知识图解', 'Knowledge map'),
+      detail: t('把关系和学习脉络看清楚', 'See the relationships and structure'),
+      icon: MapIcon,
+      complete: hasGuideArtifact('map'),
+      action: () => runKnowledgeMapGeneration(learningGuideTurn.id),
+    },
+    {
+      id: 'video',
+      label: t('课程视频', 'Course video'),
+      detail: t('补充一段可直接观看的讲解', 'Add a focused video explanation'),
+      icon: Video,
+      complete: hasGuideVideo,
+      action: () => { setView('chat'); openVideoSearch(learningGuideTurn.id) },
+    },
+    {
+      id: 'practice',
+      label: t('练习检验', 'Practice check'),
+      detail: t('用题目确认是否真正掌握', 'Use questions to verify mastery'),
+      icon: ClipboardCheck,
+      complete: hasGuideArtifact('practice'),
+      action: () => runPracticeGeneration(learningGuideTurn.id),
+    },
+  ] : []
+  const nextLearningGuideStep = learningGuideSteps.find(step => !step.complete)
+  const learningGuideCourse = learningState.subject || learningGuideTurn?.artifacts[0]?.course || t('本次学习', 'This study session')
+  const learningGuideTopic = learningState.current_topic || learningState.knowledge_points[0] || learningGuideTurn?.artifacts[0]?.topic || t('从当前对话开始', 'Start from the current chat')
   const artifactLabel = (kind: ArtifactKind, chinese: string) => t(chinese, ({
     notes: 'Learning document',
     practice: 'Practice quiz',
     map: 'Knowledge map',
     interactive: 'Interactive explanation',
     video: 'Video lesson',
+    external_video: 'Course video',
   } as Partial<Record<ArtifactKind, string>>)[kind] || chinese)
+  const documentTemplateLabel = (artifact?: Artifact | null) => {
+    if (!artifact || artifact.kind !== 'notes') return ''
+    const template = documentTemplateById[artifact.documentTemplate || 'system_guide']
+    return interfaceLanguage === 'en' ? template.labelEn : template.label
+  }
+  const documentArtifactLabel = (artifact?: Artifact | null) => {
+    const templateLabel = documentTemplateLabel(artifact)
+    const base = artifact ? artifactLabel(artifact.kind, '学习文档') : t('学习文档', 'Learning document')
+    return templateLabel ? `${base} · ${templateLabel}` : base
+  }
 
   function recordSavedArtifactActivity(artifact: Artifact, activityType = 'opened', activityData: Record<string, unknown> = {}) {
     if (!artifact.saved || !artifact.backendId) return
@@ -1208,6 +1521,73 @@ function App() {
       })
   }
 
+  function presentationProgressForArtifact(artifact: Artifact): DynamicExplanationProgress | undefined {
+    const stored = presentationProgressByArtifactId[artifact.id]
+    if (!stored) return undefined
+    return {
+      activeSceneId: stored.active_scene_id,
+      completedSceneIds: stored.completed_scene_ids,
+      isCompleted: stored.is_completed,
+      checkpoints: stored.checkpoints || {},
+    }
+  }
+
+  function persistInteractivePresentationProgress(artifact: Artifact, progress: DynamicExplanationProgress) {
+    if (!artifact.saved || !artifact.backendId) return
+
+    const previous = presentationProgressByArtifactId[artifact.id]
+    const token = (presentationProgressSaveTokens.current[artifact.id] || 0) + 1
+    presentationProgressSaveTokens.current[artifact.id] = token
+    const optimistic: InteractivePresentationProgress = {
+      artifact_id: artifact.backendId,
+      active_scene_id: progress.activeSceneId,
+      completed_scene_ids: progress.completedSceneIds,
+      is_completed: progress.isCompleted,
+      updated_at: previous?.updated_at || '',
+      checkpoints: previous?.checkpoints || {},
+    }
+    setPresentationProgressByArtifactId(current => ({ ...current, [artifact.id]: optimistic }))
+
+    void updateInteractivePresentationProgress(artifact.backendId, LOCAL_USER_ID, {
+      active_scene_id: progress.activeSceneId,
+      completed_scene_ids: progress.completedSceneIds,
+      is_completed: progress.isCompleted,
+    })
+      .then(saved => {
+        if (presentationProgressSaveTokens.current[artifact.id] !== token) return
+        setPresentationProgressByArtifactId(current => ({ ...current, [artifact.id]: saved }))
+        if (libraryTopic?.course === artifact.course && libraryTopic?.topic === artifact.topic) {
+          void refreshLibraryTopicState()
+        }
+      })
+      .catch(() => {
+        if (presentationProgressSaveTokens.current[artifact.id] !== token) return
+        setPresentationProgressByArtifactId(current => {
+          const next = { ...current }
+          if (previous) next[artifact.id] = previous
+          else delete next[artifact.id]
+          return next
+        })
+      })
+  }
+
+  function persistInteractivePresentationCheckpoint(artifact: Artifact, scene: DynamicExplanationScene, answer: string) {
+    if (!artifact.saved || !artifact.backendId) return
+    void recordInteractivePresentationCheckpoint(artifact.backendId, LOCAL_USER_ID, {
+      scene_id: scene.id,
+      answer,
+    })
+      .then(saved => {
+        setPresentationProgressByArtifactId(current => ({ ...current, [artifact.id]: saved }))
+        if (libraryTopic?.course === artifact.course && libraryTopic?.topic === artifact.topic) {
+          void refreshLibraryTopicState()
+        }
+      })
+      .catch(() => {
+        // The in-scene correction remains available even if its study record cannot sync right now.
+      })
+  }
+
   function openLibraryArtifact(artifact: Artifact) {
     if (artifact.kind === 'map') {
       openMapWorkspace(artifact, 'library')
@@ -1216,6 +1596,35 @@ function App() {
     setLibraryPreviewId(artifact.id)
     setView('library')
     recordSavedArtifactActivity(artifact)
+  }
+
+  function openDocumentPackBooklet({
+    packId,
+    turnId,
+    artifacts,
+    persisted,
+  }: {
+    packId: string
+    turnId?: string
+    artifacts: Artifact[]
+    persisted: boolean
+  }) {
+    const first = artifacts[0]
+    if (!first) return
+    const course = first.course && first.course !== '未分类课程'
+      ? first.course
+      : first.recommendedCourse || '未分类课程'
+    const topic = first.topic && first.topic !== '未分类主题' && first.topic !== '本次学习'
+      ? first.topic
+      : first.recommendedTopic || '未分类主题'
+    setDocumentPackBooklet({ packId, turnId, course, topic, persisted })
+    setDocumentPackBookletActiveId(current => artifacts.some(artifact => artifact.id === current) ? current : artifacts[0].id)
+    setExpandedArtifactId(null)
+  }
+
+  function closeDocumentPackBooklet() {
+    setDocumentPackBooklet(null)
+    setDocumentPackBookletActiveId(null)
   }
 
   function openMapWorkspace(artifact: Artifact, returnView: MapWorkspaceReturnView) {
@@ -1588,6 +1997,10 @@ function App() {
   }
 
   function chooseArtifact(kind: ArtifactKind) {
+    if (kind === 'external_video') {
+      openVideoSearch()
+      return
+    }
     setSelectedKind(kind)
     setGenerateOpen(false)
   }
@@ -1604,6 +2017,118 @@ function App() {
     if (generatorTurnId) generateForTurn(generatorTurnId, kind)
     else chooseArtifact(kind)
     setGeneratorCatalogOpen(false)
+  }
+
+  function openVideoSearch(
+    turnId?: string,
+    contextOverride?: Partial<Pick<VideoSearchContext, 'course' | 'topic' | 'query' | 'sessionId'>>,
+  ) {
+    const targetTurnId = turnId || turns.at(-1)?.id
+    const turn = targetTurnId ? turns.find(item => item.id === targetTurnId) : undefined
+    if (!targetTurnId || !turn) {
+      setNotice('先发出一个学习问题，我会根据这段对话直接找课程视频。')
+      return
+    }
+    const course = contextOverride?.course || learningState.subject || '未分类课程'
+    const topic = contextOverride?.topic || learningState.current_topic || learningState.knowledge_points[0] || '本次学习'
+    const query = contextOverride?.query
+      || [course !== '未分类课程' ? course : '', topic !== '本次学习' ? topic : ''].filter(Boolean).join(' ')
+      || input.trim()
+      || turn?.prompt
+      || ''
+    const context: VideoSearchContext = {
+      turnId: targetTurnId,
+      sessionId: contextOverride?.sessionId ?? sessionId ?? 0,
+      query,
+      course,
+      topic,
+    }
+    setInlineVideoSearches(current => ({
+      ...current,
+      [targetTurnId]: { context, results: [], searchUrl: '', loading: true, error: '' },
+    }))
+    setGenerateOpen(false)
+    void runVideoSearch(targetTurnId, context)
+  }
+
+  async function runVideoSearch(turnId: string, context: VideoSearchContext) {
+    const cleanedQuery = context.query.trim()
+    if (!cleanedQuery) {
+      setInlineVideoSearches(current => ({
+        ...current,
+        [turnId]: { context, results: [], searchUrl: '', loading: false, error: '暂时无法判断学习主题，请先在对话里说清课程或知识点。' },
+      }))
+      return
+    }
+    try {
+      const response = await searchExternalVideos(cleanedQuery, context.course, context.topic)
+      setInlineVideoSearches(current => ({
+        ...current,
+        [turnId]: {
+          context: { ...context, query: response.query },
+          results: response.results,
+          searchUrl: response.search_url,
+          loading: false,
+          error: '',
+        },
+      }))
+      window.requestAnimationFrame(() => document.getElementById(`course-videos-${turnId}`)?.scrollIntoView({
+        block: 'nearest',
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      }))
+    } catch (error) {
+      setInlineVideoSearches(current => ({
+        ...current,
+        [turnId]: {
+          context,
+          results: [],
+          searchUrl: '',
+          loading: false,
+          error: error instanceof Error ? error.message : '课程视频检索失败，请稍后重试。',
+        },
+      }))
+    }
+  }
+
+  function openExternalVideo(url: string, artifact?: Artifact) {
+    if (artifact) recordSavedArtifactActivity(artifact, 'external_opened', { platform: 'bilibili', url })
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  function openExternalVideoSave(video: ExternalVideoResource, contextOverride?: VideoSearchContext) {
+    const context = contextOverride || {
+      sessionId: sessionId || 0,
+      query: video.title,
+      course: learningState.subject || '未分类课程',
+      topic: learningState.current_topic || '本次学习',
+    }
+    setExternalVideoSaveTarget({ video, context })
+    setSaveTarget(null)
+    setLearningLoopSaveTarget(null)
+    setSaveMode('save')
+    setSaveRecommendedCourse(context.course)
+    setSaveRecommendedTopic(context.topic)
+    setSaveRecommendationSource('learning_state')
+    setSaveTitle(video.title)
+    setSaveCourse(context.course)
+    setSaveTopic(context.topic)
+    setSaveLocationOpen(
+      context.course === '未分类课程'
+      || context.topic === '未分类主题'
+      || context.topic === '本次学习',
+    )
+    resetDuplicateDecision()
+  }
+
+  function prepareVideoFollowUp(artifact: Artifact, kind: 'interactive' | 'practice') {
+    setLibraryPreviewId(null)
+    setView('chat')
+    setSelectedKind(kind)
+    setInput(kind === 'interactive'
+      ? `我看完了“${artifact.title}”，但“${artifact.topic}”还有些地方没理解。请用动态讲解带我重新推演一遍。`
+      : `我看完了“${artifact.title}”。请围绕“${artifact.topic}”给我出一组练习检验理解。`)
+    setNotice(kind === 'interactive' ? '已准备好动态讲解需求，发送后开始生成。' : '已准备好练习需求，发送后开始生成。')
+    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-wrap textarea')?.focus())
   }
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>, type: Attachment['type']) {
@@ -1740,7 +2265,10 @@ function App() {
           setTurns(current => current.map(turn => turn.id === turnId
             ? { ...turn, id: streamEvent.qa_id, loading: false, loadingPhase: undefined, imageAnalysisLoading: false }
             : turn))
-          if (requestedKind === 'notes') setDocumentSetup(defaultDocumentSetup(streamEvent.qa_id))
+          if (requestedKind === 'notes') {
+            const completedTurn = turns.find(item => item.id === turnId)
+            setDocumentSetup(defaultDocumentSetup(streamEvent.qa_id, prompt, completedTurn?.response || ''))
+          }
           else if (requestedKind === 'practice') setPracticeSetupTurnId(streamEvent.qa_id)
           else if (requestedKind === 'map') setPendingMapGenerationTurnId(streamEvent.qa_id)
           else if (requestedKind === 'interactive') setPendingDynamicExplanationTurnId(streamEvent.qa_id)
@@ -1763,8 +2291,13 @@ function App() {
   }
 
   function generateForTurn(turnId: string, kind: ArtifactKind) {
+    if (kind === 'external_video') {
+      openVideoSearch(turnId)
+      return
+    }
     if (kind === 'notes') {
-      setDocumentSetup(current => current?.turnId === turnId ? null : defaultDocumentSetup(turnId))
+      const turn = turns.find(item => item.id === turnId)
+      setDocumentSetup(current => current?.turnId === turnId ? null : defaultDocumentSetup(turnId, turn?.prompt, turn?.response))
       return
     }
     if (kind === 'map') {
@@ -1795,9 +2328,9 @@ function App() {
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'notes',
-      title: '正在整理学习文档…',
-      summary: '千问正在提取知识结构、例子、易错点和自测问题。',
-      details: ['读取当前问题与回答', '结合学习状态重新组织内容'],
+      title: `正在生成${documentTemplateById[documentSetup.template].label}…`,
+      summary: `正在按「${documentTemplateById[documentSetup.template].label}」的专属结构整理当前内容。`,
+      details: ['读取当前问题与回答', `应用${documentTemplateById[documentSetup.template].label}模板`, '结合学习状态校验重点'],
       source: turn.prompt,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
@@ -1812,7 +2345,7 @@ function App() {
       versionGroupId: 0,
       version: 1,
       status: 'generating',
-      ...documentSetup,
+      documentTemplate: documentSetup.template,
     }
     setDocumentGenerating(true)
     setDocumentSetup(null)
@@ -1824,11 +2357,7 @@ function App() {
         LOCAL_USER_ID,
         sessionId,
         turn.id,
-        {
-          purpose: loadingArtifact.purpose || 'review',
-          depth: loadingArtifact.depth || 'standard',
-          style: loadingArtifact.style || 'plain',
-        },
+        { document_template: documentSetup.template },
       )
       const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
       const generated = artifactFromRecord(data.artifact)
@@ -1836,7 +2365,7 @@ function App() {
         ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === loadingId ? generated : artifact) }
         : item))
       setExpandedArtifactId(generated.id)
-      setNotice('学习文档已生成，作为临时资料保存在当前对话。')
+      setNotice(`${documentTemplateById[documentSetup.template].label}已生成，作为临时资料保存在当前对话。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : '学习文档生成失败'
       setTurns(current => current.map(item => item.id === turn.id
@@ -1853,7 +2382,148 @@ function App() {
     }
   }
 
-  async function runPracticeGeneration(turnId: string) {
+  function openDocumentPackSetup(turnId: string) {
+    const turn = turns.find(item => item.id === turnId)
+    if (!turn) return
+    setDocumentSetup(null)
+    setDocumentPackSetup(current => current?.turnId === turnId
+      ? null
+      : { turnId, templates: recommendedDocumentPackTemplates(turn.prompt, turn.response) })
+  }
+
+  function returnToDocumentSetup(turnId: string) {
+    const turn = turns.find(item => item.id === turnId)
+    if (!turn) return
+    setDocumentPackSetup(null)
+    setDocumentSetup(defaultDocumentSetup(turnId, turn.prompt, turn.response))
+  }
+
+  function toggleDocumentPackTemplate(template: DocumentTemplateId) {
+    setDocumentPackSetup(current => {
+      if (!current) return current
+      return current.templates.includes(template)
+        ? { ...current, templates: current.templates.filter(item => item !== template) }
+        : { ...current, templates: [...current.templates, template] }
+    })
+  }
+
+  async function runDocumentPackGeneration() {
+    if (!documentPackSetup || !sessionId || documentPackGenerationLocked.current) return
+    const setup = documentPackSetup
+    const turn = turns.find(item => item.id === setup.turnId)
+    const templates = [...new Set(setup.templates)]
+    if (!turn || turn.id.startsWith('pending-')) {
+      setNotice('这条回答还没有保存完成，请稍后重试。')
+      return
+    }
+    if (templates.length === 0) {
+      setNotice('至少选择一份要生成的资料。')
+      return
+    }
+
+    const packId = `document-pack-${Date.now()}`
+    const course = learningState.subject || '未分类课程'
+    const topic = learningState.current_topic || '本次学习'
+    const placeholders = templates.map(template => ({
+      id: `${packId}-${template}`,
+      kind: 'notes' as const,
+      title: `正在生成${documentTemplateById[template].label}…`,
+      summary: `正在按「${documentTemplateById[template].label}」的专属结构整理当前内容。`,
+      details: ['读取当前问题与回答', `应用${documentTemplateById[template].label}模板`, '生成完成后可整包保存'],
+      source: turn.prompt,
+      sessionId,
+      qaId: turn.id,
+      course,
+      topic,
+      topicMastery: 0,
+      recommendedCourse: course,
+      recommendedTopic: topic,
+      classificationSource: 'learning_state' as const,
+      classificationConfidence: 0.9,
+      classificationOverridden: false,
+      saved: false,
+      favorite: false,
+      versionGroupId: 0,
+      version: 1,
+      status: 'generating' as const,
+      documentTemplate: template,
+      documentPackId: packId,
+      documentPackTemplate: template,
+    }))
+    const replacePlaceholder = (placeholderId: string, next: Artifact) => {
+      setTurns(current => current.map(item => item.id === turn.id
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === placeholderId ? next : artifact) }
+        : item))
+    }
+
+    documentPackGenerationLocked.current = true
+    setDocumentPackGeneratingTurnId(turn.id)
+    setDocumentPackPlanningByTurn(current => ({
+      ...current,
+      [turn.id]: { packId, templates },
+    }))
+    setDocumentPackSetup(null)
+    setDocumentSetup(null)
+    setNotice('正在制定学习路线，确定各章节分工、共同例题与重点…')
+    setTurns(current => current.map(item => item.id === turn.id
+      ? { ...item, artifacts: [...item.artifacts, ...placeholders] }
+      : item))
+    try {
+      let blueprint: StudyPackBlueprint | undefined
+      try {
+        const queuedPlan = await generateStudyPackBlueprint(LOCAL_USER_ID, sessionId, turn.id, templates)
+        blueprint = (await waitForGenerationJob(LOCAL_USER_ID, queuedPlan.job)).blueprint
+      } catch {
+        // The backend also has a safe fallback. If the planning job itself is
+        // unavailable, keep the pack useful and do not discard the user's work.
+        setNotice('学习路线暂时不可用，正在按所选章节并行生成资料…')
+      } finally {
+        setDocumentPackPlanningByTurn(current => {
+          const next = { ...current }
+          delete next[turn.id]
+          return next
+        })
+      }
+      setNotice(`正在按统一学习路线并行生成 ${templates.length} 份资料…`)
+      const results = await Promise.all(templates.map(async (template, index) => {
+        const placeholder = placeholders[index]
+        try {
+          const queued = await generateLearningDocument(LOCAL_USER_ID, sessionId, turn.id, {
+            document_template: template,
+            study_pack_blueprint: blueprint,
+            study_pack_templates: templates,
+          })
+          const record = (await waitForGenerationJob(LOCAL_USER_ID, queued.job)).artifact
+          const generated: Artifact = {
+            ...artifactFromRecord(record),
+            documentPackId: packId,
+            documentPackTemplate: template,
+          }
+          replacePlaceholder(placeholder.id, generated)
+          return generated
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '学习资料生成失败'
+          replacePlaceholder(placeholder.id, {
+            ...placeholder,
+            title: `${documentTemplateById[template].label}未完成`,
+            summary: message,
+            details: ['其他已完成的资料会保留，可单独重新生成。'],
+            status: 'error',
+          })
+          return null
+        }
+      }))
+      const completed = results.filter((artifact): artifact is Artifact => Boolean(artifact)).length
+      setNotice(completed === templates.length
+        ? `${completed} 份资料已就绪，可一键整理为同一学习资料包。`
+        : `${completed}/${templates.length} 份资料已完成，未完成的资料可稍后单独重试。`)
+    } finally {
+      documentPackGenerationLocked.current = false
+      setDocumentPackGeneratingTurnId(current => current === turn.id ? null : current)
+    }
+  }
+
+  async function runPracticeGeneration(turnId: string, sourceMapArtifactId?: number) {
     if (!sessionId || practiceGenerating || practiceGenerationLocked.current) return
     const turn = turns.find(item => item.id === turnId)
     if (!turn || turn.id.startsWith('pending-')) {
@@ -1893,7 +2563,7 @@ function App() {
       ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
       : item))
     try {
-      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id)
+      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], sourceMapArtifactId)
       const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
       const artifact = artifactFromRecord(data.artifact)
       setTurns(current => current.map(item => item.id === turn.id
@@ -2053,6 +2723,395 @@ function App() {
       dynamicExplanationGenerationLocked.current = false
       setDynamicExplanationGeneratingTurnId(null)
     }
+  }
+
+  async function runLearningLoopGeneration(turnId: string) {
+    if (!sessionId || learningLoopGeneratingTurnId || learningLoopGenerationLocked.current) return
+    const turn = turns.find(item => item.id === turnId)
+    if (!turn || turn.id.startsWith('pending-')) {
+      setNotice('这条回答还没有保存完成，请稍后重试。')
+      return
+    }
+
+    const loopId = `learning-loop-${Date.now()}`
+    const course = learningState.subject || '未分类课程'
+    const topic = learningState.current_topic || '本次学习'
+    const createPlaceholder = (step: LearningLoopStep): Artifact => {
+      const meta = learningLoopSteps.find(item => item.kind === step)!
+      return {
+        id: `${loopId}-${step}`,
+        kind: step,
+        title: meta.generating,
+        summary: step === 'practice'
+          ? '知识图解完成后，会基于图解节点生成练习并建立回写关联。'
+          : '正在依据当前问答整理这套学习资料。',
+        details: [meta.detail, step === 'practice' ? '提交练习后，错题会回写到关联的图解节点' : '将自动归入当前课程与主题'],
+        source: turn.prompt,
+        sessionId,
+        qaId: turn.id,
+        course,
+        topic,
+        topicMastery: 0,
+        recommendedCourse: course,
+        recommendedTopic: topic,
+        classificationSource: 'learning_state',
+        classificationConfidence: 0.9,
+        classificationOverridden: false,
+        saved: false,
+        favorite: false,
+        versionGroupId: 0,
+        version: 1,
+        status: 'generating',
+        purpose: 'review',
+        depth: 'standard',
+        style: step === 'notes' ? 'plain' : 'exam',
+        learningLoopId: loopId,
+        learningLoopStep: step,
+      }
+    }
+
+    const placeholders = learningLoopSteps.map(item => createPlaceholder(item.kind))
+    const replaceLoopArtifact = (placeholderId: string, replacement: Artifact) => {
+      setTurns(current => current.map(item => item.id === turnId
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === placeholderId ? replacement : artifact) }
+        : item))
+    }
+    const completeStage = async (
+      step: LearningLoopStep,
+      work: () => Promise<LearningArtifactRecord>,
+      retryOnce = false,
+    ): Promise<Artifact | null> => {
+      const placeholder = placeholders.find(item => item.learningLoopStep === step)!
+      try {
+        let record: LearningArtifactRecord | null = null
+        let lastError: unknown
+        for (let attempt = 0; attempt < (retryOnce ? 2 : 1); attempt += 1) {
+          try {
+            record = await work()
+            break
+          } catch (error) {
+            lastError = error
+          }
+        }
+        if (!record) throw lastError || new Error('生成没有完成，请稍后重试')
+        const generated = {
+          ...artifactFromRecord(record),
+          learningLoopId: loopId,
+          learningLoopStep: step,
+        }
+        replaceLoopArtifact(placeholder.id, generated)
+        return generated
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `${learningLoopSteps.find(item => item.kind === step)?.label || '资料'}生成失败`
+        replaceLoopArtifact(placeholder.id, {
+          ...placeholder,
+          title: `${learningLoopSteps.find(item => item.kind === step)?.label || '资料'}未完成`,
+          summary: message,
+          details: ['可以单独重新生成这一份资料，其他已完成的内容会保留。'],
+          status: 'error',
+        })
+        return null
+      }
+    }
+
+    learningLoopGenerationLocked.current = true
+    setLearningLoopGeneratingTurnId(turnId)
+    setDocumentSetup(null)
+    setPracticeSetupTurnId(null)
+    setLearningLoopActiveStepByTurn(current => ({ ...current, [turnId]: 'notes' }))
+    setNotice('正在生成学习闭环：讲义、图解和动态讲解会同时开始，练习将在图解完成后接入。')
+    setTurns(current => current.map(item => item.id === turnId
+      ? { ...item, artifacts: [...item.artifacts, ...placeholders] }
+      : item))
+
+    try {
+      const documentTask = completeStage('notes', async () => {
+        const queued = await generateLearningDocument(LOCAL_USER_ID, sessionId, turn.id, {
+          document_template: 'system_guide',
+        })
+        return (await waitForGenerationJob(LOCAL_USER_ID, queued.job)).artifact
+      })
+      const mapTask = completeStage('map', async () => {
+        const queued = await generateKnowledgeMap(LOCAL_USER_ID, sessionId, turn.id)
+        return (await waitForGenerationJob(LOCAL_USER_ID, queued.job)).artifact
+      })
+      const explanationTask = completeStage('interactive', async () => {
+        const queued = await generateDynamicExplanation(LOCAL_USER_ID, sessionId, turn.id)
+        return (await waitForGenerationJob(LOCAL_USER_ID, queued.job)).artifact
+      })
+      const [documentArtifact, mapArtifact, explanationArtifact] = await Promise.all([documentTask, mapTask, explanationTask])
+      const practiceArtifact = mapArtifact?.backendId
+        ? await completeStage('practice', async () => {
+          const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], mapArtifact.backendId)
+          return (await waitForGenerationJob(LOCAL_USER_ID, queued.job)).artifact
+        }, true)
+        : (() => {
+          const placeholder = placeholders.find(item => item.learningLoopStep === 'practice')!
+          replaceLoopArtifact(placeholder.id, {
+            ...placeholder,
+            title: '练习等待图解恢复',
+            summary: '知识图解尚未完成。请先重新生成图解，系统会继续生成这份关联练习。',
+            details: ['练习必须关联知识图解，才能在提交后准确回写薄弱节点。'],
+            status: 'error',
+          })
+          return null
+        })()
+      const generatedCount = [documentArtifact, mapArtifact, explanationArtifact, practiceArtifact].filter(Boolean).length
+      setNotice(generatedCount === 4
+        ? '四份资料已就绪。按“学习文档 → 知识图解 → 动态讲解 → 练习检验”开始即可。'
+        : '学习闭环已尽量生成完成；未完成的资料可以单独重新生成。')
+    } finally {
+      learningLoopGenerationLocked.current = false
+      setLearningLoopGeneratingTurnId(current => current === turnId ? null : current)
+    }
+  }
+
+  function openLearningLoopStep(turnId: string, step: LearningLoopStep, artifact?: Artifact) {
+    if (!artifact || artifact.status === 'generating') {
+      setNotice('这一环还在准备中，完成后会自动可用。')
+      return
+    }
+    if (artifact.status === 'error') {
+      setNotice('这一环暂未生成成功，可以在资料卡片中单独重新生成。')
+      return
+    }
+    setLearningLoopActiveStepByTurn(current => ({ ...current, [turnId]: step }))
+    if (step === 'notes') {
+      setExpandedArtifactId(artifact.id)
+      window.requestAnimationFrame(() => document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+      return
+    }
+    if (step === 'map') {
+      openMapWorkspace(artifact, 'chat')
+      return
+    }
+    if (step === 'interactive') {
+      setImmersiveOpenRequest({ artifactId: artifact.id, revision: Date.now() })
+      return
+    }
+    void openPractice(artifact)
+  }
+
+  async function retryLearningLoopMap(turnId: string, failedArtifact: Artifact) {
+    if (!sessionId || !failedArtifact.learningLoopId) return
+    const turn = turns.find(item => item.id === turnId)
+    if (!turn) return
+    const waitingPractice = turn.artifacts.find(item => (
+      item.learningLoopId === failedArtifact.learningLoopId && item.learningLoopStep === 'practice'
+    ))
+    setTurns(current => current.map(item => item.id === turnId
+      ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === failedArtifact.id
+        ? { ...artifact, title: '正在重新生成知识图解', summary: '图解完成后会自动继续生成关联练习。', status: 'generating' }
+        : artifact) }
+      : item))
+    try {
+      const queued = await generateKnowledgeMap(LOCAL_USER_ID, sessionId, turn.id)
+      const result = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
+      const generatedMap = {
+        ...artifactFromRecord(result.artifact),
+        learningLoopId: failedArtifact.learningLoopId,
+        learningLoopStep: 'map' as const,
+      }
+      setTurns(current => current.map(item => item.id === turnId
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === failedArtifact.id ? generatedMap : artifact) }
+        : item))
+
+      if (!waitingPractice || waitingPractice.status !== 'error' || !generatedMap.backendId) return
+      setTurns(current => current.map(item => item.id === turnId
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === waitingPractice.id
+          ? { ...artifact, title: '正在生成关联练习', summary: '题目会依据知识图解生成，提交后可回写薄弱节点。', status: 'generating' }
+          : artifact) }
+        : item))
+      try {
+        const practiceQueued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], generatedMap.backendId)
+        const practiceResult = await waitForGenerationJob(LOCAL_USER_ID, practiceQueued.job)
+        const generatedPractice = {
+          ...artifactFromRecord(practiceResult.artifact),
+          learningLoopId: failedArtifact.learningLoopId,
+          learningLoopStep: 'practice' as const,
+        }
+        setTurns(current => current.map(item => item.id === turnId
+          ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === waitingPractice.id ? generatedPractice : artifact) }
+          : item))
+        setNotice('知识图解和关联练习已恢复，练习完成后会回写到图解节点。')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '关联练习生成失败'
+        setTurns(current => current.map(item => item.id === turnId
+          ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === waitingPractice.id
+            ? { ...artifact, title: '练习检验未完成', summary: message, status: 'error' }
+            : artifact) }
+          : item))
+        setNotice('知识图解已恢复，关联练习可以再试一次。')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '知识图解生成失败'
+      setTurns(current => current.map(item => item.id === turnId
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === failedArtifact.id
+          ? { ...artifact, title: '知识图解未完成', summary: message, status: 'error' }
+          : artifact) }
+        : item))
+      setNotice(message)
+    }
+  }
+
+  async function retryLearningLoopPractice(turnId: string, failedArtifact: Artifact) {
+    if (!sessionId || !failedArtifact.learningLoopId) return
+    const turn = turns.find(item => item.id === turnId)
+    const mapArtifact = turn?.artifacts.find(item => (
+      item.learningLoopId === failedArtifact.learningLoopId && item.learningLoopStep === 'map'
+    ))
+    if (!turn || !mapArtifact?.backendId || mapArtifact.status === 'generating' || mapArtifact.status === 'error') {
+      setNotice('需要先完成关联的知识图解，才能重新接上这份练习。')
+      return
+    }
+    setTurns(current => current.map(item => item.id === turnId
+      ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === failedArtifact.id
+        ? { ...artifact, title: '正在重新生成练习', summary: '将继续关联当前知识图解，提交后可把错题回写到节点。', status: 'generating' }
+        : artifact) }
+      : item))
+    try {
+      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], mapArtifact.backendId)
+      const result = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
+      const generated = {
+        ...artifactFromRecord(result.artifact),
+        learningLoopId: failedArtifact.learningLoopId,
+        learningLoopStep: 'practice' as const,
+      }
+      setTurns(current => current.map(item => item.id === turnId
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === failedArtifact.id ? generated : artifact) }
+        : item))
+      setNotice('练习已重新接入知识图解，完成后会回写错题关联。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '练习生成失败'
+      setTurns(current => current.map(item => item.id === turnId
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === failedArtifact.id
+          ? { ...artifact, title: '练习检验未完成', summary: message, status: 'error' }
+          : artifact) }
+        : item))
+      setNotice(message)
+    }
+  }
+
+  function renderLearningLoop(turn: ChatTurn) {
+    const latestLoopId = [...turn.artifacts].reverse().find(artifact => artifact.learningLoopId)?.learningLoopId
+    if (!latestLoopId) return null
+    const artifacts = learningLoopSteps.map(step => turn.artifacts.find(artifact => (
+      artifact.learningLoopId === latestLoopId && artifact.learningLoopStep === step.kind
+    )))
+    const readyCount = artifacts.filter(artifact => artifact && artifact.status !== 'generating' && artifact.status !== 'error').length
+    const activeStep = learningLoopActiveStepByTurn[turn.id]
+    const nextArtifact = artifacts.find(artifact => artifact && artifact.status !== 'generating' && artifact.status !== 'error')
+    const nextStep = learningLoopSteps.find(step => step.kind === nextArtifact?.learningLoopStep)
+    const canSaveLoop = readyCount === learningLoopSteps.length
+    const unsavedCount = artifacts.filter(artifact => artifact && !artifact.saved).length
+    const loopPersisted = artifacts.every(artifact => artifact?.saved && artifact.learningLoopId)
+
+    return (
+      <section className="learning-loop" aria-label={t('四步学习闭环', 'Four-step learning loop')}>
+        <header className="learning-loop-head">
+          <div><b>{t('一套可继续学习的资料', 'One connected learning set')}</b><p>{t('按顺序完成四步，练习结果会回写到关联图解。', 'Move through the four steps. Practice results return to the linked map.')}</p></div>
+          <span>{t(`${readyCount}/4 已就绪`, `${readyCount}/4 ready`)}</span>
+        </header>
+        <div className="learning-loop-steps">
+          {learningLoopSteps.map((step, index) => {
+            const artifact = artifacts[index]
+            const isReady = Boolean(artifact && artifact.status !== 'generating' && artifact.status !== 'error')
+            const status = artifact?.status === 'error'
+              ? t('未完成', 'Unavailable')
+              : artifact?.status === 'generating'
+                ? t('生成中', 'Building')
+                : isReady ? t('可开始', 'Ready') : t('等待中', 'Waiting')
+            return (
+              <button
+                className={`${activeStep === step.kind ? 'active ' : ''}${artifact?.status === 'error' ? 'failed' : ''}`}
+                type="button"
+                key={step.kind}
+                disabled={!isReady}
+                onClick={() => openLearningLoopStep(turn.id, step.kind, artifact)}
+              >
+                <i>{index + 1}</i>
+                <span><b>{t(step.label, step.labelEn)}</b><small>{t(step.detail, step.detailEn)}</small></span>
+                <em>{status}</em>
+              </button>
+            )
+          })}
+        </div>
+        <footer className="learning-loop-foot">
+          <p>{t('完成练习后，系统会标记图解中的薄弱节点；把四份资料保存到同一主题后，资料库会继续推荐下一步。', 'After practice, weak map nodes are marked. Save the four materials to one topic and the library will recommend the next step.')}</p>
+          <div className="learning-loop-foot-actions">
+            <button className="learning-loop-save" type="button" disabled={!canSaveLoop} onClick={() => {
+              if (!loopPersisted) {
+                openLearningLoopSave(turn)
+                return
+              }
+              const first = artifacts.find((artifact): artifact is Artifact => Boolean(artifact))
+              if (first) {
+                setLibraryTopic({ course: first.course, topic: first.topic })
+                setView('library')
+              }
+            }}>
+              <Save size={14} />{loopPersisted ? t('在资料库中查看', 'View in library') : unsavedCount > 0 ? t(`保存整套资料 (${unsavedCount})`, `Save full set (${unsavedCount})`) : t('整理为学习闭环', 'Organize as a learning loop')}
+            </button>
+            <button className="learning-loop-start" type="button" disabled={!nextArtifact || !nextStep} onClick={() => openLearningLoopStep(turn.id, nextStep!.kind, nextArtifact)}>
+              <Sparkles size={15} />{nextStep ? t(`从${nextStep.label}开始`, `Start with ${nextStep.labelEn}`) : t('正在准备', 'Preparing')}
+            </button>
+          </div>
+        </footer>
+      </section>
+    )
+  }
+
+  function renderDocumentPack(turn: ChatTurn) {
+    const packIds = [...new Set(turn.artifacts.map(artifact => artifact.documentPackId).filter((packId): packId is string => Boolean(packId)))].reverse()
+    if (packIds.length === 0) return null
+    const planning = documentPackPlanningByTurn[turn.id]
+    return (
+      <>
+        {packIds.map(packId => {
+          const artifacts = turn.artifacts.filter(artifact => artifact.documentPackId === packId)
+          const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
+          const complete = readyArtifacts.length === artifacts.length && artifacts.length > 0
+          const persisted = complete && artifacts.every(artifact => artifact.saved)
+          const isPlanning = planning?.packId === packId
+          return (
+            <section className={`document-pack-status${isPlanning ? ' planning' : ''}`} key={packId} aria-label={t('学习资料包', 'Study pack')}>
+              <div>
+                <span><Icon name="archive" size={15} />{t('学习资料包', 'Study pack')}</span>
+                <b>{isPlanning
+                  ? t('正在制定学习路线', 'Preparing the study route')
+                  : t(`${readyArtifacts.length}/${artifacts.length} 份文档已就绪`, `${readyArtifacts.length}/${artifacts.length} documents ready`)}</b>
+                <small>{isPlanning
+                  ? t('正在确定各章节分工、共同例题与重点，随后会开始并行生成。', 'Assigning each chapter, a shared example, and key points before parallel generation.')
+                  : t('打开资料册连续阅读整套内容；统一保存后会归到同一课程和主题。', 'Open the booklet to read the full set continuously, then save it under one course and topic.')}</small>
+              </div>
+              <div className="document-pack-status-actions">
+                <button type="button" onClick={() => openDocumentPackBooklet({
+                  packId,
+                  turnId: turn.id,
+                  artifacts,
+                  persisted,
+                })} disabled={isPlanning}>
+                  <Icon name="book" size={14} />{t('打开资料册', 'Open booklet')}
+                </button>
+                <button type="button" disabled={!complete || isPlanning} onClick={() => {
+                  if (!persisted) {
+                    openDocumentPackSave(turn, packId)
+                    return
+                  }
+                  const first = artifacts[0]
+                  if (first) {
+                    setLibraryTopic({ course: first.course, topic: first.topic })
+                    setView('library')
+                  }
+                }}>
+                  <Icon name={persisted ? 'library' : 'save'} size={14} />{persisted ? t('资料库', 'Library') : t('保存整包', 'Save pack')}
+                </button>
+              </div>
+            </section>
+          )
+        })}
+      </>
+    )
   }
 
   async function updateMapNodeStatus(artifact: Artifact, nodeId: string, status: KnowledgeMapNodeStatus) {
@@ -2472,6 +3531,9 @@ function App() {
 
   function closeSave() {
     setSaveTarget(null)
+    setLearningLoopSaveTarget(null)
+    setDocumentPackSaveTarget(null)
+    setExternalVideoSaveTarget(null)
     resetDuplicateDecision()
   }
 
@@ -2490,6 +3552,9 @@ function App() {
       ? 'learning_state'
       : artifact.classificationSource
     setSaveTarget(artifact)
+    setLearningLoopSaveTarget(null)
+    setDocumentPackSaveTarget(null)
+    setExternalVideoSaveTarget(null)
     setSaveMode(mode)
     setSaveRecommendedCourse(recommendedCourse)
     setSaveRecommendedTopic(recommendedTopic)
@@ -2501,7 +3566,202 @@ function App() {
     resetDuplicateDecision()
   }
 
+  function openDocumentPackSave(turn: ChatTurn, requestedPackId?: string) {
+    const packId = requestedPackId || [...turn.artifacts].reverse().find(artifact => artifact.documentPackId)?.documentPackId
+    if (!packId) return
+    const artifacts = turn.artifacts.filter(artifact => artifact.documentPackId === packId)
+    const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
+    if (readyArtifacts.length !== artifacts.length || readyArtifacts.length === 0) {
+      setNotice('请等待资料包内的内容全部生成完成后，再统一保存。')
+      return
+    }
+    if (readyArtifacts.some(artifact => !artifact.backendId || !artifact.documentPackTemplate)) {
+      setNotice('这套资料还在准备保存信息，请稍后重试。')
+      return
+    }
+    const first = readyArtifacts[0]
+    const stateCourse = learningState.subject || ''
+    const stateTopic = learningState.current_topic || learningState.knowledge_points[0] || ''
+    const recommendedCourse = first.recommendedCourse && first.recommendedCourse !== '未分类课程'
+      ? first.recommendedCourse : stateCourse || '未分类课程'
+    const recommendedTopic = first.recommendedTopic && first.recommendedTopic !== '未分类主题' && first.recommendedTopic !== '本次学习'
+      ? first.recommendedTopic : stateTopic || '未分类主题'
+    setDocumentPackSaveTarget({ turnId: turn.id, packId, artifacts: readyArtifacts })
+    setSaveTarget(null)
+    setLearningLoopSaveTarget(null)
+    setExternalVideoSaveTarget(null)
+    setSaveMode('save')
+    setSaveRecommendedCourse(recommendedCourse)
+    setSaveRecommendedTopic(recommendedTopic)
+    setSaveRecommendationSource(first.classificationSource === 'fallback' && stateCourse && stateTopic ? 'learning_state' : first.classificationSource)
+    setSaveCourse(recommendedCourse)
+    setSaveTopic(recommendedTopic)
+    setSaveLocationOpen(recommendedCourse === '未分类课程' || recommendedTopic === '未分类主题')
+    resetDuplicateDecision()
+  }
+
+  async function confirmDocumentPackSave() {
+    if (!documentPackSaveTarget || !saveCourse.trim() || !saveTopic.trim()) return
+    const target = documentPackSaveTarget
+    const payload = target.artifacts.map(artifact => ({
+      artifact_id: artifact.backendId!,
+      document_template: artifact.documentPackTemplate!,
+    }))
+    if (payload.some(item => !item.artifact_id || !item.document_template)) {
+      setNotice('这套资料的关联信息不完整，请刷新后再试。')
+      return
+    }
+    setSaveBusy(true)
+    try {
+      const response = await saveDocumentPack(
+        LOCAL_USER_ID, target.packId, saveCourse.trim(), saveTopic.trim(), payload,
+      )
+      const savedArtifacts = response.artifacts.map(artifactFromRecord)
+      const savedById = new Map(savedArtifacts.map(artifact => [artifact.id, artifact]))
+      setTurns(current => current.map(turn => ({
+        ...turn,
+        artifacts: turn.artifacts.map(artifact => savedById.get(artifact.id) || artifact),
+      })))
+      setLibraryItems(current => [...savedArtifacts, ...current.filter(artifact => !savedById.has(artifact.id))])
+      closeSave()
+      setLibraryPreviewId(null)
+      setLibraryTopic({ course: saveCourse.trim(), topic: saveTopic.trim() })
+      setView('library')
+      setNotice(`已将 ${savedArtifacts.length} 份文档整理为一个学习资料包`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '保存学习资料包失败')
+    } finally {
+      setSaveBusy(false)
+    }
+  }
+
+  function openLearningLoopSave(turn: ChatTurn) {
+    const loopId = [...turn.artifacts].reverse().find(artifact => artifact.learningLoopId)?.learningLoopId
+    if (!loopId) return
+    const artifacts = learningLoopSteps.map(step => turn.artifacts.find(artifact => (
+      artifact.learningLoopId === loopId && artifact.learningLoopStep === step.kind
+    ))).filter((artifact): artifact is Artifact => Boolean(artifact))
+    const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
+    if (readyArtifacts.length !== learningLoopSteps.length) {
+      setNotice('请等待四份资料都生成完成后，再保存整套学习闭环。')
+      return
+    }
+    if (readyArtifacts.some(artifact => !artifact.backendId)) {
+      setNotice('这套资料还在准备保存信息，请稍后重试。')
+      return
+    }
+    const first = readyArtifacts[0]
+    const stateCourse = learningState.subject || ''
+    const stateTopic = learningState.current_topic || learningState.knowledge_points[0] || ''
+    const recommendedCourse = first.recommendedCourse && first.recommendedCourse !== '未分类课程'
+      ? first.recommendedCourse
+      : stateCourse || '未分类课程'
+    const recommendedTopic = first.recommendedTopic && first.recommendedTopic !== '未分类主题' && first.recommendedTopic !== '本次学习'
+      ? first.recommendedTopic
+      : stateTopic || '未分类主题'
+    setLearningLoopSaveTarget({ turnId: turn.id, loopId, artifacts: readyArtifacts })
+    setSaveTarget(null)
+    setExternalVideoSaveTarget(null)
+    setSaveMode('save')
+    setSaveRecommendedCourse(recommendedCourse)
+    setSaveRecommendedTopic(recommendedTopic)
+    setSaveRecommendationSource(first.classificationSource === 'fallback' && stateCourse && stateTopic ? 'learning_state' : first.classificationSource)
+    setSaveCourse(recommendedCourse)
+    setSaveTopic(recommendedTopic)
+    setSaveLocationOpen(recommendedCourse === '未分类课程' || recommendedTopic === '未分类主题')
+    resetDuplicateDecision()
+  }
+
+  async function confirmLearningLoopSave() {
+    if (!learningLoopSaveTarget || !saveCourse.trim() || !saveTopic.trim()) return
+    const target = learningLoopSaveTarget
+    const payload = target.artifacts.map(artifact => ({
+      artifact_id: artifact.backendId!,
+      step: artifact.learningLoopStep!,
+    }))
+    if (payload.some(item => !item.artifact_id || !item.step)) {
+      setNotice('这套资料的关联信息不完整，请刷新后再试。')
+      return
+    }
+    setSaveBusy(true)
+    try {
+      const response = await saveLearningLoop(
+        LOCAL_USER_ID,
+        target.loopId,
+        saveCourse.trim(),
+        saveTopic.trim(),
+        payload,
+      )
+      const savedArtifacts = response.artifacts.map(artifactFromRecord)
+      const savedById = new Map(savedArtifacts.map(artifact => [artifact.id, artifact]))
+      setTurns(current => current.map(turn => ({
+        ...turn,
+        artifacts: turn.artifacts.map(artifact => savedById.get(artifact.id) || artifact),
+      })))
+      setLibraryItems(current => [
+        ...savedArtifacts,
+        ...current.filter(artifact => !savedById.has(artifact.id)),
+      ])
+      closeSave()
+      setLibraryPreviewId(null)
+      setLibraryTopic({ course: saveCourse.trim(), topic: saveTopic.trim() })
+      setView('library')
+      void refreshTopicReviews()
+      setNotice(`已将 ${savedArtifacts.length} 份资料整理为一个学习闭环`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '保存整套学习资料失败')
+    } finally {
+      setSaveBusy(false)
+    }
+  }
+
+  async function confirmExternalVideoSave() {
+    if (!externalVideoSaveTarget || !saveCourse.trim() || !saveTopic.trim()) return
+    const target = externalVideoSaveTarget
+    setSaveBusy(true)
+    try {
+      const response = await saveExternalVideoResource({
+        user_id: LOCAL_USER_ID,
+        session_id: target.context.sessionId,
+        qa_id: target.context.turnId || `video-resource-${Date.now()}`,
+        course_name: saveCourse.trim(),
+        topic_name: saveTopic.trim(),
+        title: target.video.title,
+        url: target.video.url,
+        cover_url: target.video.cover_url,
+        creator: target.video.creator,
+        duration: target.video.duration,
+        view_count: target.video.view_count,
+        description: target.video.description,
+        search_query: target.context.query,
+      })
+      const artifact = artifactFromRecord(response.artifact)
+      setLibraryItems(current => [artifact, ...current.filter(item => item.id !== artifact.id)])
+      closeSave()
+      setLibraryPreviewId(null)
+      setLibraryTopic({ course: artifact.course, topic: artifact.topic })
+      setView('library')
+      setNotice(response.duplicate ? '这条课程视频已经收藏过，已为你打开所在主题。' : '课程视频已收藏到资料库。看完后可生成练习或动态讲解。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '收藏课程视频失败，请稍后重试。')
+    } finally {
+      setSaveBusy(false)
+    }
+  }
+
   async function confirmSave() {
+    if (documentPackSaveTarget) {
+      await confirmDocumentPackSave()
+      return
+    }
+    if (learningLoopSaveTarget) {
+      await confirmLearningLoopSave()
+      return
+    }
+    if (externalVideoSaveTarget) {
+      await confirmExternalVideoSave()
+      return
+    }
     if (!saveTarget || !saveTitle.trim() || !saveCourse.trim() || !saveTopic.trim()) return
     setSaveBusy(true)
     try {
@@ -2766,20 +4026,30 @@ function App() {
 
   return (
     <div className={`app-frame ${view === 'map-workspace' ? 'map-studio-frame' : ''}`} data-style={interfaceStyle} data-language={interfaceLanguage} style={appFrameStyle}>
-      <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`} aria-label={t('主导航', 'Main navigation')}>
+      <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} aria-label={t('主导航', 'Main navigation')}>
         <div className="brand-row">
           <span className="brand-mark"><BrandSymbol /></span>
           <span className="brand-copy"><strong>RHYME</strong><small>Learning Agent</small></span>
+          <button
+            className="sidebar-collapse icon-button"
+            type="button"
+            title={sidebarCollapsed ? t('展开导航', 'Expand navigation') : t('收起导航', 'Collapse navigation')}
+            aria-label={sidebarCollapsed ? t('展开导航', 'Expand navigation') : t('收起导航', 'Collapse navigation')}
+            aria-pressed={sidebarCollapsed}
+            onClick={() => setSidebarCollapsed(current => !current)}
+          >
+            {sidebarCollapsed ? <ChevronRight size={17} strokeWidth={1.8} /> : <ArrowLeft size={17} strokeWidth={1.8} />}
+          </button>
           <button className="mobile-close icon-button" aria-label={t('关闭导航', 'Close navigation')} onClick={() => setSidebarOpen(false)}><Icon name="x" /></button>
         </div>
 
-        <button className="new-chat" onClick={newChat}>
+        <button className="new-chat" title={t('新学习对话', 'New learning chat')} onClick={newChat}>
           <Icon name="pen" size={17} />
           <span>{t('新学习对话', 'New learning chat')}</span>
         </button>
 
         <nav className="primary-nav" aria-label={t('学习空间', 'Learning space')}>
-          <button className={view === 'library' ? 'nav-item active' : 'nav-item'} onClick={() => { setView('library'); setLibraryPreviewId(null); setLibraryTopic(null); setSidebarOpen(false) }}>
+          <button className={view === 'library' ? 'nav-item active' : 'nav-item'} title={t('资料库', 'Library')} onClick={() => { setView('library'); setLibraryPreviewId(null); setLibraryTopic(null); setSidebarOpen(false) }}>
             <Icon name="library" size={18} />
             <span>{t('资料库', 'Library')}</span>
             {libraryItems.length > 0 && <span className="nav-count">{libraryItems.length}</span>}
@@ -2900,6 +4170,16 @@ function App() {
           <strong className="conversation-heading">
             {view === 'library' ? t('资料库', 'Library') : view === 'map-workspace' ? t('知识图解', 'Knowledge map') : view === 'chat' ? conversationTitle : ''}
           </strong>
+          <button
+            className="learning-guide-toggle icon-button"
+            type="button"
+            aria-label={learningGuideOpen ? t('收起学习导航', 'Hide learning guide') : t('打开学习导航', 'Open learning guide')}
+            aria-expanded={learningGuideOpen}
+            onClick={() => setLearningGuideOpen(current => !current)}
+          >
+            <NotebookTabs size={17} strokeWidth={1.8} />
+            <span>{t('学习导航', 'Guide')}</span>
+          </button>
         </header>
 
         <section className={`conversation ${view === 'chat' ? 'conversation-thread' : ''} ${view === 'map-workspace' ? 'conversation-map-workspace' : ''}`}>
@@ -2941,7 +4221,7 @@ function App() {
                     <div className="assistant-content">
                       <div className={turn.error ? 'assistant-response error' : 'assistant-response'} aria-live={turn.loading ? 'polite' : undefined}>
                         {turn.response
-                          ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.response}</ReactMarkdown>
+                          ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{turn.response}</ReactMarkdown>
                           : turn.loading && <span className="thinking-label">{turn.loadingPhase === 'image_analysis'
                             ? t('正在识别图片…', 'Reading the image…')
                             : turn.loadingPhase === 'retrieving'
@@ -2979,17 +4259,75 @@ function App() {
                         </section>
                       )}
 
-                      {turn.artifacts.map(artifact => {
+                      {(() => {
+                        const videoSearch = inlineVideoSearches[turn.id]
+                        if (!videoSearch) return null
+                        const { context, results, loading, error, searchUrl } = videoSearch
+                        return (
+                          <section id={`course-videos-${turn.id}`} className="inline-video-recommendations" aria-label="课程视频推荐" aria-live="polite">
+                            <header className="inline-video-head">
+                              <div>
+                                <span><Icon name="video" size={15} />课程视频</span>
+                                <h2>{loading ? '正在寻找适合你的课程' : results.length ? `找到 ${results.length} 个可直接观看的课程` : '暂时没有找到合适的视频'}</h2>
+                                <p>{context.course !== '未分类课程' || context.topic !== '本次学习'
+                                  ? `围绕「${context.course} · ${context.topic}」推荐`
+                                  : '根据本次对话内容推荐'}</p>
+                              </div>
+                              <small>来源 · B站 原视频</small>
+                            </header>
+
+                            {loading ? (
+                              <div className="inline-video-loading"><Sparkles size={17} /><span>正在根据当前学习内容筛选真实课程视频…</span></div>
+                            ) : results.length > 0 ? (
+                              <div className="inline-video-grid">
+                                {results.map(video => (
+                                  <article className="inline-video-card" key={video.url}>
+                                    <button className="inline-video-cover" type="button" onClick={() => openExternalVideo(video.url)} aria-label={`在 B站 打开：${video.title}`}>
+                                      {video.cover_url
+                                        ? <img src={video.cover_url} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                                        : <span className="inline-video-cover-fallback"><Icon name="video" size={23} /></span>}
+                                      <span className="inline-video-play"><Icon name="play" size={15} /></span>
+                                      <span className="inline-video-duration">{video.duration || 'B站课程'}</span>
+                                    </button>
+                                    <div className="inline-video-copy">
+                                      <h3>{video.title}</h3>
+                                      <p className="inline-video-meta">{[video.creator && `UP 主：${video.creator}`, video.view_count].filter(Boolean).join(' · ') || 'B站课程视频'}</p>
+                                      <p className="inline-video-reason">{video.recommendation}</p>
+                                      <div className="inline-video-actions">
+                                        <button type="button" onClick={() => openExternalVideo(video.url)}><Icon name="play" size={14} />去 B站</button>
+                                        <button className="inline-video-save" type="button" onClick={() => openExternalVideoSave(video, context)}><Icon name="save" size={14} />收藏</button>
+                                      </div>
+                                    </div>
+                                  </article>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="inline-video-empty">
+                                <Icon name="video" size={19} />
+                                <span>{error || '暂时没有找到足够匹配的视频，可以到 B站 再看看。'}</span>
+                                {searchUrl && <button type="button" onClick={() => openExternalVideo(searchUrl)}>去 B站 继续搜索<Icon name="chevron" size={14} /></button>}
+                              </div>
+                            )}
+
+                            <footer>视频来自 B站 原页面，RHYME 不下载、不搬运，也不会替代原视频播放页。</footer>
+                          </section>
+                        )
+                      })()}
+
+                      {renderLearningLoop(turn)}
+                      {renderDocumentPack(turn)}
+
+                      {turn.artifacts.filter(artifact => !artifact.documentPackId).map(artifact => {
                         const option = artifactOptions.find(item => item.kind === artifact.kind)
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
                         const dynamicExplanation = artifact.kind === 'interactive' ? parseDynamicExplanation(artifact.content) : null
                         const mapProgress = mapProgressByArtifactId[artifact.id]
                         return (
-                          <article className={`artifact-card artifact-${artifact.status || 'draft'} ${artifact.kind === 'interactive' ? 'artifact-dynamic' : ''} ${artifact.kind !== 'map' && artifact.kind !== 'interactive' && expandedArtifactId === artifact.id ? 'artifact-expanded' : ''}`} key={artifact.id}>
+                          <article id={`artifact-${artifact.id}`} className={`artifact-card artifact-${artifact.status || 'draft'} ${artifact.kind === 'interactive' ? 'artifact-dynamic' : ''} ${artifact.kind !== 'map' && artifact.kind !== 'interactive' && expandedArtifactId === artifact.id ? 'artifact-expanded' : ''}`} key={artifact.id}>
                             <div className="artifact-head">
                               <span className="artifact-icon"><Icon name={option?.icon || 'file'} size={18} /></span>
                               <div>
-                                <span>{option?.label}</span>
+                                <span>{artifact.kind === 'notes' ? documentArtifactLabel(artifact) : option ? artifactLabel(option.kind, option.label) : t('学习资料', 'Learning material')}</span>
                                 <h2>{artifact.title}</h2>
                               </div>
                               <span className={artifact.saved ? 'artifact-status saved' : `artifact-status ${artifact.status || ''}`}>
@@ -3009,6 +4347,9 @@ function App() {
                               <DynamicExplanationPlayer
                                 data={dynamicExplanation}
                                 language={interfaceLanguage}
+                                progress={presentationProgressForArtifact(artifact)}
+                                onProgressChange={progress => persistInteractivePresentationProgress(artifact, progress)}
+                                onCheckpoint={(scene, answer) => persistInteractivePresentationCheckpoint(artifact, scene, answer)}
                                 onSceneStarted={(scene, index) => recordSavedArtifactActivity(artifact, 'scene_started', { scene_id: scene.id, scene_index: index + 1 })}
                                 onSceneCompleted={(scene, index) => recordSavedArtifactActivity(artifact, 'scene_completed', { scene_id: scene.id, scene_index: index + 1 })}
                                 onCompleted={() => recordSavedArtifactActivity(artifact, 'completed', { scene_count: dynamicExplanation.scenes.length })}
@@ -3016,11 +4357,12 @@ function App() {
                                 onRegenerateScene={(presentation, scene) => remakeInteractivePresentationScene(artifact, presentation, scene)}
                                 saving={presentationEditingArtifactId === artifact.id}
                                 saveAsVersion={artifact.saved}
+                                openImmersiveRequest={immersiveOpenRequest?.artifactId === artifact.id ? immersiveOpenRequest.revision : undefined}
                               />
                             )}
                             {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.kind !== 'interactive' && artifact.content && expandedArtifactId === artifact.id && (
                               <div className="artifact-document">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
+                                <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{artifact.content}</ReactMarkdown>
                               </div>
                             )}
                             <div className="artifact-source"><Icon name="paperclip" size={14} />基于 {artifact.source}</div>
@@ -3042,14 +4384,27 @@ function App() {
                                   </button>
                                 )}
                                 <button type="button" onClick={() => {
-                                  if (artifact.kind === 'practice') void runPracticeGeneration(turn.id)
-                                  else if (artifact.kind === 'map') void runKnowledgeMapGeneration(turn.id)
+                                  if (artifact.kind === 'practice') {
+                                    if (artifact.status === 'error' && artifact.learningLoopId) {
+                                      void retryLearningLoopPractice(turn.id, artifact)
+                                      return
+                                    }
+                                    const linkedMap = artifact.learningLoopId
+                                      ? turn.artifacts.find(item => item.learningLoopId === artifact.learningLoopId && item.learningLoopStep === 'map')
+                                      : undefined
+                                    void runPracticeGeneration(turn.id, artifact.sourceMapArtifactId || linkedMap?.backendId)
+                                  }
+                                  else if (artifact.kind === 'map') {
+                                    if (artifact.status === 'error' && artifact.learningLoopId) {
+                                      void retryLearningLoopMap(turn.id, artifact)
+                                      return
+                                    }
+                                    void runKnowledgeMapGeneration(turn.id)
+                                  }
                                   else if (artifact.kind === 'interactive') void runDynamicExplanationGeneration(turn.id)
                                   else setDocumentSetup({
                                     turnId: turn.id,
-                                    purpose: artifact.purpose || 'review',
-                                    depth: artifact.depth || 'standard',
-                                    style: artifact.style || 'plain',
+                                    template: artifact.documentTemplate || recommendDocumentTemplate(turn.prompt, turn.response),
                                   })
                                 }}>{artifact.status === 'error' ? '重新设置' : '重新生成'}</button>
                                 {artifact.status !== 'error' && (
@@ -3069,6 +4424,16 @@ function App() {
                       })}
 
                       {!turn.loading && !turn.error && <div className="generation-dock">
+                        <button
+                          className="learning-loop-trigger"
+                          type="button"
+                          disabled={learningLoopGeneratingTurnId !== null}
+                          onClick={() => void runLearningLoopGeneration(turn.id)}
+                        >
+                          <Sparkles aria-hidden="true" size={16} strokeWidth={1.8} />
+                          <span><b>{learningLoopGeneratingTurnId === turn.id ? t('正在生成学习闭环', 'Building learning loop') : t('一键生成学习闭环', 'Generate learning loop')}</b><small>{t('文档 → 图解 → 动态讲解 → 练习', 'Document → map → explanation → practice')}</small></span>
+                          <ChevronRight aria-hidden="true" size={15} strokeWidth={1.8} />
+                        </button>
                         <div className="next-actions" aria-label={t('常用生成内容', 'Common generated materials')}>
                           <span>{t('基于当前内容生成', 'Generate from current content')}</span>
                           {primaryArtifactOptions.map(item => (
@@ -3085,30 +4450,80 @@ function App() {
                         {documentSetup?.turnId === turn.id && (
                           <section className="document-setup" aria-label="设置学习文档">
                             <div className="document-setup-head">
-                              <div><b>生成学习文档</b><span>只整理这次问题和回答，不会脱离上下文发挥。</span></div>
-                              <button type="button" aria-label="关闭学习文档设置" onClick={() => setDocumentSetup(null)}><Icon name="x" size={15} /></button>
+                              <div><b>{t('生成学习文档', 'Generate learning document')}</b><span>{t('先由智能体推荐一种结构，你可以随时换成更适合当前任务的版本。', 'An appropriate structure is recommended first. You can change it at any time.')}</span></div>
+                              <button type="button" aria-label={t('关闭学习文档设置', 'Close document setup')} onClick={() => setDocumentSetup(null)}><Icon name="x" size={15} /></button>
                             </div>
-                            <div className="document-setting-row">
-                              <span>用途</span>
-                              <div>{documentPurposes.map(item => (
-                                <button key={item.id} type="button" aria-pressed={documentSetup.purpose === item.id} onClick={() => setDocumentSetup(current => current ? { ...current, purpose: item.id } : current)}>{item.label}</button>
-                              ))}</div>
+                            <div className="document-template-recommendation">
+                              <span><Icon name="spark" size={14} />{t('智能推荐', 'Recommended')}</span>
+                              <b>{interfaceLanguage === 'en' ? documentTemplateById[recommendDocumentTemplate(turn.prompt, turn.response)].labelEn : documentTemplateById[recommendDocumentTemplate(turn.prompt, turn.response)].label}</b>
+                              <small>{t('依据当前问题的表达方式和学习目标判断', 'Based on the wording and learning goal in this chat')}</small>
                             </div>
-                            <div className="document-setting-row">
-                              <span>深度</span>
-                              <div>{documentDepths.map(item => (
-                                <button key={item.id} type="button" aria-pressed={documentSetup.depth === item.id} onClick={() => setDocumentSetup(current => current ? { ...current, depth: item.id } : current)}>{item.label}</button>
-                              ))}</div>
-                            </div>
-                            <div className="document-setting-row">
-                              <span>风格</span>
-                              <div>{documentStyles.map(item => (
-                                <button key={item.id} type="button" aria-pressed={documentSetup.style === item.id} onClick={() => setDocumentSetup(current => current ? { ...current, style: item.id } : current)}>{item.label}</button>
-                              ))}</div>
+                            <div className="document-template-groups">
+                              {documentTemplateGroups.map(group => {
+                                const templates = documentTemplates.filter(template => template.group === group.id)
+                                return (
+                                  <section className="document-template-group" key={group.id} aria-label={interfaceLanguage === 'en' ? group.labelEn : group.label}>
+                                    <h3>{interfaceLanguage === 'en' ? group.labelEn : group.label}</h3>
+                                    <div className="document-template-options">
+                                      {templates.map(template => {
+                                        const active = documentSetup.template === template.id
+                                        return <button
+                                          className={active ? 'active' : ''}
+                                          key={template.id}
+                                          type="button"
+                                          aria-pressed={active}
+                                          onClick={() => setDocumentSetup(current => current ? { ...current, template: template.id } : current)}
+                                        >
+                                          <span><Icon name={template.icon} size={15} /></span>
+                                          <span><b>{interfaceLanguage === 'en' ? template.labelEn : template.label}</b><small>{interfaceLanguage === 'en' ? template.descriptionEn : template.description}</small></span>
+                                          {active && <Icon name="check" size={15} />}
+                                        </button>
+                                      })}
+                                    </div>
+                                  </section>
+                                )
+                              })}
                             </div>
                             <div className="document-setup-foot">
-                              <span><Icon name="spark" size={14} />将结合当前学习状态</span>
-                              <button type="button" onClick={() => void runDocumentGeneration()} disabled={documentGenerating}><Icon name="spark" size={15} />开始生成</button>
+                              <span><Icon name="library" size={14} />{t('生成后可按课程和主题保存到资料库', 'Save it by course and topic after generating')}</span>
+                              <div className="document-setup-actions">
+                                <button
+                                  className="document-pack-entry"
+                                  type="button"
+                                  onClick={() => openDocumentPackSetup(turn.id)}
+                                  disabled={documentPackGeneratingTurnId !== null}
+                                ><Archive size={15} />{t('批量生成资料包', 'Build a study pack')}</button>
+                                <button type="button" onClick={() => void runDocumentGeneration()} disabled={documentGenerating}><Icon name="spark" size={15} />{t('生成 ', 'Generate ')}{interfaceLanguage === 'en' ? documentTemplateById[documentSetup.template].labelEn : documentTemplateById[documentSetup.template].label}</button>
+                              </div>
+                            </div>
+                          </section>
+                        )}
+                        {documentPackSetup?.turnId === turn.id && (
+                          <section className="document-pack-setup" aria-label={t('设置学习资料包', 'Set up study pack')}>
+                            <div className="document-setup-head">
+                              <div><b>{t('学习文档 · 批量资料包', 'Learning documents · Study pack')}</b><span>{t('默认保留系统讲义、公式手册、术语表和考前速记；题目或对比场景会由智能体补进对应文档。', 'The core guide, formula handbook, glossary, and cram sheet are selected by default. Problem and comparison documents are recommended when relevant.')}</span></div>
+                              <button type="button" aria-label={t('返回学习文档', 'Back to learning documents')} onClick={() => returnToDocumentSetup(turn.id)}><Icon name="arrow-left" size={15} /></button>
+                            </div>
+                            <div className="document-pack-selection">
+                              {documentTemplates.map(template => {
+                                const selected = documentPackSetup.templates.includes(template.id)
+                                const recommended = recommendedDocumentPackTemplates(turn.prompt, turn.response).includes(template.id)
+                                return <button
+                                  type="button"
+                                  key={template.id}
+                                  className={selected ? 'selected' : ''}
+                                  aria-pressed={selected}
+                                  onClick={() => toggleDocumentPackTemplate(template.id)}
+                                >
+                                  <span><Icon name={selected ? 'check' : template.icon} size={14} /></span>
+                                  <b>{interfaceLanguage === 'en' ? template.labelEn : template.label}</b>
+                                  {recommended && <small>{t('推荐', 'Recommended')}</small>}
+                                </button>
+                              })}
+                            </div>
+                            <div className="document-setup-foot">
+                              <span><Icon name="library" size={14} />{t(`已选择 ${documentPackSetup.templates.length} 份，生成后可一键归档`, `${documentPackSetup.templates.length} selected; save them together after generation`)}</span>
+                              <button type="button" onClick={() => void runDocumentPackGeneration()} disabled={documentPackSetup.templates.length === 0 || documentPackGeneratingTurnId !== null}><Icon name="spark" size={15} />{t(`生成 ${documentPackSetup.templates.length} 份`, `Generate ${documentPackSetup.templates.length}`)}</button>
                             </div>
                           </section>
                         )}
@@ -3212,7 +4627,7 @@ function App() {
                     <div>
                       <span>{libraryPreview.status === 'deleted' ? '回收站 / ' : ''}{readerArtifact?.course} / {readerArtifact?.topic}</span>
                       <h1>{readerArtifact?.title}</h1>
-                      <small>{versionPreview ? `历史版本 v${versionPreview.version}` : libraryPreview.status === 'deleted' ? '已移入回收站' : '学习资料'}{!versionPreview && libraryPreview.version > 1 ? ` · v${libraryPreview.version}` : ''}</small>
+                  <small>{versionPreview ? `${documentArtifactLabel(versionPreview)} · ${t('历史版本', 'Past version')} v${versionPreview.version}` : libraryPreview.status === 'deleted' ? t('已移入回收站', 'In trash') : documentArtifactLabel(readerArtifact)}{!versionPreview && libraryPreview.version > 1 ? ` · v${libraryPreview.version}` : ''}</small>
                     </div>
                     {libraryPreview.status !== 'deleted' && (
                       <div className="reader-head-actions">
@@ -3254,7 +4669,7 @@ function App() {
                     <div className="version-preview-notice"><span>正在查看 v{versionPreview.version}，内容不会自动覆盖最新版。</span><button type="button" onClick={() => setVersionPreview(null)}>返回最新版</button></div>
                   )}
                   <p>{readerArtifact?.summary}</p>
-                  <div className={`library-reader-content ${readerMapData ? 'has-knowledge-map' : ''} ${readerDynamicExplanation ? 'has-dynamic-explanation' : ''}`}>
+                  <div className={`library-reader-content ${readerMapData ? 'has-knowledge-map' : ''} ${readerDynamicExplanation ? 'has-dynamic-explanation' : ''} ${readerExternalVideo ? 'has-external-video' : ''} ${readerArtifact?.kind === 'notes' ? `document-template-${readerArtifact.documentTemplate || 'system_guide'}` : ''}`}>
                     {readerArtifact?.kind === 'map'
                       ? readerMapData
                         ? <EditableKnowledgeMap
@@ -3280,6 +4695,9 @@ function App() {
                           ? <DynamicExplanationPlayer
                               data={readerDynamicExplanation}
                               language={interfaceLanguage}
+                              progress={versionPreview ? undefined : presentationProgressForArtifact(readerArtifact)}
+                              onProgressChange={versionPreview ? undefined : progress => persistInteractivePresentationProgress(readerArtifact, progress)}
+                              onCheckpoint={versionPreview ? undefined : (scene, answer) => persistInteractivePresentationCheckpoint(readerArtifact, scene, answer)}
                               onSceneStarted={versionPreview ? undefined : (scene, index) => recordSavedArtifactActivity(readerArtifact, 'scene_started', { scene_id: scene.id, scene_index: index + 1, surface: 'library' })}
                               onSceneCompleted={versionPreview ? undefined : (scene, index) => recordSavedArtifactActivity(readerArtifact, 'scene_completed', { scene_id: scene.id, scene_index: index + 1, surface: 'library' })}
                               onCompleted={versionPreview ? undefined : () => recordSavedArtifactActivity(readerArtifact, 'completed', { scene_count: readerDynamicExplanation.scenes.length, surface: 'library' })}
@@ -3289,7 +4707,31 @@ function App() {
                               saveAsVersion={readerArtifact.saved}
                             />
                           : <p>这份动态讲解内容无法读取，请回到来源对话重新生成。</p>
-                        : <ReactMarkdown remarkPlugins={[remarkGfm]}>{readerArtifact?.content || ''}</ReactMarkdown>}
+                        : readerArtifact?.kind === 'external_video'
+                          ? readerExternalVideo
+                            ? <section className="external-video-reader" aria-label="课程视频资源">
+                                <div className="external-video-reader-head"><span><Icon name="video" size={18} />{readerExternalVideo.platform_label}</span><b>原视频资源</b></div>
+                                {readerExternalVideo.cover_url && <button className="external-video-reader-cover" type="button" onClick={() => openExternalVideo(readerExternalVideo.url, readerArtifact)} aria-label={`在 B站 打开：${readerArtifact.title}`}><img src={readerExternalVideo.cover_url} alt="" referrerPolicy="no-referrer" /><span><Icon name="play" size={16} />去 B站观看</span></button>}
+                                <h2>{readerArtifact.title}</h2>
+                                <p>{readerExternalVideo.description || readerArtifact.summary}</p>
+                                <div className="external-video-reader-meta">
+                                  {readerExternalVideo.creator && <span>UP 主：{readerExternalVideo.creator}</span>}
+                                  {readerExternalVideo.duration && <span>{readerExternalVideo.duration}</span>}
+                                  {readerExternalVideo.view_count && <span>{readerExternalVideo.view_count}</span>}
+                                  {readerExternalVideo.search_query && <span>检索：{readerExternalVideo.search_query}</span>}
+                                </div>
+                                <div className="external-video-reader-actions">
+                                  <button className="primary" type="button" onClick={() => openExternalVideo(readerExternalVideo.url, readerArtifact)}><Icon name="play" size={16} />去 B站观看</button>
+                                  <button type="button" onClick={() => { recordSavedArtifactActivity(readerArtifact, 'completed', { surface: 'external_video', platform: 'bilibili' }); setNotice('已记录为看完视频。接下来可做练习，或用动态讲解补齐难点。') }}><Icon name="check" size={15} />我已看完</button>
+                                </div>
+                                <div className="external-video-next">
+                                  <span>看完后</span>
+                                  <button type="button" onClick={() => prepareVideoFollowUp(readerArtifact, 'practice')}>做练习检验</button>
+                                  <button type="button" onClick={() => prepareVideoFollowUp(readerArtifact, 'interactive')}>用动态讲解补充</button>
+                                </div>
+                              </section>
+                            : <p>这条课程视频的信息无法读取，请重新搜索后收藏。</p>
+                          : <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{readerArtifact?.content || ''}</ReactMarkdown>}
                   </div>
                   <div className="library-reader-actions">
                     {libraryPreview.status === 'deleted' ? (
@@ -3319,8 +4761,64 @@ function App() {
                   </button>
                   <div className="library-topic-heading">
                     <div><span>{libraryTopic.course}</span><h1>{libraryTopic.topic}</h1></div>
-                    <span>{libraryTopicLearningMastery > 0 ? `掌握 ${libraryTopicLearningMastery}% · ` : ''}{libraryTopicItems.length} 份资料</span>
+                    <div className="library-topic-heading-actions">
+                      <span>{libraryTopicLearningMastery > 0 ? `掌握 ${libraryTopicLearningMastery}% · ` : ''}{libraryTopicItems.length} 份资料</span>
+                      <button type="button" onClick={() => {
+                        setView('chat')
+                        openVideoSearch(undefined, { course: libraryTopic.course, topic: libraryTopic.topic })
+                      }}><Icon name="video" size={14} />找课程视频</button>
+                    </div>
                   </div>
+                  {libraryTopicLearningLoops.slice(0, 1).map(loop => {
+                    const loopReadyCount = learningLoopSteps.filter(step => loop.artifacts.some(artifact => artifact.learningLoopStep === step.kind)).length
+                    return (
+                      <section className="library-learning-loop" key={loop.id} aria-label={t('已保存的学习闭环', 'Saved learning loop')}>
+                        <div className="library-learning-loop-head">
+                          <div><b>{t('学习闭环', 'Learning loop')}</b><p>{t('同一主题下的四份资料已连在一起，练习结果会继续回写到图解。', 'The four connected materials stay together. Practice results return to the map.')}</p></div>
+                          <span>{t(`${loopReadyCount}/4 已归档`, `${loopReadyCount}/4 saved`)}</span>
+                        </div>
+                        <div className="library-learning-loop-steps">
+                          {learningLoopSteps.map(step => {
+                            const artifact = loop.artifacts.find(item => item.learningLoopStep === step.kind)
+                            return artifact ? (
+                              <button type="button" key={step.kind} onClick={() => openLibraryArtifact(artifact)}>
+                                <span>{step.label}</span><small>{step.detail}</small><ChevronRight size={14} />
+                              </button>
+                            ) : (
+                              <span className="missing" key={step.kind}>{step.label}</span>
+                            )
+                          })}
+                        </div>
+                        {libraryTopicState?.next_step.action !== 'complete' && (
+                          <button className="library-learning-loop-continue" type="button" onClick={() => void continueTopicLearning()}>
+                            {topicNextStepLabel(libraryTopicState?.next_step.action || 'open_material')}<ChevronRight size={15} />
+                          </button>
+                        )}
+                      </section>
+                    )
+                  })}
+                  {libraryTopicDocumentPacks.map(pack => (
+                    <section className="library-document-pack" key={pack.id} aria-label={t('已保存的学习资料包', 'Saved study pack')}>
+                      <div className="library-document-pack-head">
+                        <div><b><Icon name="archive" size={15} />{t('学习资料包', 'Study pack')}</b><p>{t('把同一主题的讲义、公式、术语和速记收在一起；每一份仍可以独立阅读与更新。', 'Keep guides, formulas, terms, and cram notes together while each document remains independently readable and updateable.')}</p></div>
+                        <span>{t(`${pack.artifacts.length} 份文档`, `${pack.artifacts.length} documents`)}</span>
+                      </div>
+                      <button
+                        className="library-document-pack-open"
+                        type="button"
+                        onClick={() => openDocumentPackBooklet({ packId: pack.id, artifacts: pack.artifacts, persisted: true })}
+                      >
+                        <Icon name="book" size={14} />{t('打开学习资料册', 'Open study booklet')}<ChevronRight size={14} />
+                      </button>
+                      <div className="library-document-pack-files">
+                        {pack.artifacts.map(artifact => (
+                          <button type="button" key={artifact.id} onClick={() => openLibraryArtifact(artifact)}>
+                            <span>{documentTemplateLabel(artifact)}</span><b>{artifact.title}</b><ChevronRight size={14} />
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
                   {libraryTopicStateLoading ? (
                     <section className="library-topic-progress loading" aria-label={t('正在整理主题学习状态', 'Preparing topic learning state')}>
                       <span>{t('正在整理学习进度…', 'Preparing learning progress…')}</span>
@@ -3333,6 +4831,8 @@ function App() {
                         <div className="library-topic-progress-metrics">
                           <span>{t(`资料 ${libraryTopicState.materials.opened}/${libraryTopicState.materials.total} 已打开`, `${libraryTopicState.materials.opened}/${libraryTopicState.materials.total} materials opened`)}</span>
                           {libraryTopicState.map_progress.total > 0 && <span>{t(`图解 ${libraryTopicState.map_progress.mastered}/${libraryTopicState.map_progress.total} 已理解`, `Map ${libraryTopicState.map_progress.mastered}/${libraryTopicState.map_progress.total} understood`)}</span>}
+                          {libraryTopicState.interactive.scenes > 0 && <span>{t(`讲解 ${libraryTopicState.interactive.completed_scenes}/${libraryTopicState.interactive.scenes} 场景已完成`, `Explanation ${libraryTopicState.interactive.completed_scenes}/${libraryTopicState.interactive.scenes} scenes completed`)}</span>}
+                          {libraryTopicState.interactive.checks > 0 && <span>{t(`检查 ${libraryTopicState.interactive.confirmed_checks}/${libraryTopicState.interactive.checks} 已答对`, `Checks ${libraryTopicState.interactive.confirmed_checks}/${libraryTopicState.interactive.checks} confirmed`)}</span>}
                           {libraryTopicState.practice.attempt_count > 0 && <span>{t(`最近练习 ${libraryTopicState.practice.recent_score} 分`, `Latest practice ${libraryTopicState.practice.recent_score}/100`)}</span>}
                         </div>
                       </div>
@@ -3376,14 +4876,14 @@ function App() {
                     </section>
                   )}
                   <div className="library-list">
-                    {libraryTopicItems.map(item => {
+                    {libraryTopicItems.filter(item => !item.documentPackId).map(item => {
                       const option = artifactOptions.find(entry => entry.kind === item.kind)
                       const mapData = item.kind === 'map' ? parseKnowledgeMap(item.content) : null
                       const mapProgress = mapProgressByArtifactId[item.id]
                       return (
                         <button className="library-row" key={item.id} onClick={() => openLibraryArtifact(item)}>
                           <span className="library-row-icon"><Icon name={option?.icon || 'file'} size={17} /></span>
-                          <span className="library-row-copy"><b>{item.title}</b><small>{option ? artifactLabel(option.kind, option.label) : t('学习资料', 'Learning material')}{item.version > 1 ? ` · v${item.version}` : ''}{mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''} · {item.summary}</small></span>
+                          <span className="library-row-copy"><b>{item.title}</b><small>{item.kind === 'notes' ? documentArtifactLabel(item) : option ? artifactLabel(option.kind, option.label) : t('学习资料', 'Learning material')}{item.version > 1 ? ` · v${item.version}` : ''}{mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''} · {item.summary}</small></span>
                           {item.favorite && <span className="library-row-star" aria-label={t('已收藏', 'Favorited')}><Icon name="star" size={14} /></span>}
                           <Icon name="chevron" size={16} />
                         </button>
@@ -3503,7 +5003,7 @@ function App() {
                                             return (
                                               <button className="library-row library-tree-file" type="button" key={item.id} onClick={() => openLibraryArtifact(item)}>
                                                 <span className="library-row-icon"><Icon name={option?.icon || 'file'} size={16} /></span>
-                                                <span className="library-row-copy"><b>{item.title}</b><small>{option?.label || '学习资料'}{item.version > 1 ? ` · v${item.version}` : ''}{mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''} · {item.summary}</small></span>
+                                                <span className="library-row-copy"><b>{item.title}</b><small>{item.kind === 'notes' ? documentArtifactLabel(item) : option ? artifactLabel(option.kind, option.label) : t('学习资料', 'Learning material')}{item.version > 1 ? ` · v${item.version}` : ''}{mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''} · {item.summary}</small></span>
                                                 {item.favorite && <span className="library-row-star" aria-label="已收藏"><Icon name="star" size={14} /></span>}
                                                 <Icon name="chevron" size={15} />
                                               </button>
@@ -3529,7 +5029,7 @@ function App() {
                       return (
                           <button className="library-row" key={item.id} onClick={() => openLibraryArtifact(item)}>
                             <span className="library-row-icon"><Icon name={libraryMode === 'trash' ? 'trash' : option?.icon || 'file'} size={17} /></span>
-                          <span className="library-row-copy"><b>{item.title}</b><small>{libraryMode === 'trash' ? `${item.course} / ${item.topic}${item.deletedAt ? ` · ${formatLibraryDate(item.deletedAt)} 删除` : ''}` : `${item.course} / ${item.topic} · ${option?.label || '学习资料'}${item.version > 1 ? ` · v${item.version}` : ''}${mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''}`}</small></span>
+                          <span className="library-row-copy"><b>{item.title}</b><small>{libraryMode === 'trash' ? `${item.course} / ${item.topic}${item.deletedAt ? ` · ${formatLibraryDate(item.deletedAt)} ${t('删除', 'deleted')}` : ''}` : `${item.course} / ${item.topic} · ${item.kind === 'notes' ? documentArtifactLabel(item) : option ? artifactLabel(option.kind, option.label) : t('学习资料', 'Learning material')}${item.version > 1 ? ` · v${item.version}` : ''}${mapData ? ` · ${mapProgressLabel(mapData, mapProgress, interfaceLanguage)}` : ''}`}</small></span>
                             {libraryMode !== 'trash' && item.favorite && <span className="library-row-star" aria-label="已收藏"><Icon name="star" size={14} /></span>}
                             <Icon name="chevron" size={16} />
                           </button>
@@ -3626,6 +5126,80 @@ function App() {
           </form>
         )}
       </main>
+
+      <aside
+        className={`learning-guide ${learningGuideOpen ? 'learning-guide-open' : 'learning-guide-closed'}`}
+        aria-label={t('学习导航', 'Learning guide')}
+        aria-hidden={!learningGuideOpen}
+      >
+        <div className="learning-guide-inner">
+          <header className="learning-guide-head">
+            <div>
+              <span>{t('学习导航', 'Learning guide')}</span>
+              <h2>{learningGuideTopic}</h2>
+              <p>{learningGuideCourse}</p>
+            </div>
+            <button
+              className="learning-guide-close icon-button"
+              type="button"
+              title={t('收起学习导航', 'Hide learning guide')}
+              aria-label={t('收起学习导航', 'Hide learning guide')}
+              onClick={() => setLearningGuideOpen(false)}
+            ><X size={17} strokeWidth={1.8} /></button>
+          </header>
+
+          {learningGuideTurn ? (
+            <>
+              <section className="learning-guide-path" aria-labelledby="learning-guide-path-title">
+                <div className="learning-guide-section-head">
+                  <span id="learning-guide-path-title">{t('本次学习路径', 'This learning path')}</span>
+                  <small>{learningGuideSteps.filter(step => step.complete).length} / {learningGuideSteps.length}</small>
+                </div>
+                <ol>
+                  {learningGuideSteps.map((step, index) => {
+                    const StepIcon = step.icon
+                    return (
+                      <li className={step.complete ? 'guide-step complete' : 'guide-step'} key={step.id}>
+                        <button type="button" onClick={step.action}>
+                          <span className="guide-step-mark">{step.complete ? <Check size={14} strokeWidth={2.2} /> : <span>{index + 1}</span>}</span>
+                          <span className="guide-step-icon"><StepIcon size={16} strokeWidth={1.75} /></span>
+                          <span className="guide-step-copy"><b>{step.label}</b><small>{step.detail}</small></span>
+                          <ChevronRight className="guide-step-arrow" size={15} strokeWidth={1.7} />
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ol>
+              </section>
+
+              <section className="learning-guide-next" aria-labelledby="learning-guide-next-title">
+                <span id="learning-guide-next-title">{t('下一步建议', 'Recommended next step')}</span>
+                {nextLearningGuideStep ? (
+                  <>
+                    <b>{t('先完成', 'Start with ')}{nextLearningGuideStep.label}</b>
+                    <p>{nextLearningGuideStep.detail}</p>
+                    <button type="button" onClick={nextLearningGuideStep.action}>
+                      <Sparkles size={15} strokeWidth={1.8} />{t('开始这一步', 'Start this step')}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <b>{t('本次学习闭环已经就绪', 'This learning loop is ready')}</b>
+                    <p>{t('现在适合回看图解，或再做一轮练习检验。', 'Review the map or take another practice check when ready.')}</p>
+                  </>
+                )}
+              </section>
+            </>
+          ) : (
+            <section className="learning-guide-empty">
+              <span><Sparkles size={18} strokeWidth={1.8} /></span>
+              <b>{t('从一个问题开始', 'Start with one question')}</b>
+              <p>{t('对话开始后，我会根据课程和主题推荐下一步。', 'Once you start, I will recommend the next learning step.')}</p>
+              <button type="button" onClick={newChat}><PenLine size={15} strokeWidth={1.8} />{t('新学习对话', 'New learning chat')}</button>
+            </section>
+          )}
+        </div>
+      </aside>
 
       {practiceRun && activePracticeQuestion && (
         <div className="practice-layer" role="presentation">
@@ -3814,19 +5388,45 @@ function App() {
         </div>
       )}
 
-      {saveTarget && (
+      {(saveTarget || learningLoopSaveTarget || documentPackSaveTarget || externalVideoSaveTarget) && (
         <div className="sheet-layer">
           <button className="sheet-backdrop" aria-label="取消保存" onClick={closeSave} />
           <aside className="save-sheet" role="dialog" aria-modal="true" aria-labelledby="save-title">
             <div className="sheet-head">
               <div>
-                <h2 id="save-title">{saveMode === 'edit' ? '整理资料' : '保存到资料库'}</h2>
-                <p>{saveMode === 'edit' ? '名称和归属可以随时调整。' : '智能体已经根据当前学习内容推荐位置。'}</p>
+                <h2 id="save-title">{learningLoopSaveTarget ? '保存整套学习资料' : documentPackSaveTarget ? '保存学习资料包' : externalVideoSaveTarget ? '收藏课程视频' : saveMode === 'edit' ? '整理资料' : '保存到资料库'}</h2>
+                <p>{learningLoopSaveTarget
+                  ? `会将 ${learningLoopSaveTarget.artifacts.length} 份资料归到同一课程和主题，并保留它们的学习关联。`
+                  : documentPackSaveTarget
+                    ? `会将 ${documentPackSaveTarget.artifacts.length} 份文档归到同一课程和主题，保持为一组可独立阅读的资料。`
+                  : externalVideoSaveTarget
+                    ? '保存的是原视频链接，不下载、不搬运视频内容。'
+                    : saveMode === 'edit' ? '名称和归属可以随时调整。' : '智能体已经根据当前学习内容推荐位置。'}</p>
               </div>
               <button className="icon-button" aria-label="取消保存" onClick={closeSave}><Icon name="x" size={18} /></button>
             </div>
-            <label className="field-label" htmlFor="artifact-title">资料名称</label>
-            <input id="artifact-title" className="text-field" value={saveTitle} onChange={event => { setSaveTitle(event.target.value); resetDuplicateDecision() }} />
+            {learningLoopSaveTarget ? (
+              <section className="save-learning-loop-summary" aria-label="将保存的学习资料">
+                {learningLoopSteps.map(step => {
+                  const artifact = learningLoopSaveTarget.artifacts.find(item => item.learningLoopStep === step.kind)
+                  return artifact ? <span key={step.kind}><Icon name="check" size={13} />{step.label}</span> : null
+                })}
+              </section>
+            ) : documentPackSaveTarget ? (
+              <section className="save-document-pack-summary" aria-label="将保存的学习资料包">
+                <span><Icon name="archive" size={16} />{documentPackSaveTarget.artifacts.length} 份学习文档</span>
+                <div>{documentPackSaveTarget.artifacts.map(artifact => <small key={artifact.id}>{documentTemplateById[artifact.documentPackTemplate || artifact.documentTemplate || 'system_guide'].label}</small>)}</div>
+              </section>
+            ) : externalVideoSaveTarget ? (
+              <section className="save-external-video-summary" aria-label="将收藏的课程视频">
+                <span><Icon name="video" size={17} />B站课程视频</span>
+                <b>{externalVideoSaveTarget.video.title}</b>
+                <small>{[externalVideoSaveTarget.video.creator && `UP 主：${externalVideoSaveTarget.video.creator}`, externalVideoSaveTarget.video.duration].filter(Boolean).join(' · ') || '打开后将在 B站 原页面观看'}</small>
+              </section>
+            ) : (
+              <><label className="field-label" htmlFor="artifact-title">资料名称</label>
+              <input id="artifact-title" className="text-field" value={saveTitle} onChange={event => { setSaveTitle(event.target.value); resetDuplicateDecision() }} /></>
+            )}
             <div className="save-path-block">
               <div className="save-path-label">
                 <span>{saveMode === 'edit' ? '当前位置' : '建议位置'}</span>
@@ -3858,7 +5458,7 @@ function App() {
                 </div>
               )}
             </div>
-            {saveMode === 'save' && duplicateMatches.length > 0 && (
+            {!learningLoopSaveTarget && !documentPackSaveTarget && !externalVideoSaveTarget && saveMode === 'save' && duplicateMatches.length > 0 && (
               <section className="duplicate-panel" aria-labelledby="duplicate-title">
                 <div className="duplicate-head">
                   <span><Icon name="history" size={16} /></span>
@@ -3881,10 +5481,16 @@ function App() {
                 </div>
               </section>
             )}
-            <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>{saveTarget.source}</b></div>
+            {learningLoopSaveTarget ? (
+              <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>当前学习对话</b></div>
+            ) : documentPackSaveTarget ? (
+              <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>当前学习对话</b></div>
+            ) : externalVideoSaveTarget ? (
+              <div className="save-source"><Icon name="video" size={15} /><span>来源</span><b>B站公开视频索引</b></div>
+            ) : saveTarget && <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>{saveTarget.source}</b></div>}
             <div className="sheet-actions">
               <button type="button" onClick={closeSave}>取消</button>
-              <button type="button" className="primary" onClick={() => void confirmSave()} disabled={!saveTitle.trim() || !saveCourse.trim() || !saveTopic.trim() || saveBusy}><Icon name="save" size={16} />{saveBusy ? (duplicateCheckComplete ? '保存中…' : '检查中…') : saveMode === 'edit' ? '保存调整' : duplicateMatches.length > 0 ? '按选择保存' : '确认保存'}</button>
+              <button type="button" className="primary" onClick={() => void confirmSave()} disabled={(!learningLoopSaveTarget && !documentPackSaveTarget && !externalVideoSaveTarget && !saveTitle.trim()) || !saveCourse.trim() || !saveTopic.trim() || saveBusy}><Icon name="save" size={16} />{saveBusy ? (externalVideoSaveTarget ? '收藏中…' : learningLoopSaveTarget || documentPackSaveTarget ? '保存中…' : duplicateCheckComplete ? '保存中…' : '检查中…') : externalVideoSaveTarget ? '确认收藏到资料库' : learningLoopSaveTarget ? '确认保存整套资料' : documentPackSaveTarget ? '确认保存学习资料包' : saveMode === 'edit' ? '保存调整' : duplicateMatches.length > 0 ? '按选择保存' : '确认保存'}</button>
             </div>
           </aside>
         </div>
@@ -3983,6 +5589,33 @@ function App() {
             )}
           </aside>
         </div>
+      )}
+
+      {documentPackBooklet && documentPackBookletDocuments.length > 0 && (
+        <LearningDocumentBooklet
+          course={documentPackBooklet.course}
+          topic={documentPackBooklet.topic}
+          documents={documentPackBookletDocuments}
+          activeDocumentId={documentPackBookletActiveId}
+          language={interfaceLanguage}
+          persisted={documentPackBooklet.persisted}
+          onClose={closeDocumentPackBooklet}
+          onSelect={setDocumentPackBookletActiveId}
+          onSave={documentPackBooklet.persisted ? undefined : () => {
+            const turn = documentPackBooklet.turnId
+              ? turns.find(item => item.id === documentPackBooklet.turnId)
+              : undefined
+            if (!turn) return
+            closeDocumentPackBooklet()
+            openDocumentPackSave(turn, documentPackBooklet.packId)
+          }}
+          onOpenLibrary={documentPackBooklet.persisted ? () => {
+            closeDocumentPackBooklet()
+            setLibraryPreviewId(null)
+            setLibraryTopic({ course: documentPackBooklet.course, topic: documentPackBooklet.topic })
+            setView('library')
+          } : undefined}
+        />
       )}
 
       {notice && (

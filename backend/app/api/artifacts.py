@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.agents.artifact_agent import generate_learning_document
+from app.agents.artifact_agent import generate_learning_document, generate_study_pack_blueprint
 from app.agents.map_agent import generate_knowledge_map, normalize_edited_knowledge_map
 from app.agents.map_collaboration_agent import collaborate_on_knowledge_map
 from app.agents.practice_agent import generate_practice_set
@@ -29,6 +29,8 @@ from app.services.artifact_db import (
     restore_artifact,
     restore_artifact_version,
     save_artifact,
+    save_document_pack,
+    save_learning_loop,
     set_artifact_favorite,
     trash_artifact,
     update_knowledge_map_content,
@@ -51,7 +53,19 @@ from app.services.map_db import (
     prune_map_progress,
     set_map_node_progress,
 )
-from app.services.learning_progress_db import get_topic_learning_state, record_learning_activity
+from app.services.learning_progress_db import (
+    get_interactive_presentation_progress,
+    get_topic_learning_state,
+    record_interactive_presentation_checkpoint,
+    record_learning_activity,
+    update_interactive_presentation_progress,
+)
+from app.services.video_search import (
+    build_bilibili_search_url,
+    normalize_bilibili_cover_url,
+    normalize_bilibili_video_url,
+    search_bilibili_videos,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/artifacts", tags=["artifacts"])
@@ -73,6 +87,20 @@ class GenerateDocumentRequest(BaseModel):
     purpose: str = Field(default="review", pattern="^(review|preview|exam)$")
     depth: str = Field(default="standard", pattern="^(concise|standard|deep)$")
     style: str = Field(default="plain", pattern="^(plain|notes|exam)$")
+    document_template: str = Field(
+        default="system_guide",
+        pattern="^(quick_overview|system_guide|problem_walkthrough|concept_comparison|formula_handbook|glossary|exam_cram)$",
+    )
+    study_pack_blueprint: dict = Field(default_factory=dict)
+    study_pack_templates: list[str] = Field(default_factory=list, max_length=7)
+    async_mode: bool = False
+
+
+class GenerateDocumentPackBlueprintRequest(BaseModel):
+    user_id: int
+    session_id: int
+    qa_id: str
+    templates: list[str] = Field(min_length=1, max_length=7)
     async_mode: bool = False
 
 
@@ -130,6 +158,19 @@ class RegenerateInteractiveSceneRequest(UpdateInteractivePresentationRequest):
     scene_id: str = Field(min_length=1, max_length=80)
 
 
+class UpdateInteractivePresentationProgressRequest(BaseModel):
+    user_id: int
+    active_scene_id: str = Field(min_length=1, max_length=80)
+    completed_scene_ids: list[str] = Field(default_factory=list, max_length=10)
+    is_completed: bool = False
+
+
+class RecordInteractivePresentationCheckpointRequest(BaseModel):
+    user_id: int
+    scene_id: str = Field(min_length=1, max_length=80)
+    answer: str = Field(min_length=1, max_length=120)
+
+
 class CollaborateKnowledgeMapRequest(BaseModel):
     user_id: int
 
@@ -141,6 +182,34 @@ class SaveArtifactRequest(BaseModel):
     topic_name: str = Field(min_length=1, max_length=120)
     save_strategy: str = Field(default="separate", pattern="^(separate|version|update)$")
     duplicate_artifact_id: int | None = None
+
+
+class SaveLearningLoopArtifactRequest(BaseModel):
+    artifact_id: int
+    step: str = Field(pattern="^(notes|map|interactive|practice)$")
+
+
+class SaveLearningLoopRequest(BaseModel):
+    user_id: int
+    learning_loop_id: str = Field(min_length=1, max_length=120)
+    course_name: str = Field(min_length=1, max_length=120)
+    topic_name: str = Field(min_length=1, max_length=120)
+    artifacts: list[SaveLearningLoopArtifactRequest] = Field(min_length=4, max_length=4)
+
+
+class SaveDocumentPackArtifactRequest(BaseModel):
+    artifact_id: int
+    document_template: str = Field(
+        pattern="^(quick_overview|system_guide|problem_walkthrough|concept_comparison|formula_handbook|glossary|exam_cram)$",
+    )
+
+
+class SaveDocumentPackRequest(BaseModel):
+    user_id: int
+    document_pack_id: str = Field(min_length=1, max_length=120)
+    course_name: str = Field(min_length=1, max_length=120)
+    topic_name: str = Field(min_length=1, max_length=120)
+    artifacts: list[SaveDocumentPackArtifactRequest] = Field(min_length=1, max_length=7)
 
 
 class UpdateArtifactRequest(SaveArtifactRequest):
@@ -170,11 +239,106 @@ class DuplicateArtifactRequest(BaseModel):
     topic_name: str = Field(min_length=1, max_length=120)
 
 
+class SearchExternalVideoRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=160)
+    course_name: str = Field(default="", max_length=120)
+    topic_name: str = Field(default="", max_length=120)
+    limit: int = Field(default=4, ge=1, le=6)
+
+
+class SaveExternalVideoResourceRequest(BaseModel):
+    user_id: int
+    session_id: int = Field(default=0, ge=0)
+    qa_id: str = Field(default="", max_length=100)
+    course_name: str = Field(min_length=1, max_length=120)
+    topic_name: str = Field(min_length=1, max_length=120)
+    title: str = Field(min_length=1, max_length=180)
+    url: str = Field(min_length=1, max_length=500)
+    cover_url: str = Field(default="", max_length=700)
+    creator: str = Field(default="", max_length=80)
+    duration: str = Field(default="", max_length=40)
+    view_count: str = Field(default="", max_length=40)
+    description: str = Field(default="", max_length=700)
+    search_query: str = Field(default="", max_length=160)
+
+
 @router.get("")
 def get_artifacts(user_id: int, session_id: int | None = None, status: str = "all"):
     if status not in {"all", "draft", "saved", "deleted"}:
         raise HTTPException(status_code=400, detail="不支持的资料状态")
     return {"artifacts": list_artifacts(user_id, session_id, status)}
+
+
+@router.post("/video-search")
+def search_external_videos(req: SearchExternalVideoRequest):
+    query = req.query.strip()
+    return {
+        "query": query,
+        "platform": "bilibili",
+        "search_url": build_bilibili_search_url(query),
+        "results": search_bilibili_videos(query, req.limit),
+    }
+
+
+@router.post("/video-resources/save")
+def save_external_video_resource(req: SaveExternalVideoResourceRequest):
+    url = normalize_bilibili_video_url(req.url)
+    if not url:
+        raise HTTPException(status_code=400, detail="仅支持收藏 B站 的原始视频页面")
+
+    existing = next((artifact for artifact in list_artifacts(req.user_id, status="saved") if (
+        artifact.get("kind") == "external_video"
+        and _json(artifact.get("content"), {}).get("url") == url
+    )), None)
+    if existing:
+        return {"artifact": existing, "duplicate": True}
+
+    creator = req.creator.strip()
+    duration = req.duration.strip()
+    view_count = req.view_count.strip()
+    description = req.description.strip()
+    query = req.search_query.strip() or req.topic_name.strip()
+    content = {
+        "platform": "bilibili",
+        "platform_label": "B站",
+        "url": url,
+        "cover_url": normalize_bilibili_cover_url(req.cover_url),
+        "creator": creator,
+        "duration": duration,
+        "view_count": view_count,
+        "description": description,
+        "search_query": query,
+    }
+    highlights = ["B站课程视频"]
+    if creator:
+        highlights.append(f"UP 主：{creator}")
+    if duration:
+        highlights.append(duration)
+    if view_count:
+        highlights.append(view_count)
+    artifact = create_artifact({
+        "user_id": req.user_id,
+        "session_id": req.session_id,
+        "qa_id": req.qa_id.strip() or f"video-resource-{int(time.time() * 1000)}",
+        "kind": "external_video",
+        "title": req.title.strip(),
+        "summary": description or "已收藏的 B站 课程视频，可从资料库随时返回原页面观看。",
+        "highlights": highlights,
+        "content": json.dumps(content, ensure_ascii=False),
+        "source_prompt": f"B站视频检索：{query}",
+        "purpose": "review",
+        "depth": "standard",
+        "style": "plain",
+        "course_name": req.course_name.strip(),
+        "topic_name": req.topic_name.strip(),
+        "recommended_course_name": req.course_name.strip(),
+        "recommended_topic_name": req.topic_name.strip(),
+        "classification_source": "learning_state",
+        "classification_confidence": 1,
+        "classification_keywords": [req.course_name.strip(), req.topic_name.strip()],
+        "status": "saved",
+    })
+    return {"artifact": artifact, "duplicate": False}
 
 
 @router.get("/topics/reviews")
@@ -203,6 +367,47 @@ def get_knowledge_map_progress(artifact_id: int, user_id: int):
     progress = get_map_progress(artifact_id, user_id)
     if progress is None:
         raise HTTPException(status_code=404, detail="没有找到可复习的知识图解")
+    return progress
+
+
+@router.get("/{artifact_id}/interactive-presentation/progress")
+def get_interactive_presentation_learning_progress(artifact_id: int, user_id: int):
+    progress = get_interactive_presentation_progress(artifact_id, user_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="互动演示不存在、尚未保存或已删除")
+    return progress
+
+
+@router.patch("/{artifact_id}/interactive-presentation/progress")
+def update_interactive_presentation_learning_progress(
+    artifact_id: int,
+    req: UpdateInteractivePresentationProgressRequest,
+):
+    progress = update_interactive_presentation_progress(
+        artifact_id,
+        req.user_id,
+        req.active_scene_id,
+        req.completed_scene_ids,
+        req.is_completed,
+    )
+    if progress is None:
+        raise HTTPException(status_code=404, detail="互动演示不存在、尚未保存或已删除")
+    return progress
+
+
+@router.post("/{artifact_id}/interactive-presentation/checkpoint")
+def record_interactive_presentation_checkpoint_result(
+    artifact_id: int,
+    req: RecordInteractivePresentationCheckpointRequest,
+):
+    progress = record_interactive_presentation_checkpoint(
+        artifact_id,
+        req.user_id,
+        req.scene_id,
+        req.answer,
+    )
+    if progress is None:
+        raise HTTPException(status_code=404, detail="互动演示或理解检查不存在、尚未保存或已删除")
     return progress
 
 
@@ -317,6 +522,9 @@ def generate_document(req: GenerateDocumentRequest):
             purpose=req.purpose,
             depth=req.depth,
             style=req.style,
+            document_template=req.document_template,
+            study_pack_blueprint=req.study_pack_blueprint,
+            study_pack_templates=req.study_pack_templates,
         )
         return {"job": submit_generation_job("notes", req.user_id, lambda: generate_document(sync_req))}
     request_started = time.perf_counter()
@@ -352,9 +560,9 @@ def generate_document(req: GenerateDocumentRequest):
             answer=str(assistant_message.get("content", "")),
             recent_context=messages[max(0, assistant_index - 4):assistant_index + 1],
             learning_state=learning_state,
-            purpose=req.purpose,
-            depth=req.depth,
-            style=req.style,
+            document_template=req.document_template,
+            study_pack_blueprint=req.study_pack_blueprint or None,
+            study_pack_templates=req.study_pack_templates,
             user_id=req.user_id,
         )
         logger.info("[artifact-timing] kind=notes sid=%s stage=generation seconds=%.3f", req.session_id, time.perf_counter() - generation_started)
@@ -382,6 +590,7 @@ def generate_document(req: GenerateDocumentRequest):
             "purpose": req.purpose,
             "depth": req.depth,
             "style": req.style,
+            "document_template": req.document_template,
             "course_name": recommendation["course_name"],
             "topic_name": recommendation["topic_name"],
             "recommended_course_name": recommendation["course_name"],
@@ -399,6 +608,70 @@ def generate_document(req: GenerateDocumentRequest):
     except Exception as exc:
         logger.exception("学习文档生成失败")
         raise HTTPException(status_code=502, detail="学习文档生成失败，请稍后重试") from exc
+
+
+@router.post("/generate-document-pack-blueprint")
+def generate_document_pack_blueprint(req: GenerateDocumentPackBlueprintRequest):
+    if req.async_mode:
+        sync_req = GenerateDocumentPackBlueprintRequest(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            qa_id=req.qa_id,
+            templates=req.templates,
+        )
+        return {
+            "job": submit_generation_job(
+                "document_pack_plan",
+                req.user_id,
+                lambda: generate_document_pack_blueprint(sync_req),
+            )
+        }
+
+    rows = query(
+        "SELECT messages, learning_state FROM chat_sessions "
+        "WHERE id = %s AND user_id = %s AND session_type = 'tutoring'",
+        (req.session_id, req.user_id),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有找到对应的学习对话")
+
+    messages = _json(rows[0].get("messages"), [])
+    learning_state = _json(rows[0].get("learning_state"), {})
+    assistant_index = next(
+        (index for index, message in enumerate(messages)
+         if message.get("role") == "assistant" and message.get("id") == req.qa_id),
+        None,
+    )
+    if assistant_index is None:
+        raise HTTPException(status_code=404, detail="没有找到这条回答，请刷新页面后重试")
+    assistant_message = messages[assistant_index]
+    user_message = next(
+        (message for message in reversed(messages[:assistant_index]) if message.get("role") == "user"),
+        None,
+    )
+    if not user_message:
+        raise HTTPException(status_code=400, detail="这条回答缺少原始问题，暂时无法制定学习路线")
+
+    try:
+        started = time.perf_counter()
+        blueprint = generate_study_pack_blueprint(
+            question=str(user_message.get("content", "")),
+            answer=str(assistant_message.get("content", "")),
+            recent_context=messages[max(0, assistant_index - 4):assistant_index + 1],
+            learning_state=learning_state,
+            selected_templates=req.templates,
+        )
+        logger.info(
+            "[artifact-timing] kind=document_pack_plan sid=%s stage=generation seconds=%.3f",
+            req.session_id,
+            time.perf_counter() - started,
+        )
+        return {"blueprint": blueprint}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("学习资料包路线制定失败")
+        raise HTTPException(status_code=502, detail="学习路线暂时无法制定，请稍后重试") from exc
 
 
 @router.post("/create-image-analysis")
@@ -850,6 +1123,40 @@ def detect_duplicate_artifacts(req: DuplicateArtifactRequest):
         req.topic_name.strip(),
     )
     return {"duplicates": duplicates}
+
+
+@router.post("/learning-loop/save")
+def archive_learning_loop(req: SaveLearningLoopRequest):
+    try:
+        artifacts = save_learning_loop(
+            req.user_id,
+            [item.model_dump() for item in req.artifacts],
+            req.course_name.strip(),
+            req.topic_name.strip(),
+            req.learning_loop_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    for artifact in artifacts:
+        record_learning_activity(req.user_id, artifact["id"], "saved")
+    return {"artifacts": artifacts}
+
+
+@router.post("/document-packs/save")
+def archive_document_pack(req: SaveDocumentPackRequest):
+    try:
+        artifacts = save_document_pack(
+            req.user_id,
+            [item.model_dump() for item in req.artifacts],
+            req.course_name.strip(),
+            req.topic_name.strip(),
+            req.document_pack_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    for artifact in artifacts:
+        record_learning_activity(req.user_id, artifact["id"], "saved")
+    return {"artifacts": artifacts}
 
 
 @router.patch("/{artifact_id}/save")

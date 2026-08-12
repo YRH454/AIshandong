@@ -58,6 +58,7 @@ def init_tables():
             purpose VARCHAR(30) NOT NULL,
             depth VARCHAR(30) NOT NULL,
             style VARCHAR(30) NOT NULL,
+            document_template VARCHAR(40) NOT NULL DEFAULT 'system_guide',
             course_id INT,
             topic_id INT,
             recommended_course_name VARCHAR(120) DEFAULT '',
@@ -71,6 +72,10 @@ def init_tables():
             version_group_id INT,
             version INT NOT NULL DEFAULT 1,
             is_favorite TINYINT NOT NULL DEFAULT 0,
+            learning_loop_id VARCHAR(120) DEFAULT '',
+            learning_loop_step VARCHAR(40) DEFAULT '',
+            document_pack_id VARCHAR(120) DEFAULT '',
+            document_pack_template VARCHAR(40) DEFAULT '',
             deleted_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -101,6 +106,11 @@ def init_tables():
     _ensure_column("learning_artifacts", "version", "INT NOT NULL DEFAULT 1")
     _ensure_column("learning_artifacts", "is_favorite", "TINYINT NOT NULL DEFAULT 0")
     _ensure_column("learning_artifacts", "source_map_artifact_id", "INT")
+    _ensure_column("learning_artifacts", "document_template", "VARCHAR(40) NOT NULL DEFAULT 'system_guide'")
+    _ensure_column("learning_artifacts", "learning_loop_id", "VARCHAR(120) DEFAULT ''")
+    _ensure_column("learning_artifacts", "learning_loop_step", "VARCHAR(40) DEFAULT ''")
+    _ensure_column("learning_artifacts", "document_pack_id", "VARCHAR(120) DEFAULT ''")
+    _ensure_column("learning_artifacts", "document_pack_template", "VARCHAR(40) DEFAULT ''")
     _ensure_column("learning_artifacts", "deleted_at", "DATETIME")
     execute(
         "UPDATE learning_artifacts SET version_group_id = id "
@@ -259,14 +269,14 @@ def save_artifact(
         )
         execute(
             "UPDATE learning_artifacts SET title = %s, summary = %s, highlights = %s, content = %s, "
-            "source_prompt = %s, purpose = %s, depth = %s, style = %s, course_id = %s, topic_id = %s, "
+            "source_prompt = %s, purpose = %s, depth = %s, style = %s, document_template = %s, course_id = %s, topic_id = %s, "
             "recommended_course_name = %s, recommended_topic_name = %s, classification_source = %s, "
             "classification_confidence = %s, classification_overridden = %s, classification_keywords = %s, "
             "source_map_artifact_id = %s, updated_at = NOW() WHERE id = %s AND user_id = %s AND status = 'saved'",
             (
                 title, existing["summary"], json.dumps(existing["highlights"], ensure_ascii=False),
                 existing["content"], existing["source_prompt"], existing["purpose"], existing["depth"],
-                existing["style"], course_id, topic_id, existing["recommended_course_name"],
+                existing["style"], existing.get("document_template", "system_guide"), course_id, topic_id, existing["recommended_course_name"],
                 existing["recommended_topic_name"], existing["classification_source"],
                 existing["classification_confidence"], overridden,
                 json.dumps(existing["classification_keywords"], ensure_ascii=False), existing.get("source_map_artifact_id"),
@@ -303,6 +313,124 @@ def save_artifact(
     if overridden:
         _record_classification_feedback(existing, course_name, topic_name)
     return get_artifact(saved_id, user_id)
+
+
+def save_learning_loop(
+    user_id: int,
+    artifacts: list[dict],
+    course_name: str,
+    topic_name: str,
+    learning_loop_id: str,
+) -> list[dict]:
+    """Save a generated learning set as one durable course/topic bundle."""
+    loop_id = str(learning_loop_id or "").strip()[:120]
+    if not loop_id or not artifacts:
+        raise ValueError("学习闭环信息不完整")
+
+    allowed_steps = {"notes", "map", "interactive", "practice"}
+    if len(artifacts) != len(allowed_steps):
+        raise ValueError("学习闭环必须包含文档、图解、动态讲解和练习四份资料")
+
+    seen_ids: set[int] = set()
+    seen_steps: set[str] = set()
+    pending: list[tuple[dict, str]] = []
+    for item in artifacts:
+        artifact_id = int(item.get("artifact_id") or 0)
+        step = str(item.get("step") or "").strip()
+        if not artifact_id or artifact_id in seen_ids or step not in allowed_steps or step in seen_steps:
+            raise ValueError("学习闭环中的资料信息无效")
+        seen_ids.add(artifact_id)
+        seen_steps.add(step)
+        artifact = get_artifact(artifact_id, user_id)
+        if not artifact or artifact.get("status") not in {"draft", "saved"}:
+            raise ValueError("这套资料已有变更，请刷新后重新确认")
+        pending.append((artifact, step))
+
+    if seen_steps != allowed_steps:
+        raise ValueError("学习闭环必须包含文档、图解、动态讲解和练习四份资料")
+
+    saved: list[dict] = []
+    for artifact, step in pending:
+        if artifact.get("status") == "draft":
+            archived = save_artifact(
+                artifact["id"],
+                user_id,
+                artifact["title"],
+                course_name,
+                topic_name,
+                "separate",
+            )
+        else:
+            archived = update_artifact_metadata(
+                artifact["id"],
+                user_id,
+                artifact["title"],
+                course_name,
+                topic_name,
+            )
+        if not archived:
+            raise ValueError("保存学习闭环时发生变化，请重新确认")
+        execute(
+            "UPDATE learning_artifacts SET learning_loop_id = %s, learning_loop_step = %s, updated_at = NOW() "
+            "WHERE id = %s AND user_id = %s",
+            (loop_id, step, archived["id"], user_id),
+        )
+        saved_artifact = get_artifact(archived["id"], user_id)
+        if saved_artifact:
+            saved.append(saved_artifact)
+    return saved
+
+
+def save_document_pack(
+    user_id: int,
+    artifacts: list[dict],
+    course_name: str,
+    topic_name: str,
+    document_pack_id: str,
+) -> list[dict]:
+    """Archive several document templates as one course/topic study pack."""
+    pack_id = str(document_pack_id or "").strip()[:120]
+    if not pack_id or not artifacts:
+        raise ValueError("学习资料包信息不完整")
+
+    seen_ids: set[int] = set()
+    seen_templates: set[str] = set()
+    pending: list[tuple[dict, str]] = []
+    for item in artifacts:
+        artifact_id = int(item.get("artifact_id") or 0)
+        template = str(item.get("document_template") or "").strip()
+        if not artifact_id or artifact_id in seen_ids or not template or template in seen_templates:
+            raise ValueError("学习资料包中的文档信息无效")
+        seen_ids.add(artifact_id)
+        seen_templates.add(template)
+        artifact = get_artifact(artifact_id, user_id)
+        if not artifact or artifact.get("kind") != "notes" or artifact.get("status") not in {"draft", "saved"}:
+            raise ValueError("资料包中的文档已发生变化，请刷新后重新确认")
+        if artifact.get("document_template") != template:
+            raise ValueError("资料包中的文档模板不匹配，请刷新后重新确认")
+        pending.append((artifact, template))
+
+    saved: list[dict] = []
+    for artifact, template in pending:
+        if artifact.get("status") == "draft":
+            archived = save_artifact(
+                artifact["id"], user_id, artifact["title"], course_name, topic_name, "separate",
+            )
+        else:
+            archived = update_artifact_metadata(
+                artifact["id"], user_id, artifact["title"], course_name, topic_name,
+            )
+        if not archived:
+            raise ValueError("保存学习资料包时发生变化，请重新确认")
+        execute(
+            "UPDATE learning_artifacts SET document_pack_id = %s, document_pack_template = %s, updated_at = NOW() "
+            "WHERE id = %s AND user_id = %s",
+            (pack_id, template, archived["id"], user_id),
+        )
+        saved_artifact = get_artifact(archived["id"], user_id)
+        if saved_artifact:
+            saved.append(saved_artifact)
+    return saved
 
 
 def find_duplicate_artifacts(
@@ -385,6 +513,7 @@ def restore_artifact_version(artifact_id: int, user_id: int) -> dict | None:
         "purpose": selected["purpose"],
         "depth": selected["depth"],
         "style": selected["style"],
+        "document_template": selected.get("document_template", "system_guide"),
         "course_id": selected["course_id"],
         "topic_id": selected["topic_id"],
         "recommended_course_name": selected["recommended_course_name"],
@@ -501,6 +630,7 @@ def update_interactive_presentation_content(
         "purpose": existing["purpose"],
         "depth": existing["depth"],
         "style": existing["style"],
+        "document_template": existing.get("document_template", "system_guide"),
         "course_id": existing["course_id"],
         "topic_id": existing["topic_id"],
         "recommended_course_name": existing["recommended_course_name"],
@@ -655,6 +785,7 @@ def _row(row: dict) -> dict:
         "purpose": row.get("purpose", "review"),
         "depth": row.get("depth", "standard"),
         "style": row.get("style", "plain"),
+        "document_template": row.get("document_template", "system_guide"),
         "course_name": row.get("course_name") or recommended_course_name,
         "topic_name": row.get("topic_name") or recommended_topic_name,
         "recommended_course_name": recommended_course_name,
@@ -664,6 +795,10 @@ def _row(row: dict) -> dict:
         "classification_overridden": bool(row.get("classification_overridden", 0)),
         "classification_keywords": _json(row.get("classification_keywords"), []),
         "source_map_artifact_id": row.get("source_map_artifact_id"),
+        "learning_loop_id": row.get("learning_loop_id") or "",
+        "learning_loop_step": row.get("learning_loop_step") or "",
+        "document_pack_id": row.get("document_pack_id") or "",
+        "document_pack_template": row.get("document_pack_template") or "",
         "status": row.get("status", "draft"),
         "course_id": row.get("course_id"),
         "topic_id": row.get("topic_id"),

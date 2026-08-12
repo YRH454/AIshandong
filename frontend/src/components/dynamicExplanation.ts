@@ -11,6 +11,9 @@ export type DynamicExplanationVisualType =
   | 'error-lab'
   | 'map'
   | 'recap'
+  | 'code-trace'
+  | 'timeline'
+  | 'network'
 
 export type DynamicExplanationPalette = 'sage' | 'cobalt' | 'ember' | 'plum' | 'ink'
 
@@ -19,6 +22,12 @@ export type DynamicExplanationCheck = {
   options: string[]
   answer: string
   explanation: string
+}
+
+export type DynamicExplanationCheckpoint = {
+  attempts: number
+  correct: boolean
+  last_answer: string
 }
 
 export type DynamicExplanationScene = {

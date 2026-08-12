@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, CirclePause, CirclePlay, GripVertical, Maximize2, PenLine, RotateCcw, Save, Sparkles, X } from 'lucide-react'
-import type { DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
+import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, CirclePause, CirclePlay, Eye, FastForward, Gauge, GripVertical, Lightbulb, Maximize2, PenLine, RotateCcw, Save, Sparkles, Target, X } from 'lucide-react'
+import type { DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
 
 export type { DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
+
+export type DynamicExplanationProgress = {
+  activeSceneId: string
+  completedSceneIds: string[]
+  isCompleted: boolean
+  checkpoints?: Record<string, DynamicExplanationCheckpoint>
+}
 
 type DynamicExplanationPlayerProps = {
   data: DynamicExplanationData
@@ -11,10 +18,14 @@ type DynamicExplanationPlayerProps = {
   onSceneStarted?: (scene: DynamicExplanationScene, index: number) => void
   onSceneCompleted?: (scene: DynamicExplanationScene, index: number) => void
   onCompleted?: () => void
+  progress?: DynamicExplanationProgress
+  onProgressChange?: (progress: DynamicExplanationProgress) => void
+  onCheckpoint?: (scene: DynamicExplanationScene, answer: string) => void
   onSavePresentation?: (presentation: DynamicExplanationData) => Promise<void>
   onRegenerateScene?: (presentation: DynamicExplanationData, scene: DynamicExplanationScene) => Promise<DynamicExplanationScene>
   saving?: boolean
   saveAsVersion?: boolean
+  openImmersiveRequest?: number
 }
 
 type SceneVisualProps = {
@@ -27,6 +38,7 @@ type SceneVisualProps = {
 const constellationPositions = [
   ['18%', '20%'], ['78%', '18%'], ['84%', '63%'], ['59%', '82%'], ['13%', '69%'],
 ]
+const emptyProgressSceneIds: string[] = []
 
 const visualTypeOptions: Array<{ id: DynamicExplanationScene['visual_type']; zh: string; en: string }> = [
   { id: 'concept', zh: '概念星图', en: 'Concept constellation' },
@@ -36,7 +48,18 @@ const visualTypeOptions: Array<{ id: DynamicExplanationScene['visual_type']; zh:
   { id: 'contrast', zh: '前后对比', en: 'Before and after' },
   { id: 'lab', zh: '例子实验台', en: 'Example lab' },
   { id: 'error-lab', zh: '易错实验', en: 'Misconception lab' },
+  { id: 'code-trace', zh: '代码推演', en: 'Code trace' },
+  { id: 'timeline', zh: '时间脉络', en: 'Timeline' },
+  { id: 'network', zh: '节点流动', en: 'Network flow' },
   { id: 'map', zh: '知识收束', en: 'Knowledge map' },
+]
+
+type LearningMode = 'quick' | 'guided' | 'challenge'
+
+const learningModes: Array<{ id: LearningMode; zh: string; en: string; descriptionZh: string; descriptionEn: string }> = [
+  { id: 'quick', zh: '快速看懂', en: 'Quick view', descriptionZh: '只走关键场景，先建立整体理解。', descriptionEn: 'Take the essential scenes first.' },
+  { id: 'guided', zh: '跟着推演', en: 'Guided walkthrough', descriptionZh: '完整走一遍过程与关键细节。', descriptionEn: 'Walk through the full reasoning.' },
+  { id: 'challenge', zh: '考前自测', en: 'Exam challenge', descriptionZh: '先预测，再展开讲解验证想法。', descriptionEn: 'Predict first, then reveal the reasoning.' },
 ]
 
 function formatDuration(seconds: number, language: DynamicExplanationPlayerProps['language']) {
@@ -51,28 +74,53 @@ function visualItems(scene: DynamicExplanationScene) {
 function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisualProps) {
   const tr = (chinese: string, english: string) => language === 'en' ? english : chinese
   const visual = scene.visual
-  const items = visualItems(scene)
+  const items = useMemo(() => visualItems(scene), [scene])
+  const [sequenceOrder, setSequenceOrder] = useState<string[]>(items)
+  const [draggedSequenceItem, setDraggedSequenceItem] = useState<string | null>(null)
+  useEffect(() => {
+    setSequenceOrder(items)
+    setDraggedSequenceItem(null)
+  }, [scene.id, items])
   const selected = items[Math.min(selectedItem, items.length - 1)] || scene.key_point
   const clickItem = (index: number) => onSelectItem(index)
 
   if (scene.visual_type === 'sequence' || scene.visual_type === 'journey') {
+    const displayedItems = scene.visual_type === 'sequence' && sequenceOrder.length ? sequenceOrder : items
+    const reorderStep = (target: string) => {
+      if (scene.visual_type !== 'sequence' || !draggedSequenceItem || draggedSequenceItem === target) return
+      setSequenceOrder(current => {
+        const next = [...current]
+        const from = next.indexOf(draggedSequenceItem)
+        const to = next.indexOf(target)
+        if (from < 0 || to < 0) return current
+        next.splice(from, 1)
+        next.splice(to, 0, draggedSequenceItem)
+        return next
+      })
+      setDraggedSequenceItem(null)
+    }
     return (
-      <div className="presentation-visual presentation-journey" aria-label={tr('步骤演示', 'Step-by-step demonstration')}>
+      <div className={scene.visual_type === 'sequence' ? 'presentation-visual presentation-journey sequence-sorting' : 'presentation-visual presentation-journey'} aria-label={tr('步骤演示', 'Step-by-step demonstration')}>
         <div className="journey-line" aria-hidden="true" />
-        {items.map((item, index) => (
+        {displayedItems.map((item, index) => (
           <button
-            className={index === selectedItem ? 'journey-stop active' : 'journey-stop'}
+            className={items.indexOf(item) === selectedItem ? 'journey-stop active' : 'journey-stop'}
             key={`${item}-${index}`}
-            style={{ '--journey-position': `${10 + (index * 80) / Math.max(items.length - 1, 1)}%` } as CSSProperties}
+            style={{ '--journey-position': `${10 + (index * 80) / Math.max(displayedItems.length - 1, 1)}%` } as CSSProperties}
             type="button"
-            onClick={() => clickItem(index)}
+            draggable={scene.visual_type === 'sequence'}
+            onDragStart={() => setDraggedSequenceItem(item)}
+            onDragOver={event => event.preventDefault()}
+            onDrop={() => reorderStep(item)}
+            onDragEnd={() => setDraggedSequenceItem(null)}
+            onClick={() => clickItem(items.indexOf(item))}
           >
             <span>{index + 1}</span>
             <strong>{item}</strong>
           </button>
         ))}
         <div className="journey-focus">
-          <span>{tr('当前推演', 'Current step')}</span>
+          <span>{scene.visual_type === 'sequence' ? tr('可拖动排序，按你的理解整理步骤', 'Drag to sort the steps your way') : tr('当前推演', 'Current step')}</span>
           <strong>{selected}</strong>
           <p>{visual.example || scene.key_point}</p>
         </div>
@@ -98,6 +146,56 @@ function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisua
           ))}
         </div>
         <p className="stack-detail">{visual.example || selected}</p>
+      </div>
+    )
+  }
+
+  if (scene.visual_type === 'code-trace') {
+    return (
+      <div className="presentation-visual presentation-code-trace" aria-label={tr('代码与状态推演', 'Code and state trace')}>
+        <div className="code-trace-heading"><span>{tr('逐步执行', 'Trace it')}</span><strong>{visual.headline}</strong></div>
+        <div className="code-trace-lines">
+          {items.map((item, index) => (
+            <button className={index === selectedItem ? 'code-trace-line active' : 'code-trace-line'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
+              <i>{String(index + 1).padStart(2, '0')}</i><code>{item}</code>
+            </button>
+          ))}
+        </div>
+        <div className="code-trace-inspector"><span>{tr('当前状态', 'Current state')}</span><strong>{visual.example || selected}</strong></div>
+      </div>
+    )
+  }
+
+  if (scene.visual_type === 'timeline') {
+    return (
+      <div className="presentation-visual presentation-timeline" aria-label={tr('时间与阶段脉络', 'Timeline and stages')}>
+        <div className="timeline-heading"><span>{tr('按顺序理解', 'Read in order')}</span><strong>{visual.headline}</strong></div>
+        <div className="timeline-track" aria-hidden="true" />
+        <div className="timeline-stops">
+          {items.map((item, index) => (
+            <button className={index === selectedItem ? 'timeline-stop active' : 'timeline-stop'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
+              <i>{index + 1}</i><span>{item}</span>
+            </button>
+          ))}
+        </div>
+        <p>{visual.example || selected}</p>
+      </div>
+    )
+  }
+
+  if (scene.visual_type === 'network') {
+    return (
+      <div className="presentation-visual presentation-network" aria-label={tr('节点流动图', 'Network flow')}>
+        <div className="network-core"><span>{tr('流动的核心', 'Flow center')}</span><strong>{visual.headline}</strong></div>
+        <div className="network-routes" aria-hidden="true"><i /><i /><i /></div>
+        <div className="network-nodes">
+          {items.map((item, index) => (
+            <button className={index === selectedItem ? 'network-node active' : 'network-node'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
+              <i>{index + 1}</i><span>{item}</span>
+            </button>
+          ))}
+        </div>
+        <p>{visual.example || selected}</p>
       </div>
     )
   }
@@ -184,7 +282,7 @@ function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisua
   )
 }
 
-export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true }: DynamicExplanationPlayerProps) {
+export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, progress, onProgressChange, onCheckpoint, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true, openImmersiveRequest }: DynamicExplanationPlayerProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [answers, setAnswers] = useState<Record<string, string>>({})
@@ -195,10 +293,25 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [sceneRegenerating, setSceneRegenerating] = useState(false)
   const [editorError, setEditorError] = useState<string | null>(null)
+  const [completionNotice, setCompletionNotice] = useState<'earlier' | 'overview' | null>(null)
+  const [learningMode, setLearningMode] = useState<LearningMode>('guided')
+  const [revealedSceneIds, setRevealedSceneIds] = useState<Record<string, boolean>>({})
+  const [remedialBySceneId, setRemedialBySceneId] = useState<Record<string, string>>({})
+  const [, setProgressRevision] = useState(0)
   const startedScenes = useRef(new Set<string>())
   const completedScenes = useRef(new Set<string>())
   const completedExplanation = useRef(false)
+  // The library parses saved JSON on every parent render. Its object reference can
+  // change while the presentation itself has not, so use the content as the reset
+  // boundary rather than the transient object identity.
+  const dataFingerprint = JSON.stringify(data)
   const presentation = presentationDraft || data
+  const visibleSceneIndexes = useMemo(() => {
+    const all = presentation.scenes.map((_, index) => index)
+    if (learningMode !== 'quick' || all.length <= 3) return all
+    return [...new Set([0, Math.round((all.length - 1) / 2), all.length - 1])]
+  }, [learningMode, presentation.scenes])
+  const activeVisibleIndex = Math.max(0, visibleSceneIndexes.indexOf(activeIndex))
   const scene = presentation.scenes[activeIndex]
   const totalSeconds = useMemo(
     () => presentation.scenes.reduce((total, item) => total + Math.max(20, Number(item.suggested_seconds) || 42), 0),
@@ -211,6 +324,10 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       : tr(chinese, english)
   )
 
+  const progressActiveSceneId = progress?.activeSceneId || ''
+  const progressCompletedSceneIds = progress?.completedSceneIds || emptyProgressSceneIds
+  const progressIsCompleted = Boolean(progress?.isCompleted)
+
   useEffect(() => {
     setActiveIndex(0)
     setPlaying(false)
@@ -221,56 +338,110 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     setPresentationDraft(null)
     setDraggedIndex(null)
     setEditorError(null)
+    setCompletionNotice(null)
+    setLearningMode('guided')
+    setRevealedSceneIds({})
+    setRemedialBySceneId({})
     startedScenes.current.clear()
     completedScenes.current.clear()
     completedExplanation.current = false
-  }, [data])
+  }, [dataFingerprint])
+
+  useEffect(() => {
+    if (!visibleSceneIndexes.includes(activeIndex)) {
+      setActiveIndex(visibleSceneIndexes[0] || 0)
+      setSelectedVisualItem(0)
+    }
+  }, [activeIndex, visibleSceneIndexes])
+
+  useEffect(() => {
+    if (presentationDraft) return
+    const validSceneIds = new Set(data.scenes.map(item => item.id))
+    const restoredCompleted = new Set(progressCompletedSceneIds.filter(id => validSceneIds.has(id)))
+    const restoredIndex = data.scenes.findIndex(item => item.id === progressActiveSceneId)
+    completedScenes.current = restoredCompleted
+    completedExplanation.current = Boolean(progressIsCompleted && restoredCompleted.size === data.scenes.length)
+    if (restoredIndex >= 0) setActiveIndex(restoredIndex)
+    setProgressRevision(current => current + 1)
+  }, [data, presentationDraft, progressActiveSceneId, progressCompletedSceneIds, progressIsCompleted])
 
   useEffect(() => {
     if (!scene || startedScenes.current.has(scene.id)) return
     startedScenes.current.add(scene.id)
     onSceneStarted?.(scene, activeIndex)
-  }, [activeIndex, onSceneStarted, scene])
+    if (!progressActiveSceneId) {
+      onProgressChange?.({
+        activeSceneId: scene.id,
+        completedSceneIds: [...completedScenes.current],
+        isCompleted: completedExplanation.current,
+      })
+    }
+  }, [activeIndex, onProgressChange, onSceneStarted, progressActiveSceneId, scene])
 
   const completeScene = useCallback((index: number) => {
     const current = presentation.scenes[index]
     if (!current || completedScenes.current.has(current.id)) return
     completedScenes.current.add(current.id)
+    setProgressRevision(value => value + 1)
     onSceneCompleted?.(current, index)
   }, [onSceneCompleted, presentation.scenes])
 
+  const reportProgress = useCallback((index: number) => {
+    const current = presentation.scenes[index]
+    if (!current) return
+    onProgressChange?.({
+      activeSceneId: current.id,
+      completedSceneIds: [...completedScenes.current],
+      isCompleted: presentation.scenes.length > 0 && completedScenes.current.size === presentation.scenes.length,
+    })
+  }, [onProgressChange, presentation.scenes])
+
   const completeExplanation = useCallback(() => {
     completeScene(activeIndex)
+    reportProgress(activeIndex)
     setPlaying(false)
+    const completedRoute = visibleSceneIndexes.every(index => completedScenes.current.has(presentation.scenes[index]?.id))
+    if (!completedRoute) {
+      setCompletionNotice('earlier')
+      return
+    }
+    if (completedScenes.current.size !== presentation.scenes.length) {
+      setCompletionNotice('overview')
+      return
+    }
     if (completedExplanation.current) return
     completedExplanation.current = true
+    setCompletionNotice(null)
     onCompleted?.()
-  }, [activeIndex, completeScene, onCompleted])
+  }, [activeIndex, completeScene, onCompleted, presentation.scenes, reportProgress, visibleSceneIndexes])
 
   const moveTo = useCallback((nextIndex: number) => {
     if (!scene) return
     completeScene(activeIndex)
+    setCompletionNotice(null)
     if (nextIndex >= presentation.scenes.length) {
       completeExplanation()
       return
     }
     setActiveIndex(Math.max(0, nextIndex))
     setSelectedVisualItem(0)
-  }, [activeIndex, completeExplanation, completeScene, presentation.scenes.length, scene])
+    reportProgress(Math.max(0, nextIndex))
+  }, [activeIndex, completeExplanation, completeScene, presentation.scenes.length, reportProgress, scene])
 
   useEffect(() => {
     if (!playing || !scene) return undefined
-    const timeout = window.setTimeout(() => moveTo(activeIndex + 1), Math.max(9000, (scene.suggested_seconds || 42) * 1000))
+    const nextIndex = visibleSceneIndexes[activeVisibleIndex + 1] ?? presentation.scenes.length
+    const timeout = window.setTimeout(() => moveTo(nextIndex), Math.max(9000, (scene.suggested_seconds || 42) * 1000))
     return () => window.clearTimeout(timeout)
-  }, [activeIndex, moveTo, playing, scene])
+  }, [activeVisibleIndex, moveTo, playing, presentation.scenes.length, scene, visibleSceneIndexes])
 
   useEffect(() => {
     if (!immersive) return undefined
     document.body.classList.add('interactive-presentation-open')
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setImmersive(false)
-      if (event.key === 'ArrowRight') moveTo(activeIndex + 1)
-      if (event.key === 'ArrowLeft') moveTo(activeIndex - 1)
+      if (event.key === 'ArrowRight') moveTo(visibleSceneIndexes[activeVisibleIndex + 1] ?? presentation.scenes.length)
+      if (event.key === 'ArrowLeft') moveTo(visibleSceneIndexes[Math.max(0, activeVisibleIndex - 1)] ?? 0)
       if (event.key === ' ' && event.target === document.body) {
         event.preventDefault()
         setPlaying(value => !value)
@@ -281,7 +452,11 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       document.body.classList.remove('interactive-presentation-open')
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [activeIndex, immersive, moveTo])
+  }, [activeVisibleIndex, immersive, moveTo, presentation.scenes.length, visibleSceneIndexes])
+
+  useEffect(() => {
+    if (openImmersiveRequest) setImmersive(true)
+  }, [openImmersiveRequest])
 
   if (!scene) return null
 
@@ -336,25 +511,74 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
 
   const selectedAnswer = answers[scene.id]
   const checked = Boolean(selectedAnswer)
-  const isLastScene = activeIndex === presentation.scenes.length - 1
+  const isLastScene = activeVisibleIndex === visibleSceneIndexes.length - 1
+  const completedSceneCount = presentation.scenes.filter(item => completedScenes.current.has(item.id)).length
   const palette = presentation.palette || 'sage'
+  const selectedMode = learningModes.find(item => item.id === learningMode) || learningModes[1]
+  const showNarration = learningMode !== 'challenge' || Boolean(revealedSceneIds[scene.id])
+  const currentRemedialAnswer = remedialBySceneId[scene.id]
+  const persistedCheckpoint = progress?.checkpoints?.[scene.id]
+
+  const chooseLearningMode = (mode: LearningMode) => {
+    setLearningMode(mode)
+    setPlaying(false)
+    setCompletionNotice(null)
+  }
+
+  const answerCheckpoint = (answer: string) => {
+    if (!scene.check || checked) return
+    const correct = answer === scene.check.answer
+    setAnswers(current => ({ ...current, [scene.id]: answer }))
+    setRevealedSceneIds(current => ({ ...current, [scene.id]: true }))
+    if (correct) setRemedialBySceneId(current => {
+      const next = { ...current }
+      delete next[scene.id]
+      return next
+    })
+    else setRemedialBySceneId(current => ({ ...current, [scene.id]: answer }))
+    onCheckpoint?.(scene, answer)
+  }
+
+  const learningModeControl = (surface: 'preview' | 'immersive') => (
+    <div className={`presentation-learning-modes ${surface}`} aria-label={tr('选择学习节奏', 'Choose learning pace')}>
+      <span>{tr('学习节奏', 'Learning pace')}</span>
+      <div>
+        {learningModes.map(item => (
+          <button
+            type="button"
+            key={item.id}
+            className={learningMode === item.id ? 'active' : ''}
+            aria-pressed={learningMode === item.id}
+            onClick={() => chooseLearningMode(item.id)}
+          >
+            {item.id === 'quick' ? <FastForward size={13} /> : item.id === 'guided' ? <Gauge size={13} /> : <Target size={13} />}
+            {tr(item.zh, item.en)}
+          </button>
+        ))}
+      </div>
+      <p>{tr(selectedMode.descriptionZh, selectedMode.descriptionEn)}</p>
+    </div>
+  )
 
   const controls = (mode: 'preview' | 'immersive') => (
     <div className={`presentation-controls ${mode}`}>
-      <button type="button" onClick={() => moveTo(activeIndex - 1)} disabled={activeIndex === 0}><ChevronLeft size={16} />{tr('上一页', 'Previous')}</button>
-      <span>{activeIndex + 1} / {presentation.scenes.length}</span>
+      <button type="button" onClick={() => moveTo(visibleSceneIndexes[Math.max(0, activeVisibleIndex - 1)] ?? 0)} disabled={activeVisibleIndex === 0}><ChevronLeft size={16} />{tr('上一页', 'Previous')}</button>
+      <span>{activeVisibleIndex + 1} / {visibleSceneIndexes.length}{learningMode === 'quick' ? tr(' · 快速路径', ' · quick path') : ''}</span>
       {isLastScene ? (
         <button className="presentation-finish" type="button" onClick={completeExplanation}><Check size={16} />{tr('完成讲解', 'Complete')}</button>
       ) : (
-        <button className="presentation-next" type="button" onClick={() => moveTo(activeIndex + 1)}>{tr('下一页', 'Next')}<ChevronRight size={16} /></button>
+        <button className="presentation-next" type="button" onClick={() => moveTo(visibleSceneIndexes[activeVisibleIndex + 1] ?? presentation.scenes.length)}>{tr('下一页', 'Next')}<ChevronRight size={16} /></button>
       )}
-      <button className="presentation-restart" type="button" onClick={() => { setPlaying(false); setActiveIndex(0); setSelectedVisualItem(0) }} aria-label={tr('从头播放', 'Restart')}><RotateCcw size={15} /></button>
+      <button className="presentation-restart" type="button" onClick={() => { setPlaying(false); setActiveIndex(visibleSceneIndexes[0] || 0); setSelectedVisualItem(0); setCompletionNotice(null) }} aria-label={tr('从头播放', 'Restart')}><RotateCcw size={15} /></button>
+      {completionNotice && !completedExplanation.current && <p className="presentation-completion-reminder" role="status">{completionNotice === 'overview'
+        ? tr('快速路径已经走完。切换到“跟着推演”后，完成剩余场景即可结束整段讲解。', 'Quick view is complete. Switch to guided walkthrough to finish the remaining scenes.')
+        : tr('先完成当前学习路径中的前面场景，再结束本次讲解。', 'Complete the earlier scenes in this learning path before finishing.')}</p>}
     </div>
   )
 
   const understandingCheck = scene.check && (
     <section className="presentation-check" aria-label={tr('理解检查', 'Understanding check')}>
-      <div><span>{tr('停一下，先判断', 'Pause and predict')}</span><p>{scene.check.prompt}</p></div>
+      <div><span>{tr('停一下，先判断', 'Pause and predict')}</span><p>{scene.check.prompt}</p>{persistedCheckpoint && <small>{persistedCheckpoint.correct ? tr('此前已答对，可再做一次确认理解。', 'Previously confirmed. Try it once more to verify.') : tr(`此前已尝试 ${persistedCheckpoint.attempts} 次，这次换一种思路。`, `Tried ${persistedCheckpoint.attempts} time(s) before. Try a different line of thought.`)}</small>}</div>
       <div className="presentation-check-options">
         {scene.check.options.map(option => {
           const correct = checked && option === scene.check?.answer
@@ -365,7 +589,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
               type="button"
               disabled={checked}
               className={correct ? 'correct' : incorrect ? 'incorrect' : ''}
-              onClick={() => setAnswers(current => ({ ...current, [scene.id]: option }))}
+              onClick={() => answerCheckpoint(option)}
             >
               {correct && <Check size={14} />}{option}
             </button>
@@ -373,6 +597,13 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         })}
       </div>
       {checked && <p className="presentation-check-feedback">{scene.check.explanation}</p>}
+      {currentRemedialAnswer && selectedAnswer && scene.check && (
+        <aside className="presentation-adaptive-coach" aria-label={tr('自动补讲', 'Adaptive follow-up')}>
+          <div><span><Lightbulb size={14} />{tr('自动补讲', 'Adaptive follow-up')}</span><strong>{tr('先把错因看清，再带着这一点继续推演。', 'See why this went wrong, then continue with the corrected idea.')}</strong></div>
+          <p>{tr(`你选择了“${currentRemedialAnswer}”。正确判断是“${scene.check.answer}”。`, `You chose “${currentRemedialAnswer}”. The correct choice is “${scene.check.answer}”.`)}</p>
+          <button type="button" onClick={() => { setSelectedVisualItem(0); setAnswers(current => { const next = { ...current }; delete next[scene.id]; return next }); setRemedialBySceneId(current => { const next = { ...current }; delete next[scene.id]; return next }) }}><Eye size={14} />{tr('带着提示再答一次', 'Try again with this hint')}</button>
+        </aside>
+      )}
     </section>
   )
 
@@ -389,19 +620,28 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         </div>
       </header>
 
+      {learningModeControl('immersive')}
       <nav className="presentation-scene-nav" aria-label={tr('演示目录', 'Presentation outline')}>
-        {presentation.scenes.map((item, index) => (
-          <button className={index === activeIndex ? 'active' : index < activeIndex ? 'visited' : ''} type="button" key={item.id} aria-current={index === activeIndex ? 'step' : undefined} onClick={() => moveTo(index)}>
-            <i>{index + 1}</i><span>{item.title}</span>
+        {visibleSceneIndexes.map((index, visibleIndex) => {
+          const item = presentation.scenes[index]
+          return (
+          <button className={index === activeIndex ? 'active' : completedScenes.current.has(item.id) ? 'completed' : index < activeIndex ? 'visited' : ''} type="button" key={item.id} aria-current={index === activeIndex ? 'step' : undefined} onClick={() => moveTo(index)}>
+            <i>{visibleIndex + 1}</i><span>{item.title}</span>
           </button>
-        ))}
+          )
+        })}
       </nav>
 
-      <main className={`presentation-main visual-${scene.visual_type}`} key={scene.id}>
+      <main className={`presentation-main visual-${scene.visual_type} learning-mode-${learningMode}`} key={scene.id}>
         <div className="presentation-story">
-          <span>{tr('此刻要看懂', 'What to understand now')}</span>
+          <span>{learningMode === 'challenge' && !showNarration ? tr('先预测，再验证', 'Predict, then verify') : tr('此刻要看懂', 'What to understand now')}</span>
           <h1>{scene.title}</h1>
-          <p>{scene.narration}</p>
+          {showNarration
+            ? <p>{scene.narration}</p>
+            : <div className="presentation-prediction">
+                <p>{scene.check?.prompt || tr('先暂停十秒，用自己的话预测：这一幕接下来要证明、变化或避免的是什么？', 'Pause for ten seconds and predict what this scene will prove, change, or prevent.')}</p>
+                <button type="button" onClick={() => setRevealedSceneIds(current => ({ ...current, [scene.id]: true }))}><Eye size={14} />{tr('展开讲解验证想法', 'Reveal the explanation')}</button>
+              </div>}
           <strong><Sparkles size={15} />{scene.key_point}</strong>
         </div>
         <SceneVisual scene={scene} language={language} selectedItem={selectedVisualItem} onSelectItem={setSelectedVisualItem} />
@@ -466,21 +706,26 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     <section className={`dynamic-explanation-player palette-${palette}`} aria-label={tr('互动学习演示', 'Interactive learning presentation')}>
       <header className="dynamic-player-head">
         <div>
-          <span>{tr(`${presentation.scenes.length} 个场景 · ${formatDuration(totalSeconds, language)}`, `${presentation.scenes.length} scenes · ${formatDuration(totalSeconds, language)}`)}</span>
+          <span>{tr(`${presentation.scenes.length} 个场景 · ${formatDuration(totalSeconds, language)}${completedSceneCount ? ` · 已完成 ${completedSceneCount}/${presentation.scenes.length}` : ''}`, `${presentation.scenes.length} scenes · ${formatDuration(totalSeconds, language)}${completedSceneCount ? ` · ${completedSceneCount}/${presentation.scenes.length} complete` : ''}`)}</span>
           <h2>{presentation.title}</h2>
           <p>{presentation.summary}</p>
         </div>
-        <button className="presentation-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr('沉浸学习', 'Open immersive view')}</button>
+        <button className="presentation-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr(activeIndex > 0 && !completedExplanation.current ? '继续学习' : '沉浸学习', activeIndex > 0 && !completedExplanation.current ? 'Continue learning' : 'Open immersive view')}</button>
       </header>
 
-      <div className="presentation-preview-canvas">
+      {learningModeControl('preview')}
+
+      <div className={`presentation-preview-canvas learning-mode-${learningMode}`}>
         <div className="presentation-preview-copy"><span>{tr('当前场景', 'Current scene')}</span><strong>{scene.title}</strong><p>{scene.key_point}</p></div>
         <SceneVisual scene={scene} language={language} selectedItem={selectedVisualItem} onSelectItem={setSelectedVisualItem} />
       </div>
 
       <div className="presentation-preview-footer">
         <div className="presentation-scene-peek" aria-label={tr('场景目录', 'Scene outline')}>
-          {presentation.scenes.map((item, index) => <button type="button" className={index === activeIndex ? 'active' : ''} key={item.id} onClick={() => moveTo(index)}><i>{index + 1}</i><span>{item.title}</span></button>)}
+          {visibleSceneIndexes.map((index, visibleIndex) => {
+            const item = presentation.scenes[index]
+            return <button type="button" className={index === activeIndex ? 'active' : completedScenes.current.has(item.id) ? 'completed' : ''} key={item.id} onClick={() => moveTo(index)}><i>{visibleIndex + 1}</i><span>{item.title}</span></button>
+          })}
         </div>
         <button className={playing ? 'dynamic-autoplay active' : 'dynamic-autoplay'} type="button" aria-pressed={playing} onClick={() => setPlaying(value => !value)}>{playing ? <CirclePause size={15} /> : <CirclePlay size={15} />}{playing ? tr('暂停', 'Pause') : tr('自动播放', 'Autoplay')}</button>
       </div>

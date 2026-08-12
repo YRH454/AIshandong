@@ -13,3 +13,4 @@ openai==1.99.0
 httpx==0.28.1
 python-multipart==0.0.20
 dashscope>=1.25.15
+jieba>=0.42.1

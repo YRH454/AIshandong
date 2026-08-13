@@ -334,6 +334,8 @@ export interface LearningArtifactRecord {
   learning_loop_step?: 'notes' | 'map' | 'interactive' | 'practice' | ''
   document_pack_id?: string
   document_pack_template?: LearningArtifactRecord['document_template'] | ''
+  practice_pack_id?: string
+  practice_pack_mode?: Exclude<PracticeMode, 'standard'> | ''
   deleted_at: string
   created_at: string
   updated_at: string
@@ -384,7 +386,14 @@ export interface KnowledgeMapCollaboration {
   suggestions: KnowledgeMapCollaborationSuggestion[]
 }
 
-export type PracticeQuestionType = 'single_choice' | 'true_false' | 'fill_blank'
+export type PracticeMode = 'standard' | 'similar' | 'variants' | 'special' | 'mock' | 'coding' | 'oral'
+
+export type PracticeQuestionType =
+  | 'single_choice'
+  | 'true_false'
+  | 'fill_blank'
+  | 'code_task'
+  | 'oral_response'
 
 export interface PracticeQuestion {
   id: string
@@ -392,12 +401,20 @@ export interface PracticeQuestion {
   prompt: string
   options: string[]
   knowledge_point: string
+  language?: string
+  starter_code?: string
+  tests?: Array<{ label: string; input: string; expected_output: string }>
+  hints?: string[]
+  target_keywords?: string[]
+  follow_up?: string
 }
 
 export interface PracticeSetRecord {
   id: number
   artifact_id: number
   question_count: number
+  practice_mode: PracticeMode
+  estimated_minutes: number
   knowledge_points: string[]
   questions: PracticeQuestion[]
   created_at: string
@@ -488,6 +505,29 @@ export interface LibraryTopicLearningState {
   next_step: { action: TopicNextAction; artifact_id: number | null; detail: string }
 }
 
+export type TopicStudyPlanTaskStatus = 'pending' | 'completed'
+
+export interface TopicStudyPlanTask {
+  id: string
+  action: Exclude<TopicNextAction, 'complete'>
+  artifact_id: number | null
+  title: string
+  detail: string
+  status: TopicStudyPlanTaskStatus
+}
+
+export interface TopicStudyPlan {
+  id: number | null
+  status: 'active' | 'completed'
+  tasks: TopicStudyPlanTask[]
+  active_task_id: string
+  completed_count: number
+  total_count: number
+  started_at: string
+  updated_at: string
+  completed_at: string
+}
+
 export async function getLearningArtifacts(
   userId: number,
   options: { sessionId?: number; status?: 'all' | 'draft' | 'saved' | 'deleted' } = {},
@@ -518,6 +558,59 @@ export async function getLibraryTopicLearningState(userId: number, courseName: s
     throw new Error(body.detail || '获取主题学习状态失败')
   }
   return res.json() as Promise<LibraryTopicLearningState>
+}
+
+export async function getTopicStudyPlan(userId: number, courseName: string, topicName: string) {
+  const params = new URLSearchParams({
+    user_id: String(userId),
+    course_name: courseName,
+    topic_name: topicName,
+  })
+  const res = await fetch(`${API_BASE}/artifacts/topics/study-plan?${params}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '获取本次复习清单失败')
+  }
+  return res.json() as Promise<{ plan: TopicStudyPlan }>
+}
+
+export async function startTopicStudyPlan(userId: number, courseName: string, topicName: string) {
+  const res = await fetch(`${API_BASE}/artifacts/topics/study-plan/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, course_name: courseName, topic_name: topicName }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '开始本次复习失败')
+  }
+  return res.json() as Promise<{ plan: TopicStudyPlan }>
+}
+
+export async function updateTopicStudyPlanTask(
+  planId: number,
+  userId: number,
+  courseName: string,
+  topicName: string,
+  taskId: string,
+  status: TopicStudyPlanTaskStatus,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/topics/study-plan/${planId}/tasks`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      course_name: courseName,
+      topic_name: topicName,
+      task_id: taskId,
+      status,
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '更新复习任务失败')
+  }
+  return res.json() as Promise<{ plan: TopicStudyPlan }>
 }
 
 export async function recordLearningActivity(
@@ -595,7 +688,17 @@ export async function generatePracticeSet(
   qaId: string,
   focusPoints: string[] = [],
   sourceMapArtifactId?: number,
+  practiceMode: PracticeMode = 'standard',
 ) {
+  const questionCount: Record<PracticeMode, number> = {
+    standard: 5,
+    similar: 6,
+    variants: 6,
+    special: 8,
+    mock: 12,
+    coding: 3,
+    oral: 4,
+  }
   const res = await fetch(`${API_BASE}/artifacts/generate-practice`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -603,7 +706,8 @@ export async function generatePracticeSet(
       user_id: userId,
       session_id: sessionId,
       qa_id: qaId,
-      question_count: 5,
+      question_count: questionCount[practiceMode],
+      practice_mode: practiceMode,
       focus_points: focusPoints,
       source_map_artifact_id: sourceMapArtifactId,
       async_mode: true,
@@ -850,6 +954,31 @@ export async function saveDocumentPack(
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '保存学习资料包失败')
+  }
+  return res.json() as Promise<{ artifacts: LearningArtifactRecord[] }>
+}
+
+export async function savePracticePack(
+  userId: number,
+  practicePackId: string,
+  courseName: string,
+  topicName: string,
+  artifacts: Array<{ artifact_id: number; practice_mode: Exclude<PracticeMode, 'standard'> }>,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/practice-packs/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: userId,
+      practice_pack_id: practicePackId,
+      course_name: courseName,
+      topic_name: topicName,
+      artifacts,
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '保存练习资源包失败')
   }
   return res.json() as Promise<{ artifacts: LearningArtifactRecord[] }>
 }

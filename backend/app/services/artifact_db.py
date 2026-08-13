@@ -76,6 +76,8 @@ def init_tables():
             learning_loop_step VARCHAR(40) DEFAULT '',
             document_pack_id VARCHAR(120) DEFAULT '',
             document_pack_template VARCHAR(40) DEFAULT '',
+            practice_pack_id VARCHAR(120) DEFAULT '',
+            practice_pack_mode VARCHAR(40) DEFAULT '',
             deleted_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -111,6 +113,8 @@ def init_tables():
     _ensure_column("learning_artifacts", "learning_loop_step", "VARCHAR(40) DEFAULT ''")
     _ensure_column("learning_artifacts", "document_pack_id", "VARCHAR(120) DEFAULT ''")
     _ensure_column("learning_artifacts", "document_pack_template", "VARCHAR(40) DEFAULT ''")
+    _ensure_column("learning_artifacts", "practice_pack_id", "VARCHAR(120) DEFAULT ''")
+    _ensure_column("learning_artifacts", "practice_pack_mode", "VARCHAR(40) DEFAULT ''")
     _ensure_column("learning_artifacts", "deleted_at", "DATETIME")
     execute(
         "UPDATE learning_artifacts SET version_group_id = id "
@@ -426,6 +430,60 @@ def save_document_pack(
             "UPDATE learning_artifacts SET document_pack_id = %s, document_pack_template = %s, updated_at = NOW() "
             "WHERE id = %s AND user_id = %s",
             (pack_id, template, archived["id"], user_id),
+        )
+        saved_artifact = get_artifact(archived["id"], user_id)
+        if saved_artifact:
+            saved.append(saved_artifact)
+    return saved
+
+
+def save_practice_pack(
+    user_id: int,
+    artifacts: list[dict],
+    course_name: str,
+    topic_name: str,
+    practice_pack_id: str,
+) -> list[dict]:
+    """Archive six complementary practice sets as one course/topic training pack."""
+    pack_id = str(practice_pack_id or "").strip()[:120]
+    if not pack_id or not artifacts:
+        raise ValueError("练习资源包信息不完整")
+
+    allowed_modes = {"similar", "variants", "special", "mock", "coding", "oral"}
+    seen_ids: set[int] = set()
+    seen_modes: set[str] = set()
+    pending: list[tuple[dict, str]] = []
+    for item in artifacts:
+        artifact_id = int(item.get("artifact_id") or 0)
+        mode = str(item.get("practice_mode") or "").strip()
+        if not artifact_id or artifact_id in seen_ids or mode not in allowed_modes or mode in seen_modes:
+            raise ValueError("练习资源包中的训练信息无效")
+        seen_ids.add(artifact_id)
+        seen_modes.add(mode)
+        artifact = get_artifact(artifact_id, user_id)
+        if not artifact or artifact.get("kind") != "practice" or artifact.get("status") not in {"draft", "saved"}:
+            raise ValueError("练习资源包中的训练已发生变化，请刷新后重新确认")
+        pending.append((artifact, mode))
+
+    if seen_modes != allowed_modes:
+        raise ValueError("练习资源包需要包含同类题、变式题、专项训练、模拟试卷、编程实验和口述测验")
+
+    saved: list[dict] = []
+    for artifact, mode in pending:
+        if artifact.get("status") == "draft":
+            archived = save_artifact(
+                artifact["id"], user_id, artifact["title"], course_name, topic_name, "separate",
+            )
+        else:
+            archived = update_artifact_metadata(
+                artifact["id"], user_id, artifact["title"], course_name, topic_name,
+            )
+        if not archived:
+            raise ValueError("保存练习资源包时发生变化，请重新确认")
+        execute(
+            "UPDATE learning_artifacts SET practice_pack_id = %s, practice_pack_mode = %s, updated_at = NOW() "
+            "WHERE id = %s AND user_id = %s",
+            (pack_id, mode, archived["id"], user_id),
         )
         saved_artifact = get_artifact(archived["id"], user_id)
         if saved_artifact:
@@ -799,6 +857,8 @@ def _row(row: dict) -> dict:
         "learning_loop_step": row.get("learning_loop_step") or "",
         "document_pack_id": row.get("document_pack_id") or "",
         "document_pack_template": row.get("document_pack_template") or "",
+        "practice_pack_id": row.get("practice_pack_id") or "",
+        "practice_pack_mode": row.get("practice_pack_mode") or "",
         "status": row.get("status", "draft"),
         "course_id": row.get("course_id"),
         "topic_id": row.get("topic_id"),

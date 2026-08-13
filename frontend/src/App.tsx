@@ -16,6 +16,7 @@ import mascot from './assets/xuejing-slime-logo.png'
 import { EditableKnowledgeMap } from './components/EditableKnowledgeMap'
 import { DynamicExplanationPlayer, type DynamicExplanationProgress } from './components/DynamicExplanationPlayer'
 import { LearningDocumentBooklet, type StudyBookletDocument } from './components/LearningDocumentBooklet'
+import { PracticePackBooklet, type PracticePackEntry } from './components/PracticePackBooklet'
 import { parseDynamicExplanation, type DynamicExplanationData, type DynamicExplanationScene } from './components/dynamicExplanation'
 import {
   createImageAnalysisArtifact,
@@ -33,6 +34,7 @@ import {
   getLearningArtifactVersions,
   getLibraryTopicLearningState,
   getLibraryTopicReviews,
+  getTopicStudyPlan,
   getPracticeForArtifact,
   getTutorHistory,
   getTutorSessions,
@@ -46,8 +48,11 @@ import {
   saveExternalVideoResource,
   saveLearningArtifact,
   saveDocumentPack,
+  savePracticePack,
   saveLearningLoop,
   searchExternalVideos,
+  speechToText,
+  startTopicStudyPlan,
   submitPracticeAttempt,
   streamTutorChat,
   trashLearningArtifact,
@@ -56,13 +61,14 @@ import {
   updateInteractivePresentation,
   updateInteractivePresentationProgress,
   updateLearningArtifact,
+  updateTopicStudyPlanTask,
   updateTutorSession,
   waitForGenerationJob,
   regenerateInteractivePresentationScene,
 } from './services/api'
 import type {
   ExternalVideoResource, ImageStudyAnalysis, InteractivePresentationProgress, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
-  PracticeSetRecord, StudyPackBlueprint, TutorMessage, TutorSessionSummary,
+  PracticeMode, PracticeSetRecord, StudyPackBlueprint, TopicStudyPlan, TopicStudyPlanTask, TutorMessage, TutorSessionSummary,
 } from './services/api'
 import './App.css'
 
@@ -95,6 +101,7 @@ type IconName =
   | 'pen'
   | 'play'
   | 'presentation'
+  | 'rotate'
   | 'restore'
   | 'save'
   | 'search'
@@ -193,6 +200,8 @@ type Artifact = {
   learningLoopStep?: LearningLoopStep
   documentPackId?: string
   documentPackTemplate?: DocumentTemplateId
+  practicePackId?: string
+  practicePackMode?: Exclude<PracticeMode, 'standard'>
 }
 
 type ChatTurn = {
@@ -341,6 +350,68 @@ type PracticeRun = {
   activeIndex: number
   result: PracticeAttemptResult | null
   topicMastery: number | null
+  codeDrafts: Record<string, string>
+  codeTestChecks: Record<string, string[]>
+  oralRecordingQuestionId: string | null
+  remainingSeconds?: number
+}
+
+type PracticePackSaveTarget = {
+  turnId: string
+  packId: string
+  artifacts: Artifact[]
+}
+
+type PracticePackBookletTarget = {
+  packId: string
+  turnId?: string
+  course: string
+  topic: string
+  persisted: boolean
+}
+
+type PracticeProfile = {
+  mode: PracticeMode
+  label: string
+  description: string
+  count: number
+  minutes: number
+  icon: IconName
+}
+
+const practiceProfiles: Record<PracticeMode, PracticeProfile> = {
+  standard: { mode: 'standard', label: '基础练习', description: '用核心题目检查当前理解', count: 5, minutes: 8, icon: 'file-question' },
+  similar: { mode: 'similar', label: '同类题', description: '保留结构，更换数据与表述', count: 6, minutes: 10, icon: 'file-question' },
+  variants: { mode: 'variants', label: '变式题', description: '改变条件与边界，检验迁移', count: 6, minutes: 12, icon: 'spark' },
+  special: { mode: 'special', label: '专项训练', description: '围绕薄弱点递进补强', count: 8, minutes: 15, icon: 'clipboard' },
+  mock: { mode: 'mock', label: '模拟试卷', description: '限时完成一轮综合测验', count: 12, minutes: 20, icon: 'file' },
+  coding: { mode: 'coding', label: '编程实验', description: '代码任务、提示与测试用例', count: 3, minutes: 25, icon: 'code' },
+  oral: { mode: 'oral', label: '口述测验', description: '用自己的话解释，再接受追问', count: 4, minutes: 10, icon: 'mic' },
+}
+
+const practiceSetupModes: Array<Exclude<PracticeMode, 'standard'>> = ['similar', 'variants', 'special', 'mock', 'coding', 'oral']
+
+function createPracticeRun(
+  artifact: Artifact,
+  practice: PracticeSetRecord,
+  attempts: PracticeAttemptSummary[] = [],
+  topicMastery: number | null = null,
+): PracticeRun {
+  return {
+    artifact,
+    practice,
+    attempts,
+    answers: {},
+    activeIndex: 0,
+    result: null,
+    topicMastery,
+    codeDrafts: Object.fromEntries(practice.questions
+      .filter(question => question.type === 'code_task')
+      .map(question => [question.id, question.starter_code || ''])),
+    codeTestChecks: {},
+    oralRecordingQuestionId: null,
+    remainingSeconds: practice.practice_mode === 'mock' ? practice.estimated_minutes * 60 : undefined,
+  }
 }
 
 const LOCAL_USER_ID = 1
@@ -485,6 +556,7 @@ const lucideIcons: Record<IconName, LucideIcon> = {
   pen: PenLine,
   play: CirclePlay,
   presentation: Presentation,
+  rotate: RotateCcw,
   restore: RotateCcw,
   save: Save,
   search: Search,
@@ -953,6 +1025,8 @@ function artifactFromRecord(record: LearningArtifactRecord): Artifact {
     learningLoopStep: record.learning_loop_step || undefined,
     documentPackId: record.document_pack_id || undefined,
     documentPackTemplate: record.document_pack_template || undefined,
+    practicePackId: record.practice_pack_id || undefined,
+    practicePackMode: record.practice_pack_mode || undefined,
   }
 }
 
@@ -1052,11 +1126,16 @@ function App() {
   const [mapWorkspaceArtifactId, setMapWorkspaceArtifactId] = useState<string | null>(null)
   const [mapWorkspaceReturnView, setMapWorkspaceReturnView] = useState<MapWorkspaceReturnView>('chat')
   const [practiceSetupTurnId, setPracticeSetupTurnId] = useState<string | null>(null)
+  const [practiceSetupMode, setPracticeSetupMode] = useState<PracticeMode>('standard')
   const [practiceGenerating, setPracticeGenerating] = useState(false)
   const practiceGenerationLocked = useRef(false)
   const [practiceLoadingArtifactId, setPracticeLoadingArtifactId] = useState<string | null>(null)
   const [practiceSubmitting, setPracticeSubmitting] = useState(false)
   const [practiceRun, setPracticeRun] = useState<PracticeRun | null>(null)
+  const [practiceAttemptCounts, setPracticeAttemptCounts] = useState<Record<string, number>>({})
+  const oralMediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const oralMediaStreamRef = useRef<MediaStream | null>(null)
+  const oralAudioChunksRef = useRef<Blob[]>([])
   const [imageAnalysisSavingTurnId, setImageAnalysisSavingTurnId] = useState<string | null>(null)
   const [expandedArtifactId, setExpandedArtifactId] = useState<string | null>(null)
   const [saveTarget, setSaveTarget] = useState<Artifact | null>(null)
@@ -1064,6 +1143,9 @@ function App() {
   const [documentPackSaveTarget, setDocumentPackSaveTarget] = useState<DocumentPackSaveTarget | null>(null)
   const [documentPackBooklet, setDocumentPackBooklet] = useState<DocumentPackBookletTarget | null>(null)
   const [documentPackBookletActiveId, setDocumentPackBookletActiveId] = useState<string | null>(null)
+  const [practicePackSaveTarget, setPracticePackSaveTarget] = useState<PracticePackSaveTarget | null>(null)
+  const [practicePackBooklet, setPracticePackBooklet] = useState<PracticePackBookletTarget | null>(null)
+  const [practicePackBookletActiveId, setPracticePackBookletActiveId] = useState<string | null>(null)
   const [externalVideoSaveTarget, setExternalVideoSaveTarget] = useState<ExternalVideoSaveTarget | null>(null)
   const [saveMode, setSaveMode] = useState<SaveMode>('save')
   const [saveRecommendedCourse, setSaveRecommendedCourse] = useState('未分类课程')
@@ -1088,6 +1170,9 @@ function App() {
   const [topicReviews, setTopicReviews] = useState<Record<string, LibraryTopicReview>>({})
   const [libraryTopicState, setLibraryTopicState] = useState<LibraryTopicLearningState | null>(null)
   const [libraryTopicStateLoading, setLibraryTopicStateLoading] = useState(false)
+  const [topicStudyPlan, setTopicStudyPlan] = useState<TopicStudyPlan | null>(null)
+  const [topicStudyPlanLoading, setTopicStudyPlanLoading] = useState(false)
+  const [topicStudyPlanBusyTaskId, setTopicStudyPlanBusyTaskId] = useState<string | null>(null)
   const [topicPracticeGeneratingKey, setTopicPracticeGeneratingKey] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Artifact | null>(null)
   const [deleteMode, setDeleteMode] = useState<DeleteMode>('trash')
@@ -1170,6 +1255,21 @@ function App() {
     })
     return () => window.cancelAnimationFrame(frameId)
   }, [practiceSetupTurnId])
+
+  useEffect(() => {
+    if (!practiceRun || practiceRun.result || practiceRun.practice.practice_mode !== 'mock' || !practiceRun.remainingSeconds) return
+    const timer = window.setInterval(() => {
+      setPracticeRun(current => current && current.practice.practice_mode === 'mock' && !current.result
+        ? { ...current, remainingSeconds: Math.max(0, (current.remainingSeconds || 0) - 1) }
+        : current)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [practiceRun?.practice.id, practiceRun?.practice.practice_mode, practiceRun?.remainingSeconds, practiceRun?.result])
+
+  useEffect(() => () => {
+    oralMediaRecorderRef.current?.stop()
+    oralMediaStreamRef.current?.getTracks().forEach(track => track.stop())
+  }, [])
 
   useEffect(() => {
     if (!pendingMapGenerationTurnId || !sessionId || !turns.some(turn => turn.id === pendingMapGenerationTurnId)) return
@@ -1409,6 +1509,20 @@ function App() {
       }))
       .sort((first, second) => second.newestAt - first.newestAt)
   })()
+  const libraryTopicPracticePacks = (() => {
+    const groups = libraryTopicItems.reduce<Record<string, Artifact[]>>((result, artifact) => {
+      if (!artifact.practicePackId) return result
+      result[artifact.practicePackId] = [...(result[artifact.practicePackId] || []), artifact]
+      return result
+    }, {})
+    return Object.entries(groups)
+      .map(([id, artifacts]) => ({
+        id,
+        artifacts,
+        newestAt: Math.max(...artifacts.map(item => new Date(item.updatedAt || item.createdAt || 0).getTime() || 0)),
+      }))
+      .sort((first, second) => second.newestAt - first.newestAt)
+  })()
   const documentPackBookletDocuments = documentPackBooklet
     ? (() => {
         const candidates = [
@@ -1426,6 +1540,29 @@ function App() {
             status: artifact.status,
             documentTemplate: artifact.documentPackTemplate || artifact.documentTemplate,
           }))
+      })()
+    : []
+  const practicePackBookletEntries = practicePackBooklet
+    ? (() => {
+        const candidates = [
+          ...turns.flatMap(turn => turn.artifacts),
+          ...libraryItems,
+          ...trashedItems,
+        ].filter(artifact => artifact.practicePackId === practicePackBooklet.packId)
+        return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
+          .filter((artifact): artifact is Artifact & { practicePackMode: Exclude<PracticeMode, 'standard'> } => Boolean(artifact.practicePackMode))
+          .map((artifact): PracticePackEntry => {
+            const profile = practiceProfiles[artifact.practicePackMode]
+            return {
+              id: artifact.id,
+              mode: artifact.practicePackMode,
+              title: artifact.title,
+              summary: artifact.summary,
+              status: artifact.status,
+              questionCount: profile.count,
+              minutes: profile.minutes,
+            }
+          })
       })()
     : []
   const libraryTopicMastery = libraryTopicItems[0]?.topicMastery || 0
@@ -1632,6 +1769,35 @@ function App() {
     setDocumentPackBookletActiveId(null)
   }
 
+  function openPracticePackBooklet({
+    packId,
+    turnId,
+    artifacts,
+    persisted,
+  }: {
+    packId: string
+    turnId?: string
+    artifacts: Artifact[]
+    persisted: boolean
+  }) {
+    const first = artifacts[0]
+    if (!first) return
+    const course = first.course && first.course !== '未分类课程'
+      ? first.course
+      : first.recommendedCourse || '未分类课程'
+    const topic = first.topic && first.topic !== '未分类主题' && first.topic !== '本次学习'
+      ? first.topic
+      : first.recommendedTopic || '未分类主题'
+    setPracticePackBooklet({ packId, turnId, course, topic, persisted })
+    setPracticePackBookletActiveId(current => artifacts.some(artifact => artifact.id === current) ? current : artifacts[0].id)
+    setExpandedArtifactId(null)
+  }
+
+  function closePracticePackBooklet() {
+    setPracticePackBooklet(null)
+    setPracticePackBookletActiveId(null)
+  }
+
   function openMapWorkspace(artifact: Artifact, returnView: MapWorkspaceReturnView) {
     setMapWorkspaceArtifactId(artifact.id)
     setMapWorkspaceReturnView(returnView)
@@ -1711,14 +1877,39 @@ function App() {
     }
   }, [libraryTopic])
 
+  const refreshTopicStudyPlan = useCallback(async (target = libraryTopic) => {
+    if (!target) {
+      setTopicStudyPlan(null)
+      return
+    }
+    setTopicStudyPlanLoading(true)
+    try {
+      const data = await getTopicStudyPlan(LOCAL_USER_ID, target.course, target.topic)
+      if (libraryTopic?.course === target.course && libraryTopic?.topic === target.topic) {
+        setTopicStudyPlan(data.plan)
+      }
+    } catch {
+      if (libraryTopic?.course === target.course && libraryTopic?.topic === target.topic) {
+        setTopicStudyPlan(null)
+      }
+    } finally {
+      if (libraryTopic?.course === target.course && libraryTopic?.topic === target.topic) {
+        setTopicStudyPlanLoading(false)
+      }
+    }
+  }, [libraryTopic])
+
   useEffect(() => {
     if (!libraryTopic) {
       setLibraryTopicState(null)
       setLibraryTopicStateLoading(false)
+      setTopicStudyPlan(null)
+      setTopicStudyPlanLoading(false)
       return
     }
     void refreshLibraryTopicState(libraryTopic)
-  }, [libraryTopic, refreshLibraryTopicState])
+    void refreshTopicStudyPlan(libraryTopic)
+  }, [libraryTopic, refreshLibraryTopicState, refreshTopicStudyPlan])
 
   function newChat() {
     if (sending) {
@@ -2313,10 +2504,19 @@ function App() {
       void runDynamicExplanationGeneration(turnId)
       return
     }
-    // 「专项训练」是练习测验的学习场景入口；当前先复用已完成的
-    // 5 题自动批改闭环，后续再扩展为按薄弱点和难度分层的专项题库。
-    if (kind === 'practice' || kind === 'special') {
-      void runPracticeGeneration(turnId)
+    const practiceModeByKind: Partial<Record<ArtifactKind, PracticeMode>> = {
+      practice: 'standard',
+      similar: 'similar',
+      variants: 'variants',
+      special: 'special',
+      mock: 'mock',
+      coding: 'coding',
+      oral: 'oral',
+    }
+    const practiceMode = practiceModeByKind[kind]
+    if (practiceMode) {
+      setPracticeSetupTurnId(current => current === turnId ? null : turnId)
+      setPracticeSetupMode(practiceMode)
       return
     }
     setNotice(`${artifactOptions.find(item => item.kind === kind)?.label}将在后续阶段接通，当前先完成学习文档。`)
@@ -2528,20 +2728,26 @@ function App() {
     }
   }
 
-  async function runPracticeGeneration(turnId: string, sourceMapArtifactId?: number) {
+  async function runPracticeGeneration(
+    turnId: string,
+    sourceMapArtifactId?: number,
+    practiceMode: PracticeMode = 'standard',
+    focusPoints: string[] = [],
+  ) {
     if (!sessionId || practiceGenerating || practiceGenerationLocked.current) return
     const turn = turns.find(item => item.id === turnId)
     if (!turn || turn.id.startsWith('pending-')) {
       setNotice('这条回答还没有保存完成，请稍后重试。')
       return
     }
+    const profile = practiceProfiles[practiceMode]
     const loadingId = `practice-generating-${Date.now()}`
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'practice',
-      title: '正在生成练习测验…',
-      summary: '正在围绕当前回答编写 5 道可自动批改的题目。',
-      details: ['覆盖核心概念和易错点', '作答后提供逐题解析与薄弱点定位'],
+      title: `正在生成${profile.label}…`,
+      summary: `正在围绕当前回答编写 ${profile.count} 道${profile.label}内容。`,
+      details: [profile.description, '作答后提供逐题解析、薄弱点定位，并可保存到资料库'],
       source: turn.prompt,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
@@ -2563,27 +2769,19 @@ function App() {
     practiceGenerationLocked.current = true
     setPracticeGenerating(true)
     setPracticeSetupTurnId(null)
-    setNotice('正在根据这条回答生成 5 题练习…')
+    setNotice(`正在根据这条回答生成${profile.label}…`)
     setTurns(current => current.map(item => item.id === turn.id
       ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
       : item))
     try {
-      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], sourceMapArtifactId)
+      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, focusPoints, sourceMapArtifactId, practiceMode)
       const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
       const artifact = artifactFromRecord(data.artifact)
       setTurns(current => current.map(item => item.id === turn.id
         ? { ...item, artifacts: item.artifacts.map(item => item.id === loadingId ? artifact : item) }
         : item))
-      setPracticeRun({
-        artifact,
-        practice: data.practice,
-        attempts: [],
-        answers: {},
-        activeIndex: 0,
-        result: null,
-        topicMastery: null,
-      })
-      setNotice('已生成 5 题练习。答案会在提交后显示。')
+      setPracticeRun(createPracticeRun(artifact, data.practice))
+      setNotice(`已生成${data.practice.question_count}项${practiceProfiles[data.practice.practice_mode].label}。完成后可查看解析并保存到资料库。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : '练习测验生成失败'
       setTurns(current => current.map(item => item.id === turn.id
@@ -3315,6 +3513,7 @@ function App() {
         artifact.qaId,
         focusPoints,
         artifact.backendId,
+        'special',
       )
       const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
       const practiceArtifact = artifactFromRecord(data.artifact)
@@ -3323,15 +3522,7 @@ function App() {
           ? { ...turn, artifacts: turn.artifacts.map(item => item.id === loadingId ? practiceArtifact : item) }
           : turn))
       }
-      setPracticeRun({
-        artifact: practiceArtifact,
-        practice: data.practice,
-        attempts: [],
-        answers: {},
-        activeIndex: 0,
-        result: null,
-        topicMastery: null,
-      })
+      setPracticeRun(createPracticeRun(practiceArtifact, data.practice))
       setNotice(`已围绕 ${focusPoints.length} 个待复习节点生成专项练习。`)
     } catch (error) {
       const message = error instanceof Error ? error.message : '节点专项练习生成失败'
@@ -3392,22 +3583,14 @@ function App() {
     setPracticeGenerating(true)
     setTopicPracticeGeneratingKey(key)
     try {
-      const queued = await generatePracticeSet(LOCAL_USER_ID, source.sessionId, source.qaId, focusPoints)
+      const queued = await generatePracticeSet(LOCAL_USER_ID, source.sessionId, source.qaId, focusPoints, undefined, 'special')
       const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
       const artifact = artifactFromRecord(data.artifact)
       setTurns(current => current.map(turn => turn.id === source.qaId
         ? { ...turn, artifacts: [...turn.artifacts, artifact] }
         : turn))
-      setPracticeRun({
-        artifact,
-        practice: data.practice,
-        attempts: [],
-        answers: {},
-        activeIndex: 0,
-        result: null,
-        topicMastery: null,
-      })
-      setNotice(`已围绕“${focusPoints.join('、')}”生成 5 题专项练习。`)
+      setPracticeRun(createPracticeRun(artifact, data.practice))
+      setNotice(`已围绕“${focusPoints.join('、')}”生成 ${data.practice.question_count} 项专项训练。`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '专项练习生成失败')
     } finally {
@@ -3454,21 +3637,69 @@ function App() {
     openLibraryArtifact(artifact)
   }
 
+  async function startTopicReviewPlan() {
+    if (!libraryTopic || topicStudyPlanLoading || topicStudyPlanBusyTaskId) return
+    setTopicStudyPlanLoading(true)
+    try {
+      const data = await startTopicStudyPlan(LOCAL_USER_ID, libraryTopic.course, libraryTopic.topic)
+      setTopicStudyPlan(data.plan)
+      setNotice(t('已为这次复习整理好清单。从第一项开始即可，进度会保留到下次。', 'Your review list is ready. Start with the first item; progress will be kept for next time.'))
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t('暂时无法开始本次复习。', 'Unable to start this review right now.'))
+    } finally {
+      setTopicStudyPlanLoading(false)
+    }
+  }
+
+  async function updateTopicPlanTask(task: TopicStudyPlanTask, status: 'pending' | 'completed') {
+    if (!libraryTopic || !topicStudyPlan?.id || topicStudyPlanBusyTaskId) return
+    setTopicStudyPlanBusyTaskId(task.id)
+    try {
+      const data = await updateTopicStudyPlanTask(
+        topicStudyPlan.id,
+        LOCAL_USER_ID,
+        libraryTopic.course,
+        libraryTopic.topic,
+        task.id,
+        status,
+      )
+      setTopicStudyPlan(data.plan)
+      if (data.plan.status === 'completed') {
+        setNotice(t('本次复习已完成。下次回来时，可以重新生成一份新的复习清单。', 'This review is complete. When you return, you can generate a fresh list.'))
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t('更新任务状态失败，请稍后重试。', 'Could not update this task. Please try again.'))
+    } finally {
+      setTopicStudyPlanBusyTaskId(null)
+    }
+  }
+
+  async function openTopicPlanTask(task: TopicStudyPlanTask) {
+    if (!libraryTopic) return
+    if (task.action === 'practice_weak_points') {
+      await startTopicWeakPractice(libraryTopic.course, libraryTopic.topic, libraryTopicItems)
+      return
+    }
+    const artifact = libraryTopicItems.find(item => item.backendId === task.artifact_id)
+    if (!artifact) {
+      setNotice(t('这份资料暂时不可用，请刷新资料库后重试。', 'This material is unavailable. Refresh the library and try again.'))
+      return
+    }
+    if (task.action === 'start_practice') {
+      await openPractice(artifact)
+      return
+    }
+    openLibraryArtifact(artifact)
+  }
+
   async function openPractice(artifact: Artifact) {
     if (!artifact.backendId || practiceLoadingArtifactId) return
     setPracticeLoadingArtifactId(artifact.id)
     recordSavedArtifactActivity(artifact, 'opened', { surface: 'practice' })
     try {
       const data = await getPracticeForArtifact(artifact.backendId, LOCAL_USER_ID)
-      setPracticeRun({
-        artifact,
-        practice: data.practice,
-        attempts: data.attempts,
-        answers: {},
-        activeIndex: 0,
-        result: null,
-        topicMastery: artifact.topicMastery || null,
-      })
+      setPracticeRun(createPracticeRun(artifact, data.practice, data.attempts, artifact.topicMastery || null))
+      setPracticeAttemptCounts(current => ({ ...current, [artifact.id]: data.attempts.length }))
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '获取练习集失败')
     } finally {
@@ -3487,10 +3718,275 @@ function App() {
     setPracticeRun(current => current ? {
       ...current,
       answers: {},
+      codeDrafts: Object.fromEntries(current.practice.questions
+        .filter(question => question.type === 'code_task')
+        .map(question => [question.id, question.starter_code || ''])),
+      codeTestChecks: {},
+      oralRecordingQuestionId: null,
       activeIndex: 0,
       result: null,
       topicMastery: current.artifact.topicMastery || null,
+      remainingSeconds: current.practice.practice_mode === 'mock' ? current.practice.estimated_minutes * 60 : undefined,
     } : current)
+  }
+
+  function renderPracticePack(turn: ChatTurn) {
+    const packIds = [...new Set(turn.artifacts.map(artifact => artifact.practicePackId).filter((packId): packId is string => Boolean(packId)))].reverse()
+    if (packIds.length === 0) return null
+    return (
+      <>
+        {packIds.map(packId => {
+          const artifacts = turn.artifacts.filter(artifact => artifact.practicePackId === packId)
+          const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
+          const complete = artifacts.length === practiceSetupModes.length && readyArtifacts.length === practiceSetupModes.length
+          const persisted = complete && artifacts.every(artifact => artifact.saved)
+          return (
+            <section className={`practice-pack-status${complete ? ' complete' : ''}`} key={packId} aria-label={t('练习资源包', 'Practice pack')}>
+              <div>
+                <span><Icon name="archive" size={15} />{t('练习资源包', 'Practice pack')}</span>
+                <b>{t(`${readyArtifacts.length}/${practiceSetupModes.length} 种训练已就绪`, `${readyArtifacts.length}/${practiceSetupModes.length} training sets ready`)}</b>
+                <small>{complete
+                  ? t('六种训练已整理为一份连续的练习资源册：完成一组后，带着解析和薄弱点进入下一组。', 'Six training modes are arranged as one continuous booklet: use the review and weak points to move into the next set.')
+                  : t('正在分批准备同类题、变式题、专项训练、模拟试卷、编程实验和口述测验。', 'Preparing similar questions, variants, targeted practice, mock exam, coding lab, and oral check in batches.')}</small>
+              </div>
+              <div className="practice-pack-status-actions">
+                <button type="button" disabled={readyArtifacts.length === 0} onClick={() => openPracticePackBooklet({ packId, turnId: turn.id, artifacts, persisted })}><Icon name="book" size={14} />{t('打开练习资源册', 'Open practice pack')}</button>
+                <button type="button" disabled={!complete} onClick={() => {
+                  if (!persisted) {
+                    openPracticePackSave(turn, packId)
+                    return
+                  }
+                  const first = artifacts[0]
+                  if (first) {
+                    setLibraryTopic({ course: first.course, topic: first.topic })
+                    setView('library')
+                  }
+                }}><Icon name={persisted ? 'library' : 'save'} size={14} />{persisted ? t('资料库', 'Library') : t('保存整包', 'Save pack')}</button>
+              </div>
+            </section>
+          )
+        })}
+      </>
+    )
+  }
+
+  async function runPracticePackGeneration(turnId: string) {
+    if (!sessionId || practiceGenerating || practiceGenerationLocked.current) return
+    const turn = turns.find(item => item.id === turnId)
+    if (!turn || turn.id.startsWith('pending-')) {
+      setNotice('这条回答还没有保存完成，请稍后重试。')
+      return
+    }
+    const packId = `practice-pack-${Date.now()}`
+    const course = learningState.subject || '未分类课程'
+    const topic = learningState.current_topic || '本次学习'
+    const placeholders = practiceSetupModes.map(mode => {
+      const profile = practiceProfiles[mode]
+      return {
+        id: `${packId}-${mode}`,
+        kind: 'practice' as const,
+        title: `正在生成${profile.label}…`,
+        summary: `正在围绕当前回答编写 ${profile.count} 道${profile.label}内容。`,
+        details: [profile.description, '生成完成后会进入同一份练习资源册', '整包只需确认一次归档位置'],
+        source: turn.prompt,
+        sessionId,
+        qaId: turn.id,
+        course,
+        topic,
+        topicMastery: 0,
+        recommendedCourse: course,
+        recommendedTopic: topic,
+        classificationSource: 'learning_state' as const,
+        classificationConfidence: 0.9,
+        classificationOverridden: false,
+        saved: false,
+        favorite: false,
+        versionGroupId: 0,
+        version: 1,
+        status: 'generating' as const,
+        purpose: 'review' as const,
+        depth: 'standard' as const,
+        style: 'exam' as const,
+        practicePackId: packId,
+        practicePackMode: mode,
+      }
+    })
+    const replacePlaceholder = (placeholderId: string, next: Artifact) => {
+      setTurns(current => current.map(item => item.id === turn.id
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === placeholderId ? next : artifact) }
+        : item))
+    }
+
+    practiceGenerationLocked.current = true
+    setPracticeGenerating(true)
+    setPracticeSetupTurnId(null)
+    setNotice('正在并行准备六种训练，并把它们整理成一份练习资源册…')
+    setTurns(current => current.map(item => item.id === turn.id
+      ? { ...item, artifacts: [...item.artifacts, ...placeholders] }
+      : item))
+    try {
+      const results = await Promise.all(practiceSetupModes.map(async (mode, index) => {
+        const placeholder = placeholders[index]
+        try {
+          const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], undefined, mode)
+          const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
+          const generated: Artifact = {
+            ...artifactFromRecord(data.artifact),
+            practicePackId: packId,
+            practicePackMode: mode,
+          }
+          replacePlaceholder(placeholder.id, generated)
+          return generated
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '训练生成失败'
+          replacePlaceholder(placeholder.id, {
+            ...placeholder,
+            title: `${practiceProfiles[mode].label}未完成`,
+            summary: message,
+            details: ['其他已经完成的训练仍可直接开始', '稍后可以针对这一种训练单独重新生成'],
+            status: 'error',
+          })
+          return null
+        }
+      }))
+      const completed = results.filter((artifact): artifact is Artifact => Boolean(artifact)).length
+      setNotice(completed === practiceSetupModes.length
+        ? '六种训练已就绪。打开练习资源册后，可按建议顺序完成并统一保存。'
+        : `${completed}/${practiceSetupModes.length} 种训练已就绪；其余训练可稍后单独重试。`)
+    } finally {
+      practiceGenerationLocked.current = false
+      setPracticeGenerating(false)
+    }
+  }
+
+  async function retryPracticePackEntry(packId: string, artifactId: string) {
+    if (!sessionId || practiceGenerating || practiceGenerationLocked.current) return
+    const turn = turns.find(item => item.artifacts.some(artifact => artifact.id === artifactId && artifact.practicePackId === packId))
+    const failedArtifact = turn?.artifacts.find(artifact => artifact.id === artifactId && artifact.practicePackId === packId)
+    if (!turn || !failedArtifact || failedArtifact.status !== 'error' || !failedArtifact.practicePackMode) return
+
+    const mode = failedArtifact.practicePackMode
+    const profile = practiceProfiles[mode]
+    const loadingArtifact: Artifact = {
+      ...failedArtifact,
+      title: `正在生成${profile.label}…`,
+      summary: `正在围绕当前回答编写 ${profile.count} 项${profile.label}内容。`,
+      details: [profile.description, '完成后会自动补回练习资源册', '不会影响已经完成的其他训练'],
+      status: 'generating',
+    }
+    const replaceEntry = (next: Artifact) => {
+      setTurns(current => current.map(item => item.id === turn.id
+        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === artifactId ? next : artifact) }
+        : item))
+    }
+
+    practiceGenerationLocked.current = true
+    setPracticeGenerating(true)
+    replaceEntry(loadingArtifact)
+    setNotice(`正在重试${profile.label}，已经完成的训练会保留。`)
+    try {
+      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], undefined, mode)
+      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
+      replaceEntry({
+        ...artifactFromRecord(data.artifact),
+        practicePackId: packId,
+        practicePackMode: mode,
+      })
+      setNotice(`${profile.label}已补齐，可以继续完成整套练习资源包。`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '训练生成失败'
+      replaceEntry({
+        ...failedArtifact,
+        summary: message,
+        details: ['这次重试没有完成', '请稍后只重试这一组，其他训练会保留'],
+        status: 'error',
+      })
+      setNotice(`${profile.label}暂未完成，可稍后再次重试。`)
+    } finally {
+      practiceGenerationLocked.current = false
+      setPracticeGenerating(false)
+    }
+  }
+
+  function updatePracticeCode(questionId: string, code: string) {
+    setPracticeRun(current => current ? {
+      ...current,
+      codeDrafts: { ...current.codeDrafts, [questionId]: code },
+    } : current)
+  }
+
+  function togglePracticeTest(questionId: string, label: string) {
+    setPracticeRun(current => {
+      if (!current) return current
+      const completed = current.codeTestChecks[questionId] || []
+      const next = completed.includes(label)
+        ? completed.filter(item => item !== label)
+        : [...completed, label]
+      return { ...current, codeTestChecks: { ...current.codeTestChecks, [questionId]: next } }
+    })
+  }
+
+  function confirmCodingTask(questionId: string, testCount: number) {
+    const code = practiceRun?.codeDrafts[questionId]?.trim()
+    const checked = practiceRun?.codeTestChecks[questionId] || []
+    if (!code) {
+      setNotice('请先写下你的代码草稿。')
+      return
+    }
+    if (checked.length < testCount) {
+      setNotice('请先在本地或课程环境中运行，并确认全部测试用例。')
+      return
+    }
+    answerPracticeQuestion(questionId, '完成')
+    setNotice('已记录本地测试通过确认。网页不会代替你执行代码。')
+  }
+
+  async function toggleOralRecording(questionId: string) {
+    const isRecording = practiceRun?.oralRecordingQuestionId === questionId
+    if (isRecording) {
+      oralMediaRecorderRef.current?.stop()
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setNotice('当前浏览器不支持录音，请直接在文字框中输入你的口述回答。')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      oralMediaStreamRef.current = stream
+      oralAudioChunksRef.current = []
+      const recorder = new MediaRecorder(stream)
+      oralMediaRecorderRef.current = recorder
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) oralAudioChunksRef.current.push(event.data)
+      }
+      recorder.onstop = () => {
+        const audio = new Blob(oralAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        oralMediaStreamRef.current?.getTracks().forEach(track => track.stop())
+        oralMediaStreamRef.current = null
+        oralMediaRecorderRef.current = null
+        setPracticeRun(current => current ? { ...current, oralRecordingQuestionId: null } : current)
+        const reader = new FileReader()
+        reader.onload = async () => {
+          if (typeof reader.result !== 'string') return
+          try {
+            const result = await speechToText(LOCAL_USER_ID, reader.result) as { text?: string }
+            const text = result.text?.trim()
+            if (!text) throw new Error('没有识别到清晰的语音')
+            answerPracticeQuestion(questionId, text)
+            setNotice('已转写为文字，你可以修改后再提交。')
+          } catch (error) {
+            setNotice(error instanceof Error ? `${error.message}，你仍可以手动输入。` : '语音转写失败，你仍可以手动输入。')
+          }
+        }
+        reader.readAsDataURL(audio)
+      }
+      recorder.start()
+      setPracticeRun(current => current ? { ...current, oralRecordingQuestionId: questionId } : current)
+      setNotice('正在录音，结束后会自动转写为文字。')
+    } catch {
+      setNotice('无法启用麦克风。请允许麦克风权限，或直接输入文字回答。')
+    }
   }
 
   async function submitPractice() {
@@ -3510,6 +4006,7 @@ function App() {
         result: data.attempt,
         topicMastery: data.topic_mastery,
       } : current)
+      setPracticeAttemptCounts(current => ({ ...current, [practiceRun.artifact.id]: (current[practiceRun.artifact.id] || 0) + 1 }))
       if (data.map_progress && practiceRun.artifact.sourceMapArtifactId) {
         const sourceMap = mapArtifacts.find(item => item.backendId === practiceRun.artifact.sourceMapArtifactId)
         if (sourceMap) {
@@ -3538,6 +4035,7 @@ function App() {
     setSaveTarget(null)
     setLearningLoopSaveTarget(null)
     setDocumentPackSaveTarget(null)
+    setPracticePackSaveTarget(null)
     setExternalVideoSaveTarget(null)
     resetDuplicateDecision()
   }
@@ -3559,6 +4057,7 @@ function App() {
     setSaveTarget(artifact)
     setLearningLoopSaveTarget(null)
     setDocumentPackSaveTarget(null)
+    setPracticePackSaveTarget(null)
     setExternalVideoSaveTarget(null)
     setSaveMode(mode)
     setSaveRecommendedCourse(recommendedCourse)
@@ -3635,6 +4134,71 @@ function App() {
       setNotice(`已将 ${savedArtifacts.length} 份文档整理为一个学习资料包`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '保存学习资料包失败')
+    } finally {
+      setSaveBusy(false)
+    }
+  }
+
+  function openPracticePackSave(turn: ChatTurn, requestedPackId?: string) {
+    const packId = requestedPackId || [...turn.artifacts].reverse().find(artifact => artifact.practicePackId)?.practicePackId
+    if (!packId) return
+    const artifacts = turn.artifacts.filter(artifact => artifact.practicePackId === packId)
+    const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
+    if (readyArtifacts.length !== practiceSetupModes.length || artifacts.length !== practiceSetupModes.length) {
+      setNotice('请等待六种训练都生成完成后，再统一保存练习资源包。')
+      return
+    }
+    if (readyArtifacts.some(artifact => !artifact.backendId || !artifact.practicePackMode)) {
+      setNotice('这套训练还在准备保存信息，请稍后重试。')
+      return
+    }
+    const first = readyArtifacts[0]
+    const stateCourse = learningState.subject || ''
+    const stateTopic = learningState.current_topic || learningState.knowledge_points[0] || ''
+    const recommendedCourse = first.recommendedCourse && first.recommendedCourse !== '未分类课程'
+      ? first.recommendedCourse : stateCourse || '未分类课程'
+    const recommendedTopic = first.recommendedTopic && first.recommendedTopic !== '未分类主题' && first.recommendedTopic !== '本次学习'
+      ? first.recommendedTopic : stateTopic || '未分类主题'
+    setPracticePackSaveTarget({ turnId: turn.id, packId, artifacts: readyArtifacts })
+    setSaveTarget(null)
+    setLearningLoopSaveTarget(null)
+    setDocumentPackSaveTarget(null)
+    setExternalVideoSaveTarget(null)
+    setSaveMode('save')
+    setSaveRecommendedCourse(recommendedCourse)
+    setSaveRecommendedTopic(recommendedTopic)
+    setSaveRecommendationSource(first.classificationSource === 'fallback' && stateCourse && stateTopic ? 'learning_state' : first.classificationSource)
+    setSaveCourse(recommendedCourse)
+    setSaveTopic(recommendedTopic)
+    setSaveLocationOpen(recommendedCourse === '未分类课程' || recommendedTopic === '未分类主题')
+    resetDuplicateDecision()
+  }
+
+  async function confirmPracticePackSave() {
+    if (!practicePackSaveTarget || !saveCourse.trim() || !saveTopic.trim()) return
+    const target = practicePackSaveTarget
+    const payload = target.artifacts.map(artifact => ({
+      artifact_id: artifact.backendId!,
+      practice_mode: artifact.practicePackMode!,
+    }))
+    if (payload.some(item => !item.artifact_id || !item.practice_mode)) {
+      setNotice('这套训练的关联信息不完整，请刷新后再试。')
+      return
+    }
+    setSaveBusy(true)
+    try {
+      const response = await savePracticePack(LOCAL_USER_ID, target.packId, saveCourse.trim(), saveTopic.trim(), payload)
+      const savedArtifacts = response.artifacts.map(artifactFromRecord)
+      const savedById = new Map(savedArtifacts.map(artifact => [artifact.id, artifact]))
+      setTurns(current => current.map(turn => ({ ...turn, artifacts: turn.artifacts.map(artifact => savedById.get(artifact.id) || artifact) })))
+      setLibraryItems(current => [...savedArtifacts, ...current.filter(artifact => !savedById.has(artifact.id))])
+      closeSave()
+      setLibraryPreviewId(null)
+      setLibraryTopic({ course: saveCourse.trim(), topic: saveTopic.trim() })
+      setView('library')
+      setNotice('已将六种训练整理为一个练习资源包')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '保存练习资源包失败')
     } finally {
       setSaveBusy(false)
     }
@@ -3757,6 +4321,10 @@ function App() {
   async function confirmSave() {
     if (documentPackSaveTarget) {
       await confirmDocumentPackSave()
+      return
+    }
+    if (practicePackSaveTarget) {
+      await confirmPracticePackSave()
       return
     }
     if (learningLoopSaveTarget) {
@@ -4326,8 +4894,9 @@ function App() {
 
                       {renderLearningLoop(turn)}
                       {renderDocumentPack(turn)}
+                      {renderPracticePack(turn)}
 
-                      {turn.artifacts.filter(artifact => !artifact.documentPackId).map(artifact => {
+                      {turn.artifacts.filter(artifact => !artifact.documentPackId && !artifact.practicePackId).map(artifact => {
                         const option = artifactOptions.find(item => item.kind === artifact.kind)
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
                         const dynamicExplanation = artifact.kind === 'interactive' ? parseDynamicExplanation(artifact.content) : null
@@ -4540,16 +5109,34 @@ function App() {
                         {practiceSetupTurnId === turn.id && (
                           <section id={`practice-setup-${turn.id}`} className="practice-setup" aria-label="设置练习测验">
                             <div className="practice-setup-head">
-                              <div><b>生成练习测验</b><span>围绕这条回答生成 5 题，提交前不会显示答案。</span></div>
+                              <div><b>选择训练方式</b><span>围绕这条回答生成对应训练。完成后会给出解析，并可保存到资料库。</span></div>
                               <button type="button" aria-label="关闭练习测验设置" onClick={() => setPracticeSetupTurnId(null)}><Icon name="x" size={15} /></button>
                             </div>
-                            <div className="practice-setup-preview">
-                              <span><b>5 题</b><small>单选、判断、短填空</small></span>
-                              <span><b>逐题解析</b><small>提交后定位薄弱点</small></span>
+                            <div className="practice-mode-list" role="radiogroup" aria-label="训练方式">
+                              {practiceSetupModes.map(mode => {
+                                const profile = practiceProfiles[mode]
+                                const selected = practiceSetupMode === mode
+                                return <button
+                                  type="button"
+                                  key={mode}
+                                  className={selected ? 'selected' : ''}
+                                  aria-checked={selected}
+                                  role="radio"
+                                  onClick={() => setPracticeSetupMode(mode)}
+                                >
+                                  <span><Icon name={selected ? 'check' : profile.icon} size={14} /></span>
+                                  <b>{profile.label}</b>
+                                  <small>{profile.description}</small>
+                                  <em>{profile.count} 项 · 约 {profile.minutes} 分钟</em>
+                                </button>
+                              })}
                             </div>
                             <div className="practice-setup-foot">
-                              <span><Icon name="library" size={14} />完成后可保存到推荐主题</span>
-                              <button type="button" onClick={() => void runPracticeGeneration(turn.id)} disabled={practiceGenerating}><Icon name="spark" size={15} />{practiceGenerating ? '生成中…' : '生成 5 题'}</button>
+                              <span><Icon name="library" size={14} />单独练一组，或把六种训练整理为一份可连续复习的资源册</span>
+                              <div className="practice-setup-actions">
+                                <button className="practice-pack-entry" type="button" onClick={() => void runPracticePackGeneration(turn.id)} disabled={practiceGenerating}><Archive size={15} />{practiceGenerating ? '生成中…' : '一键生成练习资源包（6种）'}</button>
+                                <button type="button" onClick={() => void runPracticeGeneration(turn.id, undefined, practiceSetupMode)} disabled={practiceGenerating}><Icon name="spark" size={15} />{practiceGenerating ? '生成中…' : `生成${practiceProfiles[practiceSetupMode].label}`}</button>
+                              </div>
                             </div>
                           </section>
                         )}
@@ -4779,6 +5366,60 @@ function App() {
                       }}><Icon name="video" size={14} />找课程视频</button>
                     </div>
                   </div>
+                  <section className={`topic-study-plan${topicStudyPlan?.status === 'completed' ? ' is-complete' : ''}`} aria-label={t('本次复习清单', 'Review plan')}>
+                    <div className="topic-study-plan-head">
+                      <div>
+                        <b>{topicStudyPlan?.status === 'completed' ? t('本次复习已完成', 'Review complete') : t('本次复习', 'This review')}</b>
+                        <p>{topicStudyPlan?.status === 'completed'
+                          ? t('这次的完成记录已经保留。下次回来时，重新生成一份清单，系统会根据新进度安排。', 'This completion is saved. Next time, generate a new list based on your latest progress.')
+                          : topicStudyPlan
+                            ? t('只做眼前这几步。每完成一项，下一次回来都会从未完成处继续。', 'Only focus on these few steps. Each completion stays here when you return.')
+                            : t('让 RHYME 根据已保存的资料和你的学习记录，安排一份简短的复习清单。', 'Let RHYME make a short review list from your saved materials and learning record.')}</p>
+                      </div>
+                      {topicStudyPlan && <span>{topicStudyPlan.completed_count}/{topicStudyPlan.total_count}</span>}
+                    </div>
+                    {topicStudyPlanLoading ? (
+                      <div className="topic-study-plan-loading">{t('正在准备复习清单…', 'Preparing your review list…')}</div>
+                    ) : topicStudyPlan?.tasks.length ? (
+                      <div className="topic-study-plan-tasks">
+                        {topicStudyPlan.tasks.map(task => {
+                          const completed = task.status === 'completed'
+                          const active = !completed && task.id === topicStudyPlan.active_task_id
+                          const isBusy = topicStudyPlanBusyTaskId === task.id
+                          return (
+                            <article className={`${completed ? 'completed' : ''}${active ? ' active' : ''}`} key={task.id}>
+                              <button
+                                className="topic-study-plan-check"
+                                type="button"
+                                aria-label={completed ? t('标记为未完成', 'Mark as not complete') : t('标记为已完成', 'Mark as complete')}
+                                disabled={Boolean(topicStudyPlanBusyTaskId)}
+                                onClick={() => void updateTopicPlanTask(task, completed ? 'pending' : 'completed')}
+                              >
+                                {completed && <Check size={13} />}
+                              </button>
+                              <button className="topic-study-plan-open" type="button" onClick={() => void openTopicPlanTask(task)}>
+                                <span>{active ? t('现在做', 'Do now') : completed ? t('已完成', 'Done') : t('待开始', 'Up next')}</span>
+                                <b>{task.title}</b>
+                                <small>{task.detail}</small>
+                              </button>
+                              <button
+                                className="topic-study-plan-action"
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => void openTopicPlanTask(task)}
+                              >
+                                {isBusy ? t('保存中', 'Saving') : completed ? t('再看', 'Review') : active ? t('开始', 'Start') : t('打开', 'Open')}<ChevronRight size={14} />
+                              </button>
+                            </article>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                    <button className="topic-study-plan-start" type="button" disabled={topicStudyPlanLoading} onClick={() => void startTopicReviewPlan()}>
+                      <Icon name={topicStudyPlan?.status === 'completed' ? 'rotate' : 'spark'} size={14} />
+                      {topicStudyPlan?.status === 'completed' ? t('开始下一次复习', 'Plan another review') : topicStudyPlan?.tasks.length ? t('重新安排本次复习', 'Rebuild this review') : t('开始本次复习', 'Start this review')}
+                    </button>
+                  </section>
                   {libraryTopicLearningLoops.slice(0, 1).map(loop => {
                     const loopReadyCount = learningLoopSteps.filter(step => loop.artifacts.some(artifact => artifact.learningLoopStep === step.kind)).length
                     return (
@@ -4826,6 +5467,18 @@ function App() {
                             <span>{documentTemplateLabel(artifact)}</span><b>{artifact.title}</b><ChevronRight size={14} />
                           </button>
                         ))}
+                      </div>
+                    </section>
+                  ))}
+                  {libraryTopicPracticePacks.map(pack => (
+                    <section className="library-practice-pack" key={pack.id} aria-label={t('已保存的练习资源包', 'Saved practice pack')}>
+                      <div className="library-practice-pack-head">
+                        <div><b><Icon name="archive" size={15} />{t('练习资源包', 'Practice pack')}</b><p>{t('把六种训练收进同一条复习路线：先巩固，再迁移，最后用模拟、编程和口述完成综合检验。', 'Keep six complementary modes in one review route: reinforce, transfer, then check mastery with mock, coding, and oral practice.')}</p></div>
+                        <span>{t(`${pack.artifacts.length} 种训练`, `${pack.artifacts.length} training sets`)}</span>
+                      </div>
+                      <button className="library-document-pack-open" type="button" onClick={() => openPracticePackBooklet({ packId: pack.id, artifacts: pack.artifacts, persisted: true })}><Icon name="book" size={14} />{t('打开练习资源册', 'Open practice pack')}<ChevronRight size={14} /></button>
+                      <div className="library-document-pack-files">
+                        {pack.artifacts.map(artifact => <button type="button" key={artifact.id} onClick={() => void openPractice(artifact)}><span>{artifact.practicePackMode ? practiceProfiles[artifact.practicePackMode].label : t('训练', 'Training')}</span><b>{artifact.title}</b><ChevronRight size={14} /></button>)}
                       </div>
                     </section>
                   ))}
@@ -4886,7 +5539,7 @@ function App() {
                     </section>
                   )}
                   <div className="library-list">
-                    {libraryTopicItems.filter(item => !item.documentPackId).map(item => {
+                    {libraryTopicItems.filter(item => !item.documentPackId && !item.practicePackId).map(item => {
                       const option = artifactOptions.find(entry => entry.kind === item.kind)
                       const mapData = item.kind === 'map' ? parseKnowledgeMap(item.content) : null
                       const mapProgress = mapProgressByArtifactId[item.id]
@@ -5219,7 +5872,9 @@ function App() {
               <div>
                 <span>{practiceRun.artifact.course} / {practiceRun.artifact.topic}</span>
                 <h2 id="practice-title">{practiceRun.result ? '练习结果' : practiceRun.artifact.title}</h2>
-                <small>{practiceRun.attempts.length > 0 ? `已完成 ${practiceRun.attempts.length} 次练习` : '共 5 题 · 提交后显示答案与解析'}</small>
+                <small>{practiceRun.attempts.length > 0
+                  ? `已完成 ${practiceRun.attempts.length} 次训练`
+                  : `${practiceProfiles[practiceRun.practice.practice_mode].label} · ${practiceRun.practice.question_count} 项 · 约 ${practiceRun.practice.estimated_minutes} 分钟${practiceRun.practice.practice_mode === 'mock' ? ' · 限时作答' : ''}`}</small>
               </div>
               <button className="icon-button" type="button" aria-label="关闭练习测验" onClick={() => setPracticeRun(null)}><Icon name="x" size={18} /></button>
             </header>
@@ -5251,14 +5906,58 @@ function App() {
                           <p>{question.prompt}</p>
                           {!result.correct && <small>正确答案：{result.correct_answer}</small>}
                           <em>{result.explanation}</em>
+                          {question.type === 'oral_response' && question.follow_up && <small className="practice-follow-up">追问：{question.follow_up}</small>}
                         </div>
                       </article>
                     )
                   })}
                 </div>
 
+                {practiceRun.result.weak_points.length > 0 && (
+                  <section className="practice-recovery" aria-label="错题复盘下一步">
+                    <div><b>本轮错题复盘</b><p>先围绕薄弱点补一轮，再回到当前训练验证是否真的掌握。</p></div>
+                    <div className="practice-recovery-points">{practiceRun.result.weak_points.map(point => <span key={point}>{point}</span>)}</div>
+                    <div className="practice-recovery-actions">
+                      {practiceRun.artifact.sourceMapArtifactId && (
+                        <button type="button" onClick={() => {
+                          const sourceMap = mapArtifacts.find(item => item.backendId === practiceRun.artifact.sourceMapArtifactId)
+                          if (sourceMap) {
+                            setPracticeRun(null)
+                            openMapWorkspace(sourceMap, 'chat')
+                          } else setNotice('还没有找到对应的知识图解，可以先生成专项训练。')
+                        }}><Icon name="map" size={15} />回看知识图解</button>
+                      )}
+                      <button type="button" onClick={() => {
+                        const artifact = practiceRun.artifact
+                        const points = practiceRun.result?.weak_points || []
+                        setPracticeRun(null)
+                        void runPracticeGeneration(artifact.qaId || '', artifact.sourceMapArtifactId, 'similar', points)
+                      }}><Icon name="file-question" size={15} />生成同类题</button>
+                      <button className="primary" type="button" onClick={() => {
+                        const artifact = practiceRun.artifact
+                        const points = practiceRun.result?.weak_points || []
+                        setPracticeRun(null)
+                        void runPracticeGeneration(artifact.qaId || '', artifact.sourceMapArtifactId, 'special', points)
+                      }}><Icon name="clipboard" size={15} />针对薄弱点训练</button>
+                    </div>
+                  </section>
+                )}
+
                 <footer className="practice-result-actions">
                   <button type="button" onClick={restartPractice}><Icon name="restore" size={16} />再做一次</button>
+                  {practiceRun.artifact.practicePackId && (
+                    <button type="button" onClick={() => {
+                      const packId = practiceRun.artifact.practicePackId!
+                      const currentIndex = practiceSetupModes.indexOf(practiceRun.artifact.practicePackMode || 'similar')
+                      const nextMode = practiceSetupModes[(currentIndex + 1) % practiceSetupModes.length]
+                      const nextArtifact = [...turns.flatMap(turn => turn.artifacts), ...libraryItems].find(item => item.practicePackId === packId && item.practicePackMode === nextMode)
+                      setPracticeRun(null)
+                      if (nextArtifact) {
+                        setPracticePackBookletActiveId(nextArtifact.id)
+                        openPracticePackBooklet({ packId, artifacts: [...turns.flatMap(turn => turn.artifacts), ...libraryItems].filter(item => item.practicePackId === packId), persisted: Boolean(nextArtifact.saved) })
+                      }
+                    }}><Icon name="book" size={16} />回到资源册</button>
+                  )}
                   {!practiceRun.artifact.saved ? (
                     <button className="primary" type="button" onClick={() => {
                       const artifact = practiceRun.artifact
@@ -5274,6 +5973,7 @@ function App() {
               <div className="practice-body">
                 <div className="practice-navigation" aria-label="题目导航">
                   <span>已作答 {practiceAnsweredCount} / {practiceRun.practice.questions.length}</span>
+                  {practiceRun.practice.practice_mode === 'mock' && <b className={`practice-timer ${(practiceRun.remainingSeconds || 0) <= 60 ? 'urgent' : ''}`}>剩余 {Math.floor((practiceRun.remainingSeconds || 0) / 60)}:{String((practiceRun.remainingSeconds || 0) % 60).padStart(2, '0')}</b>}
                   <div>{practiceRun.practice.questions.map((question, index) => (
                     <button
                       key={question.id}
@@ -5287,9 +5987,44 @@ function App() {
                 </div>
 
                 <article className="practice-question">
-                  <div className="practice-question-meta"><span>{activePracticeQuestion.type === 'fill_blank' ? '短填空' : activePracticeQuestion.type === 'true_false' ? '判断题' : '单选题'}</span><b>{activePracticeQuestion.knowledge_point}</b></div>
+                  <div className="practice-question-meta"><span>{activePracticeQuestion.type === 'fill_blank' ? '短填空' : activePracticeQuestion.type === 'true_false' ? '判断题' : activePracticeQuestion.type === 'code_task' ? '编程实验' : activePracticeQuestion.type === 'oral_response' ? '口述回答' : '单选题'}</span><b>{activePracticeQuestion.knowledge_point}</b></div>
                   <h3>{activePracticeQuestion.prompt}</h3>
-                  {activePracticeQuestion.type === 'fill_blank' ? (
+                  {activePracticeQuestion.type === 'code_task' ? (
+                    <div className="practice-code-task">
+                      <div className="practice-code-head"><span>{activePracticeQuestion.language || 'code'}</span><small>请在本地或课程环境中运行，网页不会代替你执行代码。</small></div>
+                      <textarea
+                        aria-label="你的代码草稿"
+                        value={practiceRun.codeDrafts[activePracticeQuestion.id] || ''}
+                        onChange={event => updatePracticeCode(activePracticeQuestion.id, event.target.value)}
+                        spellCheck={false}
+                      />
+                      {(activePracticeQuestion.hints || []).length > 0 && <details className="practice-hints"><summary>逐步提示</summary><ol>{activePracticeQuestion.hints?.map(hint => <li key={hint}>{hint}</li>)}</ol></details>}
+                      <section className="practice-tests" aria-label="测试用例">
+                        <b>本地测试确认</b>
+                        {(activePracticeQuestion.tests || []).map(test => {
+                          const checked = (practiceRun.codeTestChecks[activePracticeQuestion.id] || []).includes(test.label)
+                          return <label key={test.label}>
+                            <input type="checkbox" checked={checked} onChange={() => togglePracticeTest(activePracticeQuestion.id, test.label)} />
+                            <span><strong>{test.label}</strong>{test.input && <small>输入：{test.input}</small>}<small>期望：{test.expected_output}</small></span>
+                          </label>
+                        })}
+                      </section>
+                      <button className="practice-code-confirm" type="button" onClick={() => confirmCodingTask(activePracticeQuestion.id, activePracticeQuestion.tests?.length || 0)}>
+                        <Icon name="check" size={15} />{practiceRun.answers[activePracticeQuestion.id] ? '已确认本地通过' : '我已在本地通过全部测试'}
+                      </button>
+                    </div>
+                  ) : activePracticeQuestion.type === 'oral_response' ? (
+                    <div className="practice-oral-task">
+                      <div className="practice-oral-actions">
+                        <button type="button" className={practiceRun.oralRecordingQuestionId === activePracticeQuestion.id ? 'recording' : ''} onClick={() => void toggleOralRecording(activePracticeQuestion.id)}>
+                          <Icon name="mic" size={16} />{practiceRun.oralRecordingQuestionId === activePracticeQuestion.id ? '结束并转写' : '开始口述'}
+                        </button>
+                        <small>也可以直接输入。提交后按关键词反馈表达是否完整。</small>
+                      </div>
+                      <label className="practice-oral-input"><span>你的口述内容</span><textarea value={practiceRun.answers[activePracticeQuestion.id] || ''} onChange={event => answerPracticeQuestion(activePracticeQuestion.id, event.target.value)} placeholder="用自己的话解释原因、条件和过程…" /></label>
+                      {(activePracticeQuestion.target_keywords || []).length > 0 && <p className="practice-keyword-note">本题会关注：{activePracticeQuestion.target_keywords?.join('、')}</p>}
+                    </div>
+                  ) : activePracticeQuestion.type === 'fill_blank' ? (
                     <label className="practice-fill">
                       <span>你的答案</span>
                       <input
@@ -5325,7 +6060,7 @@ function App() {
                   {practiceRun.activeIndex < practiceRun.practice.questions.length - 1 ? (
                     <button className="primary" type="button" onClick={() => setPracticeRun(current => current ? { ...current, activeIndex: current.activeIndex + 1 } : current)}>下一题<Icon name="chevron" size={15} /></button>
                   ) : (
-                    <button className="primary" type="button" disabled={practiceSubmitting} onClick={() => void submitPractice()}><Icon name="check" size={15} />{practiceSubmitting ? '批改中…' : '提交练习'}</button>
+                    <button className="primary" type="button" disabled={practiceSubmitting} onClick={() => void submitPractice()}><Icon name="check" size={15} />{practiceSubmitting ? '批改中…' : practiceRun.practice.practice_mode === 'mock' ? '交卷并批改' : '提交练习'}</button>
                   )}
                 </footer>
               </div>
@@ -5398,17 +6133,19 @@ function App() {
         </div>
       )}
 
-      {(saveTarget || learningLoopSaveTarget || documentPackSaveTarget || externalVideoSaveTarget) && (
+      {(saveTarget || learningLoopSaveTarget || documentPackSaveTarget || practicePackSaveTarget || externalVideoSaveTarget) && (
         <div className="sheet-layer">
           <button className="sheet-backdrop" aria-label="取消保存" onClick={closeSave} />
           <aside className="save-sheet" role="dialog" aria-modal="true" aria-labelledby="save-title">
             <div className="sheet-head">
               <div>
-                <h2 id="save-title">{learningLoopSaveTarget ? '保存整套学习资料' : documentPackSaveTarget ? '保存学习资料包' : externalVideoSaveTarget ? '收藏课程视频' : saveMode === 'edit' ? '整理资料' : '保存到资料库'}</h2>
+                <h2 id="save-title">{learningLoopSaveTarget ? '保存整套学习资料' : documentPackSaveTarget ? '保存学习资料包' : practicePackSaveTarget ? '保存练习资源包' : externalVideoSaveTarget ? '收藏课程视频' : saveMode === 'edit' ? '整理资料' : '保存到资料库'}</h2>
                 <p>{learningLoopSaveTarget
                   ? `会将 ${learningLoopSaveTarget.artifacts.length} 份资料归到同一课程和主题，并保留它们的学习关联。`
                   : documentPackSaveTarget
                     ? `会将 ${documentPackSaveTarget.artifacts.length} 份文档归到同一课程和主题，保持为一组可独立阅读的资料。`
+                    : practicePackSaveTarget
+                      ? `会将 6 种训练归到同一课程和主题，保留每组练习记录，并作为一份连续的练习资源册打开。`
                   : externalVideoSaveTarget
                     ? '保存的是原视频链接，不下载、不搬运视频内容。'
                     : saveMode === 'edit' ? '名称和归属可以随时调整。' : '智能体已经根据当前学习内容推荐位置。'}</p>
@@ -5426,6 +6163,11 @@ function App() {
               <section className="save-document-pack-summary" aria-label="将保存的学习资料包">
                 <span><Icon name="archive" size={16} />{documentPackSaveTarget.artifacts.length} 份学习文档</span>
                 <div>{documentPackSaveTarget.artifacts.map(artifact => <small key={artifact.id}>{documentTemplateById[artifact.documentPackTemplate || artifact.documentTemplate || 'system_guide'].label}</small>)}</div>
+              </section>
+            ) : practicePackSaveTarget ? (
+              <section className="save-document-pack-summary" aria-label="将保存的练习资源包">
+                <span><Icon name="archive" size={16} />6 种练习训练</span>
+                <div>{practicePackSaveTarget.artifacts.map(artifact => <small key={artifact.id}>{artifact.practicePackMode ? practiceProfiles[artifact.practicePackMode].label : '训练'}</small>)}</div>
               </section>
             ) : externalVideoSaveTarget ? (
               <section className="save-external-video-summary" aria-label="将收藏的课程视频">
@@ -5468,7 +6210,7 @@ function App() {
                 </div>
               )}
             </div>
-            {!learningLoopSaveTarget && !documentPackSaveTarget && !externalVideoSaveTarget && saveMode === 'save' && duplicateMatches.length > 0 && (
+            {!learningLoopSaveTarget && !documentPackSaveTarget && !practicePackSaveTarget && !externalVideoSaveTarget && saveMode === 'save' && duplicateMatches.length > 0 && (
               <section className="duplicate-panel" aria-labelledby="duplicate-title">
                 <div className="duplicate-head">
                   <span><Icon name="history" size={16} /></span>
@@ -5495,12 +6237,14 @@ function App() {
               <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>当前学习对话</b></div>
             ) : documentPackSaveTarget ? (
               <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>当前学习对话</b></div>
+            ) : practicePackSaveTarget ? (
+              <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>当前学习对话</b></div>
             ) : externalVideoSaveTarget ? (
               <div className="save-source"><Icon name="video" size={15} /><span>来源</span><b>B站公开视频索引</b></div>
             ) : saveTarget && <div className="save-source"><Icon name="paperclip" size={15} /><span>来源</span><b>{saveTarget.source}</b></div>}
             <div className="sheet-actions">
               <button type="button" onClick={closeSave}>取消</button>
-              <button type="button" className="primary" onClick={() => void confirmSave()} disabled={(!learningLoopSaveTarget && !documentPackSaveTarget && !externalVideoSaveTarget && !saveTitle.trim()) || !saveCourse.trim() || !saveTopic.trim() || saveBusy}><Icon name="save" size={16} />{saveBusy ? (externalVideoSaveTarget ? '收藏中…' : learningLoopSaveTarget || documentPackSaveTarget ? '保存中…' : duplicateCheckComplete ? '保存中…' : '检查中…') : externalVideoSaveTarget ? '确认收藏到资料库' : learningLoopSaveTarget ? '确认保存整套资料' : documentPackSaveTarget ? '确认保存学习资料包' : saveMode === 'edit' ? '保存调整' : duplicateMatches.length > 0 ? '按选择保存' : '确认保存'}</button>
+              <button type="button" className="primary" onClick={() => void confirmSave()} disabled={(!learningLoopSaveTarget && !documentPackSaveTarget && !practicePackSaveTarget && !externalVideoSaveTarget && !saveTitle.trim()) || !saveCourse.trim() || !saveTopic.trim() || saveBusy}><Icon name="save" size={16} />{saveBusy ? (externalVideoSaveTarget ? '收藏中…' : learningLoopSaveTarget || documentPackSaveTarget || practicePackSaveTarget ? '保存中…' : duplicateCheckComplete ? '保存中…' : '检查中…') : externalVideoSaveTarget ? '确认收藏到资料库' : learningLoopSaveTarget ? '确认保存整套资料' : documentPackSaveTarget ? '确认保存学习资料包' : practicePackSaveTarget ? '确认保存练习资源包' : saveMode === 'edit' ? '保存调整' : duplicateMatches.length > 0 ? '按选择保存' : '确认保存'}</button>
             </div>
           </aside>
         </div>
@@ -5623,6 +6367,41 @@ function App() {
             closeDocumentPackBooklet()
             setLibraryPreviewId(null)
             setLibraryTopic({ course: documentPackBooklet.course, topic: documentPackBooklet.topic })
+            setView('library')
+          } : undefined}
+        />
+      )}
+
+      {practicePackBooklet && practicePackBookletEntries.length > 0 && (
+        <PracticePackBooklet
+          course={practicePackBooklet.course}
+          topic={practicePackBooklet.topic}
+          entries={practicePackBookletEntries.map(entry => ({ ...entry, completedAttempts: practiceAttemptCounts[entry.id] || 0 }))}
+          activeEntryId={practicePackBookletActiveId}
+          language={interfaceLanguage}
+          persisted={practicePackBooklet.persisted}
+          onClose={closePracticePackBooklet}
+          onSelect={setPracticePackBookletActiveId}
+          onStart={(artifactId) => {
+            const artifact = [...turns.flatMap(turn => turn.artifacts), ...libraryItems].find(item => item.id === artifactId)
+            if (artifact) {
+              closePracticePackBooklet()
+              void openPractice(artifact)
+            }
+          }}
+          onRetry={practicePackBooklet.persisted ? undefined : (artifactId) => {
+            void retryPracticePackEntry(practicePackBooklet.packId, artifactId)
+          }}
+          onSave={practicePackBooklet.persisted ? undefined : () => {
+            const turn = practicePackBooklet.turnId ? turns.find(item => item.id === practicePackBooklet.turnId) : undefined
+            if (!turn) return
+            closePracticePackBooklet()
+            openPracticePackSave(turn, practicePackBooklet.packId)
+          }}
+          onOpenLibrary={practicePackBooklet.persisted ? () => {
+            closePracticePackBooklet()
+            setLibraryPreviewId(null)
+            setLibraryTopic({ course: practicePackBooklet.course, topic: practicePackBooklet.topic })
             setView('library')
           } : undefined}
         />

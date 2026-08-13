@@ -3,7 +3,7 @@
 import json
 import re
 
-from app.database import execute, insert, query
+from app.database import _ensure_column, execute, insert, query
 
 
 def _json(value, default):
@@ -22,12 +22,16 @@ def init_tables():
             user_id INT NOT NULL,
             artifact_id INT NOT NULL UNIQUE,
             question_count INT NOT NULL,
+            practice_mode VARCHAR(32) NOT NULL DEFAULT 'standard',
+            estimated_minutes INT NOT NULL DEFAULT 8,
             knowledge_points JSON NOT NULL,
             questions JSON NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     """)
+    _ensure_column("practice_sets", "practice_mode", "VARCHAR(32) NOT NULL DEFAULT 'standard'")
+    _ensure_column("practice_sets", "estimated_minutes", "INT NOT NULL DEFAULT 8")
     execute("""
         CREATE TABLE IF NOT EXISTS practice_attempts (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -43,11 +47,20 @@ def init_tables():
     """)
 
 
-def create_practice_set(user_id: int, artifact_id: int, questions: list[dict], knowledge_points: list[str]) -> dict:
+def create_practice_set(
+    user_id: int,
+    artifact_id: int,
+    questions: list[dict],
+    knowledge_points: list[str],
+    practice_mode: str = "standard",
+    estimated_minutes: int = 8,
+) -> dict:
     practice_set_id = insert("practice_sets", {
         "user_id": user_id,
         "artifact_id": artifact_id,
         "question_count": len(questions),
+        "practice_mode": practice_mode,
+        "estimated_minutes": estimated_minutes,
         "knowledge_points": json.dumps(knowledge_points, ensure_ascii=False),
         "questions": json.dumps(questions, ensure_ascii=False),
     })
@@ -262,6 +275,8 @@ def _practice_row(row: dict, *, include_answers: bool) -> dict:
         "id": row["id"],
         "artifact_id": row["artifact_id"],
         "question_count": int(row.get("question_count") or len(questions)),
+        "practice_mode": str(row.get("practice_mode") or "standard"),
+        "estimated_minutes": int(row.get("estimated_minutes") or 8),
         "knowledge_points": _json(row.get("knowledge_points"), []),
         "questions": [_public_question(item, include_answers=include_answers) for item in questions],
         "created_at": str(row.get("created_at") or ""),
@@ -276,6 +291,12 @@ def _public_question(item: dict, *, include_answers: bool) -> dict:
         "prompt": item.get("prompt"),
         "options": item.get("options") or [],
         "knowledge_point": item.get("knowledge_point") or "当前知识点",
+        "language": item.get("language") or "",
+        "starter_code": item.get("starter_code") or "",
+        "tests": item.get("tests") or [],
+        "hints": item.get("hints") or [],
+        "target_keywords": item.get("target_keywords") or [],
+        "follow_up": item.get("follow_up") or "",
     }
     if include_answers:
         result.update({
@@ -291,6 +312,15 @@ def _normalize(value: str) -> str:
 
 
 def _is_correct(question: dict, answer: str) -> bool:
+    if question.get("type") == "code_task":
+        return _normalize(answer) in {"完成", "已完成", "done", "complete"}
+    if question.get("type") == "oral_response":
+        keywords = [_normalize(item) for item in question.get("target_keywords", []) if _normalize(item)]
+        normalized_answer = _normalize(answer)
+        if not normalized_answer or not keywords:
+            return False
+        required = 1 if len(keywords) <= 2 else 2
+        return sum(keyword in normalized_answer for keyword in keywords) >= required
     if question.get("type") == "fill_blank":
         accepted = question.get("accepted_answers") or [question.get("answer", "")]
         normalized_answer = _normalize(answer)

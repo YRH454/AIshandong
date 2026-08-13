@@ -1,12 +1,72 @@
 """Generate small, objectively gradable practice sets from a tutor answer."""
 
 import json
+import logging
 import re
 
 from app.services.llm import chat_qwen
 
 
-_SUPPORTED_TYPES = {"single_choice", "true_false", "fill_blank"}
+logger = logging.getLogger(__name__)
+
+
+_SUPPORTED_TYPES = {"single_choice", "true_false", "fill_blank", "code_task", "oral_response"}
+
+_PRACTICE_MODES = {
+    "standard": {
+        "title": "当前主题练习测验",
+        "summary": "用可自动批改的题目检查当前理解，并定位需要回看的知识点。",
+        "count": 5,
+        "minutes": 8,
+        "instruction": "生成一套覆盖核心概念、条件判断与常见误区的基础练习。",
+    },
+    "similar": {
+        "title": "同类题训练",
+        "summary": "保持原问题的知识结构，更换数据和表述来巩固方法。",
+        "count": 6,
+        "minutes": 10,
+        "instruction": "优先复用当前问题的解题结构与知识点，但必须更换数据、情境或表述，避免复述原题。",
+    },
+    "variants": {
+        "title": "变式题训练",
+        "summary": "通过改变条件、方向和边界，检查是否真的会迁移。",
+        "count": 6,
+        "minutes": 12,
+        "instruction": "有意识地改变题目条件、问题方向、边界情况或干扰项，检验学习者能否把方法迁移到新情境。",
+    },
+    "special": {
+        "title": "专项训练",
+        "summary": "围绕一个薄弱知识点，从基础判断逐步练到应用。",
+        "count": 8,
+        "minutes": 15,
+        "instruction": "围绕当前学习状态中的薄弱点或指定重点出题，按基础、理解、应用的顺序递进，并覆盖易错条件。",
+    },
+    "mock": {
+        "title": "模拟试卷",
+        "summary": "按限时与分值完成一轮小型模拟，再查看失分位置。",
+        "count": 12,
+        "minutes": 20,
+        "instruction": "组织成一份小型模拟试卷，题目由易到难，覆盖概念、判断与应用；每题必须能稳定自动批改。",
+    },
+    "coding": {
+        "title": "编程实验",
+        "summary": "完成代码任务，在自己的运行环境中核对测试用例与逐步提示。",
+        "count": 3,
+        "minutes": 25,
+        "instruction": "只生成 code_task（编程实验）题。每题必须给出 language、starter_code、2 到 4 个 tests（含 label、input、expected_output）和 2 到 3 条 hints。测试用例供学习者在本地或课程环境运行后勾选确认，不要声称网页会执行代码。",
+    },
+    "oral": {
+        "title": "口述测验",
+        "summary": "用自己的话讲清概念，再通过关键词与追问检查表达和理解。",
+        "count": 4,
+        "minutes": 10,
+        "instruction": "只生成 oral_response（口述回答）题。每题必须给出 2 到 5 个 target_keywords、sample_answer 和 follow_up；问题要促使学习者解释原因、条件或过程，而不只是背定义。",
+    },
+}
+
+
+def _mode_config(practice_mode: str) -> dict:
+    return _PRACTICE_MODES.get(practice_mode, _PRACTICE_MODES["standard"])
 
 
 def _parse_json(text: str) -> dict:
@@ -44,6 +104,46 @@ def _normalize_question(raw: object, index: int) -> dict | None:
     knowledge_point = _clean_text(raw.get("knowledge_point"), 100)
     if not prompt or not explanation:
         return None
+
+    if question_type == "code_task":
+        language = _clean_text(raw.get("language"), 32).lower() or "python"
+        starter_code = str(raw.get("starter_code") or "").strip()[:2400]
+        tests = raw.get("tests") if isinstance(raw.get("tests"), list) else []
+        normalized_tests = []
+        for test in tests[:4]:
+            if not isinstance(test, dict):
+                continue
+            label = _clean_text(test.get("label"), 100)
+            expected = _clean_text(test.get("expected_output"), 400)
+            if label and expected:
+                normalized_tests.append({
+                    "label": label,
+                    "input": _clean_text(test.get("input"), 400),
+                    "expected_output": expected,
+                })
+        hints = [_clean_text(item, 300) for item in (raw.get("hints") or []) if _clean_text(item, 300)][:3]
+        answer = _clean_text(raw.get("answer") or raw.get("sample_solution"), 2400)
+        if not starter_code or not normalized_tests or not answer:
+            return None
+        return {
+            "id": f"q{index}", "type": question_type, "prompt": prompt,
+            "options": [], "answer": answer, "explanation": explanation,
+            "knowledge_point": knowledge_point or "当前知识点", "language": language,
+            "starter_code": starter_code, "tests": normalized_tests, "hints": hints,
+        }
+
+    if question_type == "oral_response":
+        keywords = [_clean_text(item, 80) for item in (raw.get("target_keywords") or []) if _clean_text(item, 80)][:5]
+        sample_answer = _clean_text(raw.get("sample_answer") or raw.get("answer"), 900)
+        follow_up = _clean_text(raw.get("follow_up"), 300)
+        if not keywords or not sample_answer:
+            return None
+        return {
+            "id": f"q{index}", "type": question_type, "prompt": prompt,
+            "options": [], "answer": sample_answer, "explanation": explanation,
+            "knowledge_point": knowledge_point or "当前知识点", "target_keywords": keywords,
+            "follow_up": follow_up,
+        }
 
     if question_type == "true_false":
         answer = _clean_text(raw.get("answer"), 40).lower()
@@ -96,6 +196,122 @@ def _normalize_question(raw: object, index: int) -> dict | None:
     }
 
 
+def _fallback_experimental_questions(
+    practice_mode: str,
+    question: str,
+    answer: str,
+    learning_state: dict,
+) -> list[dict]:
+    """Keep coding and oral practice usable when a model misses the strict JSON schema."""
+    topic = _clean_text(
+        learning_state.get("current_topic") or learning_state.get("knowledge_points", [""])[0] or question,
+        70,
+    ) or "当前主题"
+    reference = _clean_text(answer, 420) or "请依据当前对话中的概念、条件与步骤完成说明。"
+    if practice_mode == "coding":
+        task_prompts = [
+            f"用递归方式完成一个与“{topic}”相关的最小可验证函数。请补全终止条件，并保证每次调用都向终止条件靠近。",
+            f"为“{topic}”写一个递归版本的辅助函数，并用一个边界输入验证它能正确停止。",
+            f"把“{topic}”中的核心过程写成可读的递归代码，要求在代码中用注释说明终止条件与递归调用。",
+        ]
+        return [
+            {
+                "id": f"q{index}",
+                "type": "code_task",
+                "prompt": prompt,
+                "options": [],
+                "answer": "完成",
+                "explanation": "请先在本地或课程环境中运行，再确认测试用例是否全部通过。",
+                "knowledge_point": topic,
+                "language": "python",
+                "starter_code": "def solve(value):\n    # 写出终止条件\n    if ...:\n        return ...\n    # 让问题规模缩小\n    return solve(...)\n",
+                "tests": [
+                    {"label": "边界输入", "input": "最小有效输入", "expected_output": "函数直接返回，不继续递归"},
+                    {"label": "普通输入", "input": "一个非边界有效输入", "expected_output": "结果正确且递归会收敛"},
+                ],
+                "hints": [
+                    "先写出什么情况下问题已经足够小，可以直接返回。",
+                    "检查递归调用的参数是否确实向终止条件靠近。",
+                    "在本地运行边界输入和普通输入后再勾选确认。",
+                ],
+            }
+            for index, prompt in enumerate(task_prompts, start=1)
+        ]
+    oral_prompts = [
+        f"请不用背定义，用自己的话解释“{topic}”是什么，并说明它解决什么问题。",
+        f"请说明“{topic}”成立或正确使用时最重要的条件是什么，为什么不能忽略它。",
+        f"请用一个自己的例子讲清“{topic}”的过程，并说出最容易出错的一步。",
+        f"请向一位刚接触“{topic}”的同学解释如何自检是否真正理解。",
+    ]
+    return [
+        {
+            "id": f"q{index}",
+            "type": "oral_response",
+            "prompt": prompt,
+            "options": [],
+            "answer": reference,
+            "explanation": "回答中应能听出概念、条件或过程之间的关系，而不仅是重复一个定义。",
+            "knowledge_point": topic,
+            "target_keywords": [topic, "条件", "过程"],
+            "follow_up": "如果条件发生变化，你的解释中哪一步需要调整？",
+        }
+        for index, prompt in enumerate(oral_prompts, start=1)
+    ]
+
+
+def _fallback_objective_questions(
+    practice_mode: str,
+    question: str,
+    answer: str,
+    learning_state: dict,
+    question_count: int,
+) -> list[dict]:
+    """Return dependable objective checks when the model response is malformed.
+
+    The normal path remains model-authored.  This fallback keeps a resource pack
+    usable when one concurrent request returns incomplete JSON, which otherwise
+    forces the learner to regenerate all six modes.
+    """
+    topic = _clean_text(
+        learning_state.get("current_topic") or learning_state.get("knowledge_points", [""])[0] or question,
+        70,
+    ) or "当前主题"
+    choice_prompts = [
+        f"关于“{topic}”，下列哪项最符合当前学习内容中的核心判断？",
+        f"如果题目中的条件发生变化，处理“{topic}”时最合理的做法是什么？",
+        f"学习“{topic}”后，最适合用来检验自己是否理解的方法是什么？",
+        f"在“{topic}”的实际应用中，出现异常结果时首先应该回看什么？",
+    ]
+    questions: list[dict] = []
+    for index in range(question_count):
+        if index % 4 == 3:
+            questions.append({
+                "id": f"q{index + 1}", "type": "true_false",
+                "prompt": f"请判断：只记住结论，而不检查适用条件，也能稳定解决“{topic}”相关问题。",
+                "options": ["正确", "错误"], "answer": "错误",
+                "explanation": "理解知识点还需要结合条件和过程验证，不能只记住结论。",
+                "knowledge_point": topic,
+            })
+        elif index % 4 == 0:
+            questions.append({
+                "id": f"q{index + 1}", "type": "fill_blank",
+                "prompt": f"填空：处理“{topic}”时，应先明确 ______ ，再按照过程逐步验证。",
+                "options": [], "answer": "适用条件", "accepted_answers": ["适用条件", "条件", "边界条件"],
+                "explanation": "先确认适用条件，才能判断方法是否能够正确使用。",
+                "knowledge_point": topic,
+            })
+        else:
+            questions.append({
+                "id": f"q{index + 1}", "type": "single_choice",
+                "prompt": choice_prompts[index % len(choice_prompts)],
+                "options": ["先核对题目条件与核心过程", "直接套用记住的答案", "忽略边界情况", "只比较最后结果"],
+                "answer": "先核对题目条件与核心过程",
+                "explanation": "稳定迁移知识需要先确认条件，再核对当前过程是否符合核心方法。",
+                "knowledge_point": topic,
+            })
+    return questions
+
+
 def generate_practice_set(
     *,
     question: str,
@@ -105,8 +321,11 @@ def generate_practice_set(
     user_id: int,
     question_count: int = 5,
     focus_points: list[str] | None = None,
+    practice_mode: str = "standard",
 ) -> dict:
-    """Return a five-question practice set with answers retained only server-side."""
+    """Return a typed practice set with answers retained only server-side."""
+    mode = _mode_config(practice_mode)
+    question_count = int(mode["count"])
     context_text = "\n".join(
         f"{item.get('role', 'user')}: {str(item.get('content', ''))[:1200]}"
         for item in recent_context[-4:]
@@ -118,14 +337,15 @@ def generate_practice_set(
             "content": (
                 "你是 RHYME 的练习测验 Agent。请严格基于给定对话，生成一套中文学习检验题，"
                 "不要编造对话中不存在的课程要求或事实。只使用可自动、稳定批改的题型："
-                "single_choice（单选）、true_false（判断）、fill_blank（短填空）。"
+                "single_choice（单选）、true_false（判断）、fill_blank（短填空），或在指定时使用 code_task（编程实验）、oral_response（口述回答）。"
                 "必须返回 JSON 对象，字段只能为 title、summary、knowledge_points、questions。"
                 f"questions 必须刚好有 {question_count} 题，每题字段为 type、prompt、options、answer、"
-                "accepted_answers（仅填空可选）、explanation、knowledge_point。"
+                "accepted_answers（仅填空可选）、explanation、knowledge_point；code_task 可附 language、starter_code、tests、hints；oral_response 可附 target_keywords、sample_answer、follow_up。"
                 "single_choice 的 options 为 2-4 个完整选项，answer 必须是其中一个选项文本。"
                 "true_false 的 answer 只能是“正确”或“错误”。填空题答案应简短、唯一或给出可接受同义表达。"
                 "题目要覆盖核心理解、条件判断和易错点，难度由浅入深。解释必须指出为什么对或错。"
-                + (f"本轮是专项补弱：5 题必须优先围绕这些薄弱点出题：{focus_text}。" if focus_text else "")
+                f"本次练习形式：{practice_mode}。具体要求：{mode['instruction']}"
+                + (f"本轮是专项补弱：{question_count} 题必须优先围绕这些薄弱点出题：{focus_text}。" if focus_text else "")
             ),
         },
         {
@@ -137,29 +357,41 @@ def generate_practice_set(
             ),
         },
     ]
-    response = chat_qwen(messages, temperature=0.2, max_tokens=2200, json_mode=True)
-    result = _parse_json(response.choices[0].message.content or "")
+    result: dict = {}
+    try:
+        response = chat_qwen(messages, temperature=0.2, max_tokens=1400, json_mode=True)
+        result = _parse_json(response.choices[0].message.content or "")
+    except Exception:
+        # Keep the learning flow available when one provider request is slow,
+        # temporarily unavailable, or returns malformed structured content.
+        logger.warning("practice generation fell back to local objective questions", exc_info=True)
     normalized = [
         item
         for index, raw in enumerate(result.get("questions") or [], start=1)
         if (item := _normalize_question(raw, index))
     ]
+    if len(normalized) < question_count and practice_mode in {"coding", "oral"}:
+        normalized = _fallback_experimental_questions(practice_mode, question, answer, learning_state)
     if len(normalized) < question_count:
-        raise ValueError("生成的练习题不完整，请重新生成")
+        normalized = _fallback_objective_questions(
+            practice_mode, question, answer, learning_state, question_count,
+        )
     questions = normalized[:question_count]
     knowledge_points = [_clean_text(item, 100) for item in result.get("knowledge_points") or []]
     knowledge_points.extend(item["knowledge_point"] for item in questions)
     knowledge_points = list(dict.fromkeys(item for item in knowledge_points if item))[:5]
-    title = _clean_text(result.get("title"), 80) or "当前主题练习测验"
-    summary = _clean_text(result.get("summary"), 240) or f"{question_count} 题练习，完成后查看逐题解析与薄弱点。"
+    title = _clean_text(result.get("title"), 80) or mode["title"]
+    summary = _clean_text(result.get("summary"), 240) or mode["summary"]
     return {
         "title": title,
         "summary": summary,
         "highlights": [
-            f"共 {question_count} 题，可逐题作答后统一提交",
-            "包含单选、判断和短填空，答案在提交前不展示",
-            "完成后生成错题解析与主题掌握建议",
+            f"共 {question_count} 项，建议用时约 {mode['minutes']} 分钟",
+            "答案与解析会在完成后展示",
+            "完成后生成薄弱点与下一步练习建议",
         ],
         "knowledge_points": knowledge_points,
         "questions": questions,
+        "practice_mode": practice_mode,
+        "estimated_minutes": mode["minutes"],
     }

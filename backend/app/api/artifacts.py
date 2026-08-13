@@ -30,6 +30,7 @@ from app.services.artifact_db import (
     restore_artifact_version,
     save_artifact,
     save_document_pack,
+    save_practice_pack,
     save_learning_loop,
     set_artifact_favorite,
     trash_artifact,
@@ -56,8 +57,11 @@ from app.services.map_db import (
 from app.services.learning_progress_db import (
     get_interactive_presentation_progress,
     get_topic_learning_state,
+    get_topic_study_plan,
     record_interactive_presentation_checkpoint,
     record_learning_activity,
+    start_topic_study_plan,
+    update_topic_study_plan_task,
     update_interactive_presentation_progress,
 )
 from app.services.video_search import (
@@ -108,7 +112,11 @@ class GeneratePracticeRequest(BaseModel):
     user_id: int
     session_id: int
     qa_id: str
-    question_count: int = Field(default=5, ge=5, le=5)
+    question_count: int = Field(default=5, ge=1, le=20)
+    practice_mode: str = Field(
+        default="standard",
+        pattern="^(standard|similar|variants|special|mock|coding|oral)$",
+    )
     focus_points: list[str] = Field(default_factory=list, max_length=5)
     source_map_artifact_id: int | None = None
     async_mode: bool = False
@@ -212,6 +220,19 @@ class SaveDocumentPackRequest(BaseModel):
     artifacts: list[SaveDocumentPackArtifactRequest] = Field(min_length=1, max_length=7)
 
 
+class SavePracticePackArtifactRequest(BaseModel):
+    artifact_id: int
+    practice_mode: str = Field(pattern="^(similar|variants|special|mock|coding|oral)$")
+
+
+class SavePracticePackRequest(BaseModel):
+    user_id: int
+    practice_pack_id: str = Field(min_length=1, max_length=120)
+    course_name: str = Field(min_length=1, max_length=120)
+    topic_name: str = Field(min_length=1, max_length=120)
+    artifacts: list[SavePracticePackArtifactRequest] = Field(min_length=6, max_length=6)
+
+
 class UpdateArtifactRequest(SaveArtifactRequest):
     pass
 
@@ -229,6 +250,17 @@ class RecordLearningActivityRequest(BaseModel):
     user_id: int
     activity_type: str = Field(min_length=1, max_length=48, pattern="^[A-Za-z0-9_]+$")
     activity_data: dict = Field(default_factory=dict)
+
+
+class StartTopicStudyPlanRequest(BaseModel):
+    user_id: int
+    course_name: str = Field(min_length=1, max_length=120)
+    topic_name: str = Field(min_length=1, max_length=120)
+
+
+class UpdateTopicStudyPlanTaskRequest(StartTopicStudyPlanRequest):
+    task_id: str = Field(min_length=1, max_length=80)
+    status: str = Field(pattern="^(pending|completed)$")
 
 
 class DuplicateArtifactRequest(BaseModel):
@@ -352,6 +384,37 @@ def get_topic_state(user_id: int, course_name: str, topic_name: str):
     if not state:
         raise HTTPException(status_code=404, detail="主题不存在或还没有保存的资料")
     return state
+
+
+@router.get("/topics/study-plan")
+def get_study_plan(user_id: int, course_name: str, topic_name: str):
+    plan = get_topic_study_plan(user_id, course_name.strip(), topic_name.strip())
+    if plan is None:
+        raise HTTPException(status_code=404, detail="主题不存在或还没有保存的资料")
+    return {"plan": plan}
+
+
+@router.post("/topics/study-plan/start")
+def start_study_plan(req: StartTopicStudyPlanRequest):
+    plan = start_topic_study_plan(req.user_id, req.course_name.strip(), req.topic_name.strip())
+    if plan is None:
+        raise HTTPException(status_code=404, detail="主题不存在或还没有保存的资料")
+    return {"plan": plan}
+
+
+@router.patch("/topics/study-plan/{plan_id}/tasks")
+def update_study_plan_task(plan_id: int, req: UpdateTopicStudyPlanTaskRequest):
+    plan = update_topic_study_plan_task(
+        req.user_id,
+        req.course_name.strip(),
+        req.topic_name.strip(),
+        plan_id,
+        req.task_id.strip(),
+        req.status,
+    )
+    if plan is None:
+        raise HTTPException(status_code=404, detail="本次学习清单不存在或已更新，请重新开始")
+    return {"plan": plan}
 
 
 @router.get("/generation-jobs/{job_id}")
@@ -973,6 +1036,7 @@ def generate_practice(req: GeneratePracticeRequest):
             session_id=req.session_id,
             qa_id=req.qa_id,
             question_count=req.question_count,
+            practice_mode=req.practice_mode,
             focus_points=req.focus_points,
             source_map_artifact_id=req.source_map_artifact_id,
         )
@@ -1016,6 +1080,7 @@ def generate_practice(req: GeneratePracticeRequest):
             learning_state=learning_state,
             user_id=req.user_id,
             question_count=req.question_count,
+            practice_mode=req.practice_mode,
             focus_points=[point.strip() for point in req.focus_points if point.strip()],
         )
         logger.info("[artifact-timing] kind=practice sid=%s stage=generation seconds=%.3f", req.session_id, time.perf_counter() - generation_started)
@@ -1035,7 +1100,7 @@ def generate_practice(req: GeneratePracticeRequest):
             "",
             generated["summary"],
             "",
-            "这是一份可交互作答的练习集。打开后完成 5 题，提交时才会显示答案与逐题解析。",
+            f"这是一份可交互作答的练习集。打开后完成 {len(generated['questions'])} 项训练，提交时才会显示答案与逐题解析。",
             "",
             "## 覆盖知识点",
             *[f"- {item}" for item in generated["knowledge_points"]],
@@ -1069,6 +1134,8 @@ def generate_practice(req: GeneratePracticeRequest):
             artifact["id"],
             generated["questions"],
             generated["knowledge_points"],
+            practice_mode=generated["practice_mode"],
+            estimated_minutes=generated["estimated_minutes"],
         )
         logger.info("[artifact-timing] kind=practice sid=%s stage=persist seconds=%.3f total_seconds=%.3f", req.session_id, time.perf_counter() - persist_started, time.perf_counter() - request_started)
         return {"artifact": artifact, "practice": {key: value for key, value in practice.items() if key != "questions"} | {
@@ -1151,6 +1218,23 @@ def archive_document_pack(req: SaveDocumentPackRequest):
             req.course_name.strip(),
             req.topic_name.strip(),
             req.document_pack_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    for artifact in artifacts:
+        record_learning_activity(req.user_id, artifact["id"], "saved")
+    return {"artifacts": artifacts}
+
+
+@router.post("/practice-packs/save")
+def archive_practice_pack(req: SavePracticePackRequest):
+    try:
+        artifacts = save_practice_pack(
+            req.user_id,
+            [item.model_dump() for item in req.artifacts],
+            req.course_name.strip(),
+            req.topic_name.strip(),
+            req.practice_pack_id,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

@@ -3,6 +3,7 @@
 import json
 import re
 
+from app.config import DB_BACKEND
 from app.database import execute, insert, query
 
 
@@ -51,6 +52,33 @@ def init_tables():
             UNIQUE(user_id, artifact_id)
         )
     """)
+    execute("""
+        CREATE TABLE IF NOT EXISTS topic_study_plans (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            topic_id INT NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            active_task_id VARCHAR(80) NOT NULL DEFAULT '',
+            tasks JSON NOT NULL,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            completed_at DATETIME NULL
+        )
+    """)
+    if DB_BACKEND == "sqlite":
+        execute("""
+            CREATE INDEX IF NOT EXISTS idx_topic_study_plans_lookup
+            ON topic_study_plans (user_id, topic_id, status, updated_at)
+        """)
+    else:
+        try:
+            execute("""
+                CREATE INDEX idx_topic_study_plans_lookup
+                ON topic_study_plans (user_id, topic_id, status, updated_at)
+            """)
+        except Exception as error:
+            if "duplicate key name" not in str(error).lower():
+                raise
 
 
 def _safe_action(action: str) -> str:
@@ -125,6 +153,16 @@ def _topic_artifacts(user_id: int, topic_id: int) -> list[dict]:
         "ORDER BY a.updated_at DESC",
         (user_id, topic_id),
     )
+
+
+def _topic_context(user_id: int, course_name: str, topic_name: str) -> dict | None:
+    rows = query(
+        "SELECT t.id AS topic_id, t.mastery, c.name AS course_name, t.name AS topic_name "
+        "FROM library_topics t JOIN library_courses c ON c.id = t.course_id "
+        "WHERE t.user_id = %s AND c.name = %s AND t.name = %s",
+        (user_id, course_name, topic_name),
+    )
+    return rows[0] if rows else None
 
 
 def _interactive_scene_ids(content: object) -> list[str]:
@@ -398,6 +436,258 @@ def _practice_summary(user_id: int, topic_id: int) -> dict:
         "recent_completed_at": str(latest.get("completed_at") or "") if latest else "",
         "weak_points": weak_points[:5],
     }
+
+
+def _activity_artifact_ids(activities: list[dict], types: set[str]) -> set[int]:
+    return {
+        int(row["artifact_id"]) for row in activities
+        if row.get("artifact_id") and str(row.get("activity_type") or "") in types
+    }
+
+
+def _plan_task(task_id: str, action: str, artifact: dict | None, title: str, detail: str, status: str = "pending") -> dict:
+    return {
+        "id": task_id,
+        "action": action,
+        "artifact_id": int(artifact["id"]) if artifact else None,
+        "title": title,
+        "detail": detail,
+        "status": status,
+    }
+
+
+def _build_topic_study_plan(
+    artifacts: list[dict],
+    maps: list[dict],
+    practices: list[dict],
+    dynamic_explanations: list[dict],
+    map_by_artifact: dict[int, dict],
+    interactive_by_artifact: dict[int, dict],
+    practice: dict,
+    opened_ids: set[int],
+    completed_ids: set[int],
+) -> list[dict]:
+    """Create a short, deliberate study route from saved material already in this topic."""
+    tasks: list[dict] = []
+    primary_materials = [item for item in artifacts if item.get("kind") not in {"practice", "map", "interactive"}]
+    first_unopened = next((item for item in primary_materials if int(item["id"]) not in opened_ids), None)
+    first_material = first_unopened or (primary_materials[0] if primary_materials else None)
+    if first_material:
+        material_id = int(first_material["id"])
+        material_done = material_id in completed_ids
+        tasks.append(_plan_task(
+            "read-core", "open_material", first_material,
+            "读一遍核心资料", "先建立这次复习的主线，再去看图解与练习。",
+            "completed" if material_done else "pending",
+        ))
+
+    review_map = next((item for item in maps if map_by_artifact.get(int(item["id"]), {}).get("review", 0) > 0), None)
+    unfinished_map = review_map or next(
+        (item for item in maps if map_by_artifact.get(int(item["id"]), {}).get("untouched", 0) > 0),
+        None,
+    )
+    map_item = unfinished_map or (maps[0] if maps else None)
+    if map_item:
+        progress = map_by_artifact.get(int(map_item["id"]), {})
+        complete = bool(progress.get("total")) and not progress.get("review") and not progress.get("untouched")
+        tasks.append(_plan_task(
+            "map-recall", "review_map" if review_map else "continue_map", map_item,
+            "在图解里回忆关键关系", "标记已理解与待复习的节点，让薄弱点留在下一次建议里。",
+            "completed" if complete else "pending",
+        ))
+
+    unfinished_presentation = next(
+        (item for item in dynamic_explanations if not interactive_by_artifact.get(int(item["id"]), {}).get("is_completed")),
+        None,
+    )
+    presentation = unfinished_presentation or (dynamic_explanations[0] if dynamic_explanations else None)
+    if presentation:
+        complete = bool(interactive_by_artifact.get(int(presentation["id"]), {}).get("is_completed"))
+        tasks.append(_plan_task(
+            "watch-explanation", "continue_explanation", presentation,
+            "用动态讲解走一遍难点", "沿着场景推进，并完成途中出现的理解检查。",
+            "completed" if complete else "pending",
+        ))
+
+    practice_item = practices[0] if practices else None
+    if practice_item:
+        has_weak_points = bool(practice.get("weak_points")) and (practice.get("recent_score") or 100) < 80
+        tasks.append(_plan_task(
+            "practice-check", "practice_weak_points" if has_weak_points else "start_practice", practice_item,
+            "针对薄弱点再练一次" if has_weak_points else "用练习检验掌握",
+            "围绕最近的薄弱点重新训练。" if has_weak_points else "完成后，系统会把错题和掌握情况回写到这个主题。",
+            "completed" if int(practice_item["id"]) in completed_ids else "pending",
+        ))
+
+    if not tasks and artifacts:
+        fallback = artifacts[0]
+        tasks.append(_plan_task(
+            "open-first", "open_material", fallback,
+            "打开第一份资料", "从这份资料开始，系统会据此为你安排下一步。",
+        ))
+    return tasks[:4]
+
+
+def _normalise_plan_tasks(tasks: object, available_ids: set[int]) -> list[dict]:
+    if not isinstance(tasks, list):
+        return []
+    clean: list[dict] = []
+    for task in tasks[:5]:
+        if not isinstance(task, dict):
+            continue
+        artifact_id = task.get("artifact_id")
+        if artifact_id is not None:
+            try:
+                artifact_id = int(artifact_id)
+            except (TypeError, ValueError):
+                continue
+            if artifact_id not in available_ids:
+                continue
+        task_id = str(task.get("id") or "").strip()[:80]
+        action = _safe_action(task.get("action"))
+        if not task_id or not action:
+            continue
+        clean.append({
+            "id": task_id,
+            "action": action,
+            "artifact_id": artifact_id,
+            "title": str(task.get("title") or "继续学习")[:160],
+            "detail": str(task.get("detail") or "")[:360],
+            "status": "completed" if task.get("status") == "completed" else "pending",
+        })
+    return clean
+
+
+def _plan_payload(row: dict | None, tasks: list[dict]) -> dict:
+    active_task_id = str((row or {}).get("active_task_id") or "")
+    active = next((task for task in tasks if task["id"] == active_task_id and task["status"] != "completed"), None)
+    if not active:
+        active = next((task for task in tasks if task["status"] != "completed"), None)
+    completed_count = sum(1 for task in tasks if task["status"] == "completed")
+    return {
+        "id": int((row or {}).get("id") or 0) or None,
+        "status": str((row or {}).get("status") or ("completed" if tasks and completed_count == len(tasks) else "active")),
+        "tasks": tasks,
+        "active_task_id": active["id"] if active else "",
+        "completed_count": completed_count,
+        "total_count": len(tasks),
+        "started_at": str((row or {}).get("started_at") or ""),
+        "updated_at": str((row or {}).get("updated_at") or ""),
+        "completed_at": str((row or {}).get("completed_at") or ""),
+    }
+
+
+def get_topic_study_plan(user_id: int, course_name: str, topic_name: str) -> dict | None:
+    topic = _topic_context(user_id, course_name, topic_name)
+    if not topic:
+        return None
+    artifacts = _topic_artifacts(user_id, int(topic["topic_id"]))
+    available_ids = {int(item["id"]) for item in artifacts}
+    rows = query(
+        "SELECT id, status, active_task_id, tasks, started_at, updated_at, completed_at "
+        "FROM topic_study_plans WHERE user_id = %s AND topic_id = %s AND status != 'replaced' "
+        "ORDER BY updated_at DESC, id DESC LIMIT 1",
+        (user_id, topic["topic_id"]),
+    )
+    row = rows[0] if rows else None
+    tasks = _normalise_plan_tasks(_json((row or {}).get("tasks"), []), available_ids)
+    return _plan_payload(row, tasks)
+
+
+def start_topic_study_plan(user_id: int, course_name: str, topic_name: str) -> dict | None:
+    topic = _topic_context(user_id, course_name, topic_name)
+    if not topic:
+        return None
+    artifacts = _topic_artifacts(user_id, int(topic["topic_id"]))
+    activities = query(
+        "SELECT artifact_id, activity_type FROM learning_activities WHERE user_id = %s AND topic_id = %s "
+        "ORDER BY created_at DESC LIMIT 180",
+        (user_id, topic["topic_id"]),
+    )
+    opened_ids = _activity_artifact_ids(activities, {"opened", "scene_started", "scene_progressed", "scene_check_answered"})
+    completed_ids = _activity_artifact_ids(activities, {"completed", "practice_submitted"})
+    maps = [item for item in artifacts if item.get("kind") == "map"]
+    practices = [item for item in artifacts if item.get("kind") == "practice"]
+    presentations = [item for item in artifacts if item.get("kind") == "interactive"]
+    map_summary, map_by_artifact = _map_progress(user_id, maps)
+    del map_summary
+    interactive_summary, interactive_by_artifact = _interactive_progress(user_id, presentations)
+    del interactive_summary
+    practice = _practice_summary(user_id, int(topic["topic_id"]))
+    tasks = _build_topic_study_plan(
+        artifacts, maps, practices, presentations, map_by_artifact, interactive_by_artifact,
+        practice, opened_ids, completed_ids,
+    )
+    if not tasks:
+        return _plan_payload(None, [])
+    execute(
+        "UPDATE topic_study_plans SET status = 'replaced', updated_at = NOW() "
+        "WHERE user_id = %s AND topic_id = %s AND status = 'active'",
+        (user_id, topic["topic_id"]),
+    )
+    first = next((task for task in tasks if task["status"] != "completed"), None)
+    plan_id = insert("topic_study_plans", {
+        "user_id": user_id,
+        "topic_id": topic["topic_id"],
+        "status": "active",
+        "active_task_id": first["id"] if first else "",
+        "tasks": json.dumps(tasks, ensure_ascii=False),
+    })
+    rows = query(
+        "SELECT id, status, active_task_id, tasks, started_at, updated_at, completed_at "
+        "FROM topic_study_plans WHERE id = %s",
+        (plan_id,),
+    )
+    return _plan_payload(rows[0] if rows else None, tasks)
+
+
+def update_topic_study_plan_task(
+    user_id: int,
+    course_name: str,
+    topic_name: str,
+    plan_id: int,
+    task_id: str,
+    status: str,
+) -> dict | None:
+    topic = _topic_context(user_id, course_name, topic_name)
+    if not topic:
+        return None
+    rows = query(
+        "SELECT id, status, active_task_id, tasks, started_at, updated_at, completed_at "
+        "FROM topic_study_plans WHERE id = %s AND user_id = %s AND topic_id = %s AND status = 'active'",
+        (plan_id, user_id, topic["topic_id"]),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    available_ids = {int(item["id"]) for item in _topic_artifacts(user_id, int(topic["topic_id"]))}
+    tasks = _normalise_plan_tasks(_json(row.get("tasks"), []), available_ids)
+    target = next((task for task in tasks if task["id"] == task_id), None)
+    if not target:
+        return None
+    normalized_status = "completed" if status == "completed" else "pending"
+    target["status"] = normalized_status
+    active = next((task for task in tasks if task["status"] != "completed"), None)
+    done = bool(tasks) and all(task["status"] == "completed" for task in tasks)
+    execute(
+        "UPDATE topic_study_plans SET tasks = %s, active_task_id = %s, status = %s, "
+        "completed_at = CASE WHEN %s = 'completed' THEN NOW() ELSE NULL END, updated_at = NOW() WHERE id = %s",
+        (json.dumps(tasks, ensure_ascii=False), active["id"] if active else "", "completed" if done else "active", "completed" if done else "active", plan_id),
+    )
+    if target.get("artifact_id"):
+        record_learning_activity(
+            user_id,
+            int(target["artifact_id"]),
+            "plan_task_completed" if normalized_status == "completed" else "plan_task_reopened",
+            {"plan_id": plan_id, "task_id": target["id"]},
+        )
+    refreshed = dict(row)
+    refreshed.update({
+        "status": "completed" if done else "active",
+        "active_task_id": active["id"] if active else "",
+        "tasks": tasks,
+    })
+    return _plan_payload(refreshed, tasks)
 
 
 def get_topic_learning_state(user_id: int, course_name: str, topic_name: str) -> dict | None:

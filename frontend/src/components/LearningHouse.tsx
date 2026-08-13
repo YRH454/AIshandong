@@ -1,327 +1,406 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
+import type { ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { Html } from '@react-three/drei'
-import { ArrowLeft, ChevronRight, Keyboard, MapPinned, MousePointer2, Sparkles, X } from 'lucide-react'
+import { Text, useTexture } from '@react-three/drei'
+import {
+  ArrowLeft, BookOpen, Box, BrainCircuit, ClipboardCheck, FileText,
+  Play, Volume2, VolumeX, X,
+} from 'lucide-react'
 import * as THREE from 'three'
 
 type Language = 'zh-CN' | 'en'
 type RoomId = 'document' | 'practice' | 'map' | 'dynamic'
+type Phase = 'entrance' | 'corridor'
+type Props = { language?: Language; onExit: () => void }
 
 type Room = {
   id: RoomId
   title: string
   titleEn: string
-  shortTitle: string
-  shortTitleEn: string
-  description: string
-  descriptionEn: string
+  short: string
+  shortEn: string
   empty: string
   emptyEn: string
   color: string
-  deepColor: string
-  z: number
   side: 'left' | 'right'
+  z: number
+  icon: ComponentType<{ size?: number; strokeWidth?: number }>
 }
 
-type LearningHouseProps = {
-  language?: Language
-  onExit: () => void
-}
+const assetBase = '/learning-house-reference'
 
 const rooms: Room[] = [
-  {
-    id: 'document', title: '学习文档室', titleEn: 'Study documents', shortTitle: '学习文档', shortTitleEn: 'Documents',
-    description: '讲义、公式手册、术语表和考前速记会在这里安静归档。',
-    descriptionEn: 'Notes, formula sheets, glossaries, and exam briefs will be kept here.',
-    empty: '等待第一份学习文档', emptyEn: 'Waiting for the first document', color: '#78b59c', deepColor: '#235b47', z: -7, side: 'left',
-  },
-  {
-    id: 'practice', title: '练习检验室', titleEn: 'Practice studio', shortTitle: '练习检验', shortTitleEn: 'Practice',
-    description: '分层练习、作答结果和错题复盘将在这个房间形成反馈。',
-    descriptionEn: 'Practice sets, results, and mistake reviews will build feedback here.',
-    empty: '等待第一次练习检验', emptyEn: 'Waiting for the first practice', color: '#e2a85b', deepColor: '#80501e', z: -20, side: 'right',
-  },
-  {
-    id: 'map', title: '知识图解室', titleEn: 'Knowledge map room', shortTitle: '知识图解', shortTitleEn: 'Maps',
-    description: '生成的知识结构、关系图和可编辑画布会在这里展开。',
-    descriptionEn: 'Generated structures, relationship maps, and editable canvases will live here.',
-    empty: '等待第一张知识图解', emptyEn: 'Waiting for the first map', color: '#78a9ce', deepColor: '#285879', z: -33, side: 'left',
-  },
-  {
-    id: 'dynamic', title: '动态讲解室', titleEn: 'Dynamic lesson room', shortTitle: '动态讲解', shortTitleEn: 'Dynamic lessons',
-    description: '可播放、可交互的学习演示将在这块屏幕上继续讲解。',
-    descriptionEn: 'Playable, interactive learning presentations will continue on this screen.',
-    empty: '等待第一段动态讲解', emptyEn: 'Waiting for the first dynamic lesson', color: '#ad94d4', deepColor: '#573f83', z: -46, side: 'right',
-  },
+  { id: 'document', title: '学习文档室', titleEn: 'Study documents', short: '学习文档', shortEn: 'Documents', empty: '资料生成后会自动放入这一间。', emptyEn: 'Generated documents will move into this room.', color: '#6c9a73', side: 'left', z: -9, icon: FileText },
+  { id: 'practice', title: '练习检验室', titleEn: 'Practice studio', short: '练习检验', shortEn: 'Practice', empty: '第一份练习会在这里等你完成。', emptyEn: 'Your first practice set will wait here.', color: '#c4934f', side: 'right', z: -22, icon: ClipboardCheck },
+  { id: 'map', title: '知识图解室', titleEn: 'Knowledge maps', short: '知识图解', shortEn: 'Maps', empty: '生成的图解会挂到这面墙上。', emptyEn: 'Generated maps will appear on this wall.', color: '#628db6', side: 'left', z: -35, icon: BrainCircuit },
+  { id: 'dynamic', title: '动态讲解室', titleEn: 'Dynamic lessons', short: '动态讲解', shortEn: 'Lessons', empty: '第一段动态讲解会在这里亮起来。', emptyEn: 'Your first dynamic lesson will light up here.', color: '#9173b6', side: 'right', z: -48, icon: Play },
 ]
 
-const cameraStartZ = 5.5
-const cameraEndZ = -48.5
+function ReferenceMaterial({ path, opacity = 1, transparent = true, color = '#e0e0e0', side = THREE.DoubleSide }: { path: string; opacity?: number; transparent?: boolean; color?: string; side?: THREE.Side }) {
+  const texture = useTexture(`${assetBase}${path}`)
+  useEffect(() => {
+    texture.colorSpace = THREE.SRGBColorSpace
+  }, [texture])
+  return <meshBasicMaterial map={texture} color={color} side={side} transparent={transparent || opacity < 1} opacity={opacity} alphaTest={transparent ? .08 : 0} depthWrite={opacity > .95} />
+}
+
+function ReferencePlane({ path, position, args, rotation = [0, 0, 0], scale = [1, 1, 1], opacity = 1, transparent = true, color }: { path: string; position: [number, number, number]; args: [number, number]; rotation?: [number, number, number]; scale?: [number, number, number]; opacity?: number; transparent?: boolean; color?: string }) {
+  return <mesh position={position} rotation={rotation} scale={scale}>
+    <planeGeometry args={args} />
+    <ReferenceMaterial path={path} opacity={opacity} transparent={transparent} color={color} />
+  </mesh>
+}
+
+function playSound(file: string, enabled: boolean, volume = .25) {
+  if (!enabled) return
+  const audio = new Audio(`${assetBase}${file}`)
+  audio.volume = volume
+  void audio.play().catch(() => undefined)
+}
+
+function useBackgroundMusic(enabled: boolean, isInside: boolean) {
+  const audio = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => {
+    const instance = new Audio(`${assetBase}/sounds/cfl_turningpages-belem-breeze-487596.ogg`)
+    instance.loop = true
+    instance.volume = .3
+    instance.preload = 'auto'
+    instance.load()
+    audio.current = instance
+    return () => { instance.pause(); instance.src = '' }
+  }, [])
+  useEffect(() => {
+    const instance = audio.current
+    if (!instance) return
+    instance.muted = !enabled
+    if (isInside && enabled) void instance.play().catch(() => undefined)
+    if (!enabled) instance.pause()
+  }, [enabled, isInside])
+  return {
+    start: () => {
+      const instance = audio.current
+      if (instance && enabled) void instance.play().catch(() => undefined)
+    },
+  }
+}
 
 function supportsWebGL() {
   try {
     const canvas = document.createElement('canvas')
     return Boolean(canvas.getContext('webgl2') || canvas.getContext('webgl'))
-  } catch {
-    return false
-  }
+  } catch { return false }
 }
 
-function shouldUseLowPowerMode() {
-  const device = navigator as Navigator & { deviceMemory?: number }
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    || window.matchMedia('(max-width: 760px)').matches
-    || (typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency <= 4)
-    || (typeof device.deviceMemory === 'number' && device.deviceMemory <= 4)
+function reducedScene() {
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  return window.matchMedia('(max-width: 760px)').matches
+    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || (navigator.hardwareConcurrency || 8) <= 4
+    || (nav.deviceMemory || 8) <= 4
 }
 
-function nearestRoomId(z: number) {
-  return rooms.reduce((nearest, room) => Math.abs(room.z - z) < Math.abs(nearest.z - z) ? room : nearest, rooms[0]).id
+function lerpVector(current: THREE.Vector3, target: THREE.Vector3, speed: number, delta: number) {
+  current.lerp(target, 1 - Math.exp(-speed * delta))
 }
 
-function clampZ(value: number) {
-  return Math.max(cameraEndZ, Math.min(cameraStartZ, value))
-}
-
-function CorridorNavigation({ focusRoomId, onRoomChange }: { focusRoomId: RoomId; onRoomChange: (id: RoomId) => void }) {
-  const { camera, gl } = useThree()
-  const targetZ = useRef(cameraStartZ)
-  const focusedRoom = useRef<RoomId>(focusRoomId)
-  const lastRoom = useRef<RoomId>(nearestRoomId(cameraStartZ))
-  const lookTarget = useMemo(() => new THREE.Vector3(), [])
+function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; activeRoomId: RoomId | null; onNearRoom: (id: RoomId) => void }) {
+  const { camera, gl, pointer } = useThree()
+  const targetPosition = useRef(new THREE.Vector3(0, .05, 5.6))
+  const targetLook = useRef(new THREE.Vector3(0, .02, -1.5))
+  const currentLook = useRef(new THREE.Vector3(0, .02, -1.5))
 
   useEffect(() => {
-    const room = rooms.find(item => item.id === focusRoomId)
-    if (!room || focusedRoom.current === focusRoomId) return
-    focusedRoom.current = focusRoomId
-    targetZ.current = clampZ(room.z + 4.2)
-  }, [focusRoomId])
+    if (phase === 'entrance') {
+      targetPosition.current.set(0, .05, 5.6)
+      targetLook.current.set(0, .02, -1.5)
+    } else {
+      targetPosition.current.set(0, .05, 5.35)
+      targetLook.current.set(0, .02, -4.8)
+    }
+  }, [phase])
 
   useEffect(() => {
-    const move = (amount: number) => {
-      focusedRoom.current = '' as RoomId
-      targetZ.current = clampZ(targetZ.current + amount)
+    if (phase !== 'corridor') return
+    const move = (distance: number) => {
+      const next = targetPosition.current.z + distance
+      targetPosition.current.z = THREE.MathUtils.clamp(next, -52.5, 5.35)
     }
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault()
-      move(event.deltaY * 0.025)
+    const wheel = (event: WheelEvent) => { event.preventDefault(); move(event.deltaY * .019) }
+    const key = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.key === 'ArrowUp' || event.key.toLowerCase() === 'w') { event.preventDefault(); move(-2.75) }
+      if (event.key === 'ArrowDown' || event.key.toLowerCase() === 's') { event.preventDefault(); move(2.75) }
     }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (event.key === 'ArrowUp' || event.key.toLowerCase() === 'w') {
-        event.preventDefault()
-        move(-3.2)
-      }
-      if (event.key === 'ArrowDown' || event.key.toLowerCase() === 's') {
-        event.preventDefault()
-        move(3.2)
-      }
-    }
-    const canvas = gl.domElement
-    canvas.addEventListener('wheel', onWheel, { passive: false })
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      canvas.removeEventListener('wheel', onWheel)
-      window.removeEventListener('keydown', onKeyDown)
-    }
-  }, [gl])
+    gl.domElement.addEventListener('wheel', wheel, { passive: false })
+    window.addEventListener('keydown', key)
+    return () => { gl.domElement.removeEventListener('wheel', wheel); window.removeEventListener('keydown', key) }
+  }, [gl, phase])
 
   useFrame((_, delta) => {
-    const speed = 1 - Math.exp(-delta * 5.4)
-    camera.position.z += (targetZ.current - camera.position.z) * speed
-    camera.position.x += (0 - camera.position.x) * speed
-    lookTarget.set(0, 1.62, camera.position.z - 7.5)
-    camera.lookAt(lookTarget)
-    const current = nearestRoomId(camera.position.z)
-    if (current !== lastRoom.current) {
-      lastRoom.current = current
-      onRoomChange(current)
+    if (phase === 'entrance') {
+      targetPosition.current.set(pointer.x * .15, .05 - pointer.y * .07, 5.6)
+      targetLook.current.set(pointer.x * .05, .02, -1.5)
+    } else {
+      const nearest = rooms.reduce((best, room) => Math.abs(room.z - camera.position.z) < Math.abs(best.z - camera.position.z) ? room : best, rooms[0])
+      const isNear = Math.abs(nearest.z - camera.position.z) < 7
+      const glance = isNear ? (nearest.side === 'left' ? -.68 : .68) : 0
+      targetLook.current.set(pointer.x * .17 + glance, .03 - pointer.y * .045, targetPosition.current.z - 8)
+      if (nearest.id !== activeRoomId) onNearRoom(nearest.id)
     }
+    lerpVector(camera.position, targetPosition.current, 3.9, delta)
+    lerpVector(currentLook.current, targetLook.current, 4.8, delta)
+    camera.lookAt(currentLook.current)
   })
   return null
 }
 
-function RailLight({ z, color }: { z: number; color: string }) {
-  return <>
-    {[-1, 1].map(side => <mesh key={`${z}-${side}`} position={[side * 2.78, 3.35, z]}>
-      <boxGeometry args={[0.12, 0.12, 3.4]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.8} />
-    </mesh>)}
-  </>
+function EntranceScene({ onEnter, soundOn, onMusicStart }: { onEnter: () => void; soundOn: boolean; onMusicStart: () => void }) {
+  const leftDoor = useRef<THREE.Group>(null)
+  const rightDoor = useRef<THREE.Group>(null)
+  const sign = useRef<THREE.Group>(null)
+  const [hovered, setHovered] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const amount = useRef(0)
+
+  useFrame((state, delta) => {
+    const target = opening ? 1 : hovered ? .12 : 0
+    amount.current += (target - amount.current) * (1 - Math.exp(-delta * 4.8))
+    if (leftDoor.current) leftDoor.current.rotation.y = -amount.current * Math.PI * .55
+    if (rightDoor.current) rightDoor.current.rotation.y = amount.current * Math.PI * .55
+    if (sign.current) sign.current.rotation.z = Math.sin(state.clock.elapsedTime * 2) * .018
+  })
+
+  const enter = () => {
+    if (opening) return
+    setOpening(true)
+    playSound('/sounds/otwarciedrzwi.mp3', soundOn, .24)
+    onMusicStart()
+    window.setTimeout(onEnter, 1180)
+  }
+
+  return <group position={[0, .02, -.85]}>
+    <ReferencePlane path="/textures/entrance/wall_bricks_2.webp" position={[0, .02, -.13]} args={[11.4, 5.9]} />
+    <ReferencePlane path="/textures/entrance/floor_paper.webp" position={[0, -1.84, 1.2]} args={[12.4, 8.3]} rotation={[-Math.PI / 2, 0, 0]} />
+    <ReferencePlane path="/textures/entrance/tree_sketch.webp" position={[-4.43, .62, .03]} args={[4.3, 5.7]} />
+    <ReferencePlane path="/textures/entrance/mouse_hanging.webp" position={[-3.18, -.1, .08]} args={[2.35, 3.15]} />
+    <ReferencePlane path="/textures/entrance/cat_front_body.webp" position={[-1.72, -1.05, .11]} args={[1.13, 1.13]} />
+    <ReferencePlane path="/textures/entrance/window_sketch.webp" position={[2.5, .02, .12]} args={[1.5, 1.5]} />
+    <ReferencePlane path="/textures/entrance/pot_with_duck.webp" position={[2.5, -1.3, .14]} args={[3, 1.8]} />
+    <ReferencePlane path="/textures/entrance/bug_sketch.webp" position={[2.58, 1.23, .18]} args={[.29, .29]} />
+
+    <group ref={sign} position={[0, 1.7, .2]}>
+      <ReferencePlane path="/textures/entrance/belka.webp" position={[0, .45, 0]} args={[2.75, .43]} />
+      <ReferencePlane path="/textures/entrance/sign.webp" position={[0, -.18, .022]} args={[2, 1]} />
+      <mesh position={[0, -.18, .055]}><planeGeometry args={[1.86, .7]} /><meshBasicMaterial color="#eeeae0" /></mesh>
+      <Text position={[0, -.17, .07]} font={`${assetBase}/fonts/CabinSketch-Bold.ttf`} fontSize={.31} color="#25221f" outlineWidth={.006} outlineColor="#f8f6ef" anchorX="center" anchorY="middle">RHYME</Text>
+    </group>
+
+    <ReferencePlane path="/textures/entrance/stone-path.webp" position={[0, -1.79, 1.12]} args={[2.45, 4.85]} rotation={[-Math.PI / 2, 0, 0]} />
+    <ReferencePlane path="/textures/doors/frame_sketch.webp" position={[0, -.42, .24]} args={[2.06, 2.53]} />
+    <group ref={leftDoor} position={[-.95, -.59, .21]} onPointerOver={event => { event.stopPropagation(); setHovered(true) }} onPointerOut={() => setHovered(false)}>
+      <ReferencePlane path="/textures/doors/door_left_painted.webp" position={[.47, 0, .04]} args={[.94, 2.4]} opacity={hovered || opening ? 1 : .14} />
+      <ReferencePlane path="/textures/doors/door_left_sketch.webp" position={[.47, 0, .065]} args={[.94, 2.4]} opacity={hovered || opening ? .18 : 1} />
+    </group>
+    <group ref={rightDoor} position={[.95, -.59, .21]} onPointerOver={event => { event.stopPropagation(); setHovered(true) }} onPointerOut={() => setHovered(false)}>
+      <ReferencePlane path="/textures/doors/door_right_painted.webp" position={[-.47, 0, .04]} args={[.94, 2.4]} opacity={hovered || opening ? 1 : .14} />
+      <ReferencePlane path="/textures/doors/door_right_sketch.webp" position={[-.47, 0, .065]} args={[.94, 2.4]} opacity={hovered || opening ? .18 : 1} />
+    </group>
+    <mesh position={[0, -.5, .48]} onClick={enter} onPointerOver={event => { event.stopPropagation(); setHovered(true) }} onPointerOut={() => setHovered(false)}><planeGeometry args={[2.3, 2.65]} /><meshBasicMaterial transparent opacity={0} /></mesh>
+  </group>
 }
 
-function RoomSignature({ room }: { room: Room }) {
-  const signX = room.side === 'left' ? -3.02 : 3.02
-  const direction = room.side === 'left' ? 1 : -1
-  if (room.id === 'document') return <group position={[signX + direction * .38, 1.2, room.z + .58]}>
-    {[0, 1, 2, 3].map(index => <mesh key={index} position={[0, index * .3, (index - 1.5) * .18]} rotation={[0, 0, .03 * index]}>
-      <boxGeometry args={[.22, .22, .74]} /><meshStandardMaterial color={index % 2 ? '#e8f3ec' : room.color} roughness={.72} />
-    </mesh>)}
-  </group>
-  if (room.id === 'practice') return <group position={[signX + direction * .35, 1.03, room.z]}>
-    {[[-.28, .2], [.24, .16], [-.1, -.23], [.39, -.22]].map(([y, z], index) => <mesh key={index} position={[0, y, z]} rotation={[0, .22, .08]}>
-      <boxGeometry args={[.18, .34, .34]} /><meshStandardMaterial color={index % 2 ? '#fff1d9' : room.color} roughness={.66} />
-    </mesh>)}
-  </group>
-  if (room.id === 'map') return <group position={[signX + direction * .35, 1.12, room.z]}>
-    <mesh rotation={[0, Math.PI / 2, 0]}><torusGeometry args={[.42, .055, 12, 32]} /><meshStandardMaterial color={room.color} emissive={room.color} emissiveIntensity={.25} /></mesh>
-    {[-.28, .3].map((z, index) => <mesh key={z} position={[0, index ? .18 : -.17, z]}><sphereGeometry args={[.11, 18, 18]} /><meshStandardMaterial color={index ? '#deedf8' : room.color} /></mesh>)}
-  </group>
-  return <group position={[signX + direction * .35, 1.1, room.z]}>
-    <mesh rotation={[0, Math.PI / 2, 0]}><boxGeometry args={[.1, .74, 1.04]} /><meshStandardMaterial color="#231d31" roughness={.55} /></mesh>
-    <mesh position={[direction * -.065, 0, 0]} rotation={[0, Math.PI / 2, 0]}><planeGeometry args={[.68, .92]} /><meshStandardMaterial color={room.color} emissive={room.color} emissiveIntensity={.38} /></mesh>
-    <mesh position={[direction * -.08, 0, 0]} rotation={[0, Math.PI / 2, 0]}><circleGeometry args={[.13, 24]} /><meshStandardMaterial color="#fbf8ff" emissive="#fbf8ff" emissiveIntensity={.35} /></mesh>
+function CorridorFixture({ z }: { z: number }) {
+  return <group position={[0, 1.72, z]}>
+    <mesh position={[0, -.03, 0]}><boxGeometry args={[2, .06, .5]} /><ReferenceMaterial path="/textures/corridor/bokilampy.webp" /></mesh>
+    <ReferencePlane path="/textures/corridor/kratanalampy.webp" position={[0, -.068, 0]} args={[1.9, .4]} rotation={[-Math.PI / 2, 0, 0]} />
+    <mesh position={[0, -.075, 0]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[1.58, .28]} /><meshBasicMaterial color="#fffdf4" /></mesh>
+    <pointLight position={[0, -.16, 0]} color="#fff6dd" intensity={.42} distance={5.4} />
   </group>
 }
 
-function LearningRoom({ room, active, language, onFocus }: { room: Room; active: boolean; language: Language; onFocus: () => void }) {
-  const side = room.side === 'left' ? -1 : 1
-  const signX = side * 2.94
+function CorridorFrame({ position, side, artPath }: { position: [number, number, number]; side: 'left' | 'right'; artPath: string }) {
+  const direction = side === 'left' ? 1 : -1
+  return <group position={position} rotation={[0, direction * Math.PI / 2, side === 'left' ? .025 : -.025]}>
+    <ReferencePlane path="/textures/corridor/ramkanazdjecieduza_painted.webp" position={[0, 0, -.01]} args={[2.5, 1.4]} />
+    <ReferencePlane path={artPath} position={[0, 0, .025]} args={[1.7, .95]} />
+  </group>
+}
+
+function CorridorMascot({ soundOn }: { soundOn: boolean }) {
+  const mascot = useRef<THREE.Group>(null)
+  const orbit = useRef<THREE.Group>(null)
+  const greeting = useRef<THREE.Group>(null)
+  const { camera } = useThree()
+  const [welcoming, setWelcoming] = useState(false)
+  const closeTimer = useRef<number | null>(null)
+
+  useEffect(() => () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+  }, [])
+
+  useFrame((state, delta) => {
+    if (!mascot.current) return
+    const distance = camera.position.distanceTo(new THREE.Vector3(0, .26, -2.65))
+    const near = distance < 8
+    const targetX = near ? -.16 : 0
+    mascot.current.position.x = THREE.MathUtils.damp(mascot.current.position.x, targetX, 2.8, delta)
+    mascot.current.position.y = .26 + Math.sin(state.clock.elapsedTime * (near ? 1.65 : .82)) * (near ? .095 : .045)
+    mascot.current.rotation.z = Math.sin(state.clock.elapsedTime * (near ? 1.45 : .66)) * (near ? .11 : .03)
+    if (orbit.current) orbit.current.rotation.z = state.clock.elapsedTime * (near ? 1.5 : .58)
+    if (greeting.current) greeting.current.position.y = .77 + Math.sin(state.clock.elapsedTime * 2.4) * .025
+  })
+  const greet = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+    setWelcoming(true)
+    playSound('/sounds/papersound.mp3', soundOn, .18)
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+    closeTimer.current = window.setTimeout(() => setWelcoming(false), 3200)
+  }
+  return <group ref={mascot} position={[0, .26, -2.65]} onClick={greet}>
+    <ReferencePlane path="/xuejing-slime-logo.png" position={[0, 0, 0]} args={[.7, .7]} />
+    <group ref={orbit}>
+      <ReferencePlane path="/textures/corridor/decorations/paper_airplane.webp" position={[.48, .34, -.08]} args={[.36, .22]} rotation={[0, 0, -.22]} />
+    </group>
+    <ReferencePlane path="/textures/corridor/decorations/paper_ball.webp" position={[-.45, -.27, -.08]} args={[.23, .23]} />
+    <mesh position={[0, .02, .05]} onClick={greet}><planeGeometry args={[.78, .78]} /><meshBasicMaterial transparent opacity={0} /></mesh>
+    {welcoming && <group ref={greeting} position={[.1, .77, -.06]}>
+      <ReferencePlane path="/textures/corridor/pustatabliczka.webp" position={[0, 0, 0]} args={[2.05, .9]} />
+      <Text position={[0, .04, .06]} font={`${assetBase}/fonts/CabinSketch-Bold.ttf`} fontSize={.14} maxWidth={1.55} color="#302c27" anchorX="center" anchorY="middle">嗨，想先看看哪一扇门？</Text>
+    </group>}
+  </group>
+}
+
+function EndWall() {
+  return <group position={[0, 0, -57.15]}>
+    <mesh position={[0, 0, -.04]}><planeGeometry args={[7.08, 3.58]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" transparent={false} /></mesh>
+    <ReferencePlane path="/textures/corridor/pustatabliczka.webp" position={[0, .32, .03]} args={[3.85, 1.78]} />
+    <Text position={[0, .75, .06]} font={`${assetBase}/fonts/CabinSketch-Bold.ttf`} fontSize={.31} color="#27231f" anchorX="center" anchorY="middle">RHYME</Text>
+    <Text position={[0, .3, .06]} font={`${assetBase}/fonts/CabinSketch-Regular.ttf`} fontSize={.145} color="#3d3831" anchorX="center" anchorY="middle">邮箱 · 3539921167@qq.com</Text>
+    <Text position={[0, -.08, .06]} font={`${assetBase}/fonts/CabinSketch-Regular.ttf`} fontSize={.145} color="#3d3831" anchorX="center" anchorY="middle">微信 · 15853743199</Text>
+    <ReferencePlane path="/textures/corridor/decorations/pencil.webp" position={[-2.22, -1.05, .04]} args={[.8, .8]} rotation={[0, 0, .32]} />
+    <ReferencePlane path="/textures/corridor/decorations/coffee_cup.webp" position={[2.25, -1.08, .04]} args={[.7, .7]} rotation={[0, 0, -.12]} />
+    <ReferencePlane path="/textures/corridor/decorations/paper_airplane.webp" position={[-2.22, 1.17, .04]} args={[.82, .5]} rotation={[0, 0, .08]} />
+  </group>
+}
+
+function CorridorDoor({ room, active, onSelect, soundOn }: { room: Room; active: boolean; onSelect: () => void; soundOn: boolean }) {
+  const direction = room.side === 'left' ? -1 : 1
+  const wallAngle = Math.atan2(1.8, 4)
+  const door = useRef<THREE.Group>(null)
+  const [hovered, setHovered] = useState(false)
+  const openness = useRef(0)
+  const textureByRoom: Record<RoomId, string> = {
+    document: '/textures/corridor/doors/drzwiprojekty.webp',
+    practice: '/textures/corridor/doors/drzwikontakt.webp',
+    map: '/textures/corridor/doors/drzwiabout.webp',
+    dynamic: '/textures/corridor/doors/drzwisocial.webp',
+  }
+  useFrame((_, delta) => {
+    const target = hovered || active ? .23 : 0
+    openness.current += (target - openness.current) * (1 - Math.exp(-delta * 8))
+    if (door.current) door.current.rotation.y = direction * openness.current * 1.68
+  })
+  return <group position={[direction * 2.6, 0, room.z]} rotation={[0, direction === -1 ? Math.PI / 2 - wallAngle : -Math.PI / 2 + wallAngle, 0]} onPointerOver={event => { event.stopPropagation(); setHovered(true) }} onPointerOut={() => setHovered(false)}>
+    <ReferencePlane path="/textures/corridor/doors/ramkasingledoors.webp" position={[0, 0, .02]} args={[2.52, 3.2]} />
+    <group ref={door} position={[-.89, -.22, .08]}>
+      <ReferencePlane path={textureByRoom[room.id]} position={[.89, 0, .08]} args={[1.84, 2.52]} />
+    </group>
+    <mesh position={[0, -.15, .35]} onClick={event => { event.stopPropagation(); playSound('/sounds/otwarciedrzwi.mp3', soundOn, .18); onSelect() }}><planeGeometry args={[2.2, 3.05]} /><meshBasicMaterial transparent opacity={0} /></mesh>
+    {(hovered || active) && <pointLight position={[0, .1, .7]} color={room.color} intensity={.5} distance={3.5} />}
+  </group>
+}
+
+function Corridor({ soundOn }: { soundOn: boolean }) {
+  const lights = Array.from({ length: 9 }, (_, index) => -4 - index * 7.2)
+  const floorTiles = Array.from({ length: 8 }, (_, index) => 5 - index * 10)
+  const plankGaps = Array.from({ length: 38 }, (_, index) => 6 - index * 1.93)
+  const doorAngle = Math.atan2(1.8, 4)
+  return <group>
+    {floorTiles.map((z, index) => {
+      const mirrored = index % 2 === 1
+      return <group key={z}>
+        <mesh position={[0, -1.77, z]} rotation={[-Math.PI / 2, 0, Math.PI / 2 + (mirrored ? Math.PI : 0)]} scale={[mirrored ? -1 : 1, 1, 1]}><planeGeometry args={[10, 6.2]} /><ReferenceMaterial path="/textures/corridor/kawalekpodlogi.webp" /></mesh>
+        <mesh position={[0, 1.77, z]} rotation={[Math.PI / 2, 0, mirrored ? Math.PI : 0]} scale={[mirrored ? -1 : 1, 1, 1]}><planeGeometry args={[6.2, 10]} /><ReferenceMaterial path="/textures/corridor/ceiling_texture.webp" /></mesh>
+      </group>
+    })}
+    <mesh position={[-3.48, 0, -29]} rotation={[0, Math.PI / 2, 0]}><planeGeometry args={[74, 3.56]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" /></mesh>
+    <mesh position={[3.48, 0, -29]} rotation={[0, -Math.PI / 2, 0]}><planeGeometry args={[74, 3.56]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" /></mesh>
+    {rooms.map(room => {
+      const direction = room.side === 'left' ? -1 : 1
+      const rotation = direction === -1 ? Math.PI / 2 - doorAngle : -Math.PI / 2 + doorAngle
+      return <group key={`wall-${room.id}`} position={[direction * 2.6, 0, room.z]} rotation={[0, rotation, 0]}><ReferencePlane path="/textures/corridor/wall_texture.webp" position={[0, 0, -.035]} args={[4.38, 3.56]} transparent={false} /></group>
+    })}
+    {plankGaps.map(z => <mesh key={z} position={[0, -1.765, z]}><boxGeometry args={[6.08, .018, .026]} /><meshBasicMaterial color="#563a26" transparent opacity={.5} /></mesh>)}
+    {[-3.44, 3.44].map(x => <mesh key={x} position={[x, -1.66, -29]} rotation={[0, Math.PI / 2, 0]}><boxGeometry args={[74, .1, .035]} /><meshBasicMaterial color="#6e4931" transparent opacity={.88} /></mesh>)}
+    {lights.map(z => <CorridorFixture key={z} z={z} />)}
+    <CorridorFrame position={[-3.46, .33, -2.3]} side="left" artPath="/textures/corridor/rysuneknaobraz1.webp" />
+    <CorridorFrame position={[3.46, .26, -11.6]} side="right" artPath="/textures/corridor/rysuneknaobrazek3.webp" />
+    <CorridorFrame position={[-3.46, .18, -20.8]} side="left" artPath="/textures/corridor/decorations/idea_process.webp" />
+    <CorridorFrame position={[3.46, .3, -30.2]} side="right" artPath="/textures/corridor/decorations/while_true_loop.webp" />
+    <CorridorFrame position={[-3.46, .1, -39.8]} side="left" artPath="/textures/corridor/decorations/coffee_debug.webp" />
+    <ReferencePlane path="/textures/corridor/drzewkowdoniczce.webp" position={[-3.31, -.3, -14.2]} args={[1.6, 2.65]} rotation={[0, Math.PI / 2, 0]} />
+    <ReferencePlane path="/textures/corridor/decorations/pencil.webp" position={[3.28, -.15, -25.1]} args={[.95, .95]} rotation={[0, -Math.PI / 2, .18]} />
+    <ReferencePlane path="/textures/corridor/decorations/coffee_cup.webp" position={[-3.31, -.86, -34.5]} args={[.82, .82]} rotation={[0, Math.PI / 2, -.12]} />
+    <ReferencePlane path="/textures/corridor/decorations/paper_airplane.webp" position={[3.31, .87, -43.2]} args={[.82, .5]} rotation={[0, -Math.PI / 2, -.12]} />
+    <EndWall />
+    <CorridorMascot soundOn={soundOn} />
+  </group>
+}
+
+function FlatFallback({ language, onEnter }: { language: Language; onEnter: () => void }) {
   const zh = language !== 'en'
-  return <group onClick={event => { event.stopPropagation(); onFocus() }}>
-    <mesh position={[side * 3.45, 1.9, room.z]} castShadow receiveShadow>
-      <boxGeometry args={[.46, 3.8, 5.8]} />
-      <meshStandardMaterial color={active ? room.deepColor : '#dce5df'} roughness={.78} />
-    </mesh>
-    <mesh position={[signX, 1.78, room.z]} castShadow>
-      <boxGeometry args={[.18, 3.16, 2.82]} />
-      <meshStandardMaterial color={room.color} emissive={room.color} emissiveIntensity={active ? .46 : .18} roughness={.5} />
-    </mesh>
-    <mesh position={[side * 2.83, 1.78, room.z]}>
-      <boxGeometry args={[.14, 2.7, 2.3]} />
-      <meshStandardMaterial color="#f8fbf8" roughness={.65} metalness={.03} />
-    </mesh>
-    <mesh position={[side * 2.72, 1.78, room.z]}>
-      <boxGeometry args={[.08, 2.46, 2.04]} />
-      <meshStandardMaterial color={room.deepColor} emissive={room.color} emissiveIntensity={active ? .18 : .06} roughness={.5} />
-    </mesh>
-    <mesh position={[side * 2.66, 2.75, room.z]}>
-      <boxGeometry args={[.04, .09, 1.7]} />
-      <meshStandardMaterial color="#ffffff" emissive="#ffffff" emissiveIntensity={.24} />
-    </mesh>
-    <mesh position={[side * 2.62, 1.08, room.z + .9]}>
-      <sphereGeometry args={[.08, 18, 18]} />
-      <meshStandardMaterial color="#e5f1e9" metalness={.58} roughness={.28} />
-    </mesh>
-    <RoomSignature room={room} />
-    <Html position={[side * 2.58, 2.12, room.z]} center className="learning-house-room-label" distanceFactor={11} style={{ pointerEvents: 'none' }}>
-      <div className={active ? 'is-active' : ''}>
-        <span>{zh ? room.shortTitle : room.shortTitleEn}</span>
-        <b>{zh ? '尚无资料' : 'Empty'}</b>
-      </div>
-    </Html>
-  </group>
+  return <div className="learning-house-flat entrance"><BookOpen size={30} /><h1>RHYME</h1><p>{zh ? '3D 学习屋需要浏览器开启图形加速。' : 'The 3D learning house needs WebGL graphics support.'}</p><button type="button" onClick={onEnter}>{zh ? '进入学习空间' : 'Enter learning space'}</button></div>
 }
 
-function CorridorScene({ activeRoomId, language, lowPower, onRoomChange }: { activeRoomId: RoomId; language: Language; lowPower: boolean; onRoomChange: (id: RoomId) => void }) {
-  return <>
-    <color attach="background" args={['#e4ebe6']} />
-    <fog attach="fog" args={['#e4ebe6', 31, 88]} />
-    <ambientLight intensity={.88} />
-    <directionalLight position={[1.8, 6.3, 4]} intensity={1.72} color="#fffdf7" castShadow={!lowPower} shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
-    <directionalLight position={[-4, 3.2, -18]} intensity={.72} color="#d8eaf2" />
-    <pointLight position={[0, 2.5, -28]} intensity={4.4} distance={19} color="#cfdfd4" />
-    <mesh position={[0, -.13, -22]} receiveShadow>
-      <boxGeometry args={[5.7, .24, 65]} />
-      <meshStandardMaterial color="#d4dfd8" roughness={.84} metalness={.04} />
-    </mesh>
-    <mesh position={[0, 3.88, -22]}>
-      <boxGeometry args={[5.7, .18, 65]} />
-      <meshStandardMaterial color="#f5f7f4" roughness={.9} />
-    </mesh>
-    {[-1, 1].map(side => <mesh key={side} position={[side * 2.95, 1.85, -22]}>
-      <boxGeometry args={[.22, 3.9, 65]} />
-      <meshStandardMaterial color="#e7eee9" roughness={.86} />
-    </mesh>)}
-    {Array.from({ length: 12 }, (_, index) => <RailLight key={index} z={4 - index * 5.2} color={index % 3 === 0 ? '#b8d8c2' : '#779688'} />)}
-    {Array.from({ length: 10 }, (_, index) => <mesh key={`floor-${index}`} position={[0, .01, 3.2 - index * 5.8]}>
-      <boxGeometry args={[5.15, .025, .055]} /><meshStandardMaterial color="#b2c4b8" emissive="#b2c4b8" emissiveIntensity={.08} />
-    </mesh>)}
-    <mesh position={[0, 1.78, -52]}>
-      <boxGeometry args={[5.66, 3.75, .18]} /><meshStandardMaterial color="#eff5f1" roughness={.8} />
-    </mesh>
-    <mesh position={[0, 1.8, -51.85]}>
-      <circleGeometry args={[.76, 32]} /><meshStandardMaterial color="#a7c3af" emissive="#a7c3af" emissiveIntensity={.18} />
-    </mesh>
-    {rooms.map(room => <LearningRoom key={room.id} room={room} active={activeRoomId === room.id} language={language} onFocus={() => onRoomChange(room.id)} />)}
-    <CorridorNavigation focusRoomId={activeRoomId} onRoomChange={onRoomChange} />
-  </>
-}
-
-function FlatFallback({ activeRoomId, language, onRoomChange }: { activeRoomId: RoomId; language: Language; onRoomChange: (id: RoomId) => void }) {
-  const zh = language !== 'en'
-  return <div className="learning-house-flat" aria-label={zh ? '学习屋平面导览' : 'Learning house planar guide'}>
-    <div className="learning-house-flat-corridor"><span>{zh ? '学习走廊' : 'Study corridor'}</span></div>
-    <div className="learning-house-flat-rooms">
-      {rooms.map(room => <button className={`${room.side} ${activeRoomId === room.id ? 'active' : ''}`} type="button" key={room.id} onClick={() => onRoomChange(room.id)} style={{ '--room-color': room.color, '--room-deep': room.deepColor } as CSSProperties}>
-        <i aria-hidden="true" /><span>{zh ? room.shortTitle : room.shortTitleEn}</span><b>{zh ? '尚无资料' : 'Empty'}</b>
-      </button>)}
-    </div>
-  </div>
-}
-
-export default function LearningHouse({ language = 'zh-CN', onExit }: LearningHouseProps) {
+export default function LearningHouse({ language = 'zh-CN', onExit }: Props) {
   const [canUseWebGL] = useState(() => supportsWebGL())
-  const [lowPower] = useState(() => shouldUseLowPowerMode())
-  const [activeRoomId, setActiveRoomId] = useState<RoomId>('document')
-  const [showFlat, setShowFlat] = useState(() => !canUseWebGL)
-  const activeRoom = rooms.find(room => room.id === activeRoomId) || rooms[0]
+  const [lowPower] = useState(() => reducedScene())
+  const [phase, setPhase] = useState<Phase>('entrance')
+  const [activeRoomId, setActiveRoomId] = useState<RoomId | null>('document')
+  const [soundOn, setSoundOn] = useState(true)
+  const music = useBackgroundMusic(soundOn, phase === 'corridor')
   const zh = language !== 'en'
+  const activeRoom = rooms.find(room => room.id === activeRoomId)
 
   useEffect(() => {
     document.body.classList.add('learning-house-open')
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onExit()
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      if (phase === 'corridor') setPhase('entrance')
+      else onExit()
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.body.classList.remove('learning-house-open')
-      window.removeEventListener('keydown', onKeyDown)
-    }
-  }, [onExit])
+    window.addEventListener('keydown', key)
+    return () => { document.body.classList.remove('learning-house-open'); window.removeEventListener('keydown', key) }
+  }, [onExit, phase])
 
-  const content = <div className="learning-house-layer" role="dialog" aria-modal="true" aria-label={zh ? '3D 学习屋' : '3D learning house'}>
+  const enterCorridor = () => setPhase('corridor')
+  const status = phase === 'entrance'
+    ? (zh ? '点击任意一扇门进入。声音已开启。' : 'Click either door to enter. Audio is on.')
+    : (activeRoom ? (zh ? `${activeRoom.title}已预留，生成资料后会自动入住。` : `${activeRoom.titleEn} is ready for generated work.`) : (zh ? '滚动或按 W / S 前进，靠近房门后点击。' : 'Scroll or use W / S to walk. Click a nearby door.'))
+
+  return createPortal(<div className="learning-house-layer" role="dialog" aria-modal="true" aria-label="RHYME 3D learning house">
     <section className="learning-house">
-      <header className="learning-house-topbar">
-        <button className="learning-house-exit" type="button" onClick={onExit}><ArrowLeft size={17} />{zh ? '返回学习空间' : 'Back to study'}</button>
-        <div className="learning-house-heading">
-          <span><Sparkles size={14} />{zh ? '3D 学习屋' : '3D learning house'}</span>
-          <strong>{zh ? '四间房已准备好，等你的资料入住' : 'Four rooms are ready for your material'}</strong>
-        </div>
+      <header className="learning-house-topbar" aria-label={zh ? '学习屋控制栏' : 'Learning house controls'}>
+        <button className="learning-house-exit" type="button" onClick={onExit}><ArrowLeft size={17} /><span>{zh ? '返回学习空间' : 'Back to study'}</span></button>
+        <div className="learning-house-heading"><Box size={15} /><strong>RHYME</strong></div>
         <div className="learning-house-top-actions">
-          {canUseWebGL && <button type="button" className="learning-house-view-toggle" onClick={() => setShowFlat(current => !current)}>{showFlat ? <MapPinned size={16} /> : <MousePointer2 size={16} />}{showFlat ? (zh ? '3D 视图' : '3D view') : (zh ? '平面导览' : 'Planar guide')}</button>}
+          <button className="learning-house-sound" type="button" aria-label={soundOn ? (zh ? '关闭声音' : 'Mute sound') : (zh ? '打开声音' : 'Enable sound')} onClick={() => { if (!soundOn) music.start(); setSoundOn(current => !current) }}>{soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}</button>
           <button className="learning-house-close" type="button" aria-label={zh ? '关闭学习屋' : 'Close learning house'} onClick={onExit}><X size={19} /></button>
         </div>
       </header>
-
       <main className="learning-house-main">
-        <section className="learning-house-stage" aria-label={zh ? '学习屋空间' : 'Learning house space'}>
-          {!showFlat && canUseWebGL ? <Canvas
-            className="learning-house-canvas"
-            camera={{ position: [0, 1.64, cameraStartZ], fov: 52, near: .1, far: 120 }}
-            dpr={lowPower ? 1 : [1, 1.5]}
-            shadows={!lowPower}
-            gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}
-            fallback={<FlatFallback activeRoomId={activeRoomId} language={language} onRoomChange={setActiveRoomId} />}
-          ><CorridorScene activeRoomId={activeRoomId} language={language} lowPower={lowPower} onRoomChange={setActiveRoomId} /></Canvas> : <FlatFallback activeRoomId={activeRoomId} language={language} onRoomChange={setActiveRoomId} />}
-          <div className="learning-house-stage-hint"><Keyboard size={15} /><span>{zh ? '滚轮或 W / S 键沿走廊前后移动，点击房门可直接前往。' : 'Use the wheel or W / S to move. Select a room door to go there.'}</span></div>
+        <section className="learning-house-stage">
+          {canUseWebGL ? <Canvas className="learning-house-canvas" camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
+            <color attach="background" args={['#fafafa']} /><fog attach="fog" args={['#fafafa', 20, 62]} /><ambientLight intensity={1.04} /><hemisphereLight args={['#ffffff', '#d7d7d2', .72]} /><directionalLight position={[4, 8, 8]} intensity={.86} color="#fff9e9" />
+            <Suspense fallback={null}>
+              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => setActiveRoomId(room.id)} />)}</>}
+            </Suspense>
+            <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} />
+          </Canvas> : <FlatFallback language={language} onEnter={enterCorridor} />}
+          <div className="learning-house-explorer" aria-live="polite"><b>{phase === 'entrance' ? 'EXPLORER' : 'WANDERER'}</b><span>{status}</span></div>
         </section>
-
-        <aside className="learning-house-inspector">
-          <div className="learning-house-room-status"><span>{zh ? '当前房间' : 'Current room'}</span><b>{zh ? activeRoom.title : activeRoom.titleEn}</b><small>{zh ? activeRoom.empty : activeRoom.emptyEn}</small></div>
-          <h1>{zh ? activeRoom.shortTitle : activeRoom.shortTitleEn}</h1>
-          <p>{zh ? activeRoom.description : activeRoom.descriptionEn}</p>
-          <div className="learning-house-empty-note"><Sparkles size={15} /><span>{zh ? '现在仅搭建空间。之后生成并保存资料后，这里会自动出现对应内容。' : 'This is the space-only foundation. Saved materials will appear here later.'}</span></div>
-          <nav className="learning-house-route" aria-label={zh ? '房间导航' : 'Room navigation'}>
-            <span>{zh ? '四间学习房' : 'Four study rooms'}</span>
-            {rooms.map((room, index) => <button className={room.id === activeRoomId ? 'active' : ''} type="button" key={room.id} onClick={() => setActiveRoomId(room.id)}><i style={{ background: room.color }}>{index + 1}</i><b>{zh ? room.shortTitle : room.shortTitleEn}</b><small>{zh ? '尚无资料' : 'Empty'}</small><ChevronRight size={15} /></button>)}
-          </nav>
-        </aside>
       </main>
     </section>
-  </div>
-
-  return createPortal(content, document.body)
+  </div>, document.body)
 }

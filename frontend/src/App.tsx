@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
-  Code2, FileDown, FileQuestion, FileText, FolderOpen, History, Image, LayoutTemplate, Library, Map as MapIcon,
+  Code2, FileDown, FileQuestion, FileText, FolderOpen, History, House, Image, LayoutTemplate, Library, Map as MapIcon,
   Languages, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
   Ellipsis, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
 } from 'lucide-react'
@@ -66,6 +66,8 @@ import type {
 } from './services/api'
 import './App.css'
 
+const LearningHouse = lazy(() => import('./components/LearningHouse'))
+
 type IconName =
   | 'archive'
   | 'arrow-left'
@@ -81,6 +83,7 @@ type IconName =
   | 'file'
   | 'folder'
   | 'history'
+  | 'house'
   | 'image'
   | 'layout'
   | 'library'
@@ -470,6 +473,7 @@ const lucideIcons: Record<IconName, LucideIcon> = {
   file: FileText,
   folder: FolderOpen,
   history: History,
+  house: House,
   image: Image,
   layout: LayoutTemplate,
   library: Library,
@@ -1012,6 +1016,7 @@ function App() {
   const [recording, setRecording] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('rhyme-sidebar-collapsed') === 'true')
+  const [learningHouseOpen, setLearningHouseOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -4054,6 +4059,11 @@ function App() {
             <span>{t('资料库', 'Library')}</span>
             {libraryItems.length > 0 && <span className="nav-count">{libraryItems.length}</span>}
           </button>
+          <button className="nav-item learning-house-entry" title={t('进入 3D 学习屋', 'Enter 3D learning house')} onClick={() => { setLearningHouseOpen(true); setSidebarOpen(false) }}>
+            <Icon name="house" size={18} />
+            <span>{t('3D 学习屋', '3D learning house')}</span>
+            <Sparkles className="learning-house-entry-spark" size={13} aria-hidden="true" />
+          </button>
         </nav>
 
         <div className="sidebar-section">
@@ -5616,6 +5626,12 @@ function App() {
             setView('library')
           } : undefined}
         />
+      )}
+
+      {learningHouseOpen && (
+        <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 3D 学习屋…', 'Opening 3D learning house…')}</div>}>
+          <LearningHouse language={interfaceLanguage} onExit={() => setLearningHouseOpen(false)} />
+        </Suspense>
       )}
 
       {notice && (

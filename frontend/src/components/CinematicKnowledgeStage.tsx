@@ -190,6 +190,38 @@ function quickRoute(beats: DynamicExplanationBeat[]) {
   return [beats[0], beats[Math.floor((beats.length - 1) / 2)], beats[beats.length - 1]]
 }
 
+const meaningfulMotionActions = new Set<DynamicExplanationBeat['action']>(['move', 'change', 'branch', 'return'])
+const stageMotionCoreActions: Partial<Record<DynamicExplanationStageKind, DynamicExplanationBeat['action']>> = {
+  'concept-constellation': 'branch',
+  'causal-chain': 'move',
+  'timeline-river': 'move',
+  'comparison-studio': 'change',
+  'system-network': 'move',
+  'state-machine': 'change',
+  'case-lab': 'branch',
+  'parameter-lab': 'change',
+  'service-flow': 'move',
+  'number-transform': 'change',
+  'instruction-cycle': 'move',
+  'storage-hierarchy': 'move',
+  'pipeline-overlap': 'move',
+  'hazard-lab': 'branch',
+  'performance-lab': 'change',
+}
+
+function recoverStageMotion(beats: DynamicExplanationBeat[], kind: DynamicExplanationStageKind): DynamicExplanationBeat[] {
+  const actions = new Set(beats.map(beat => beat.action))
+  if (actions.size >= 3 && [...actions].some(action => meaningfulMotionActions.has(action))) return beats
+
+  const coreAction = stageMotionCoreActions[kind] || 'change'
+  const recovered = beats.length === 3
+    ? ['spawn', coreAction, 'resolve'] as const
+    : beats.length === 4
+      ? ['spawn', 'focus', coreAction, 'resolve'] as const
+      : ['spawn', 'focus', coreAction, 'return', 'resolve'] as const
+  return beats.map((beat, index) => ({ ...beat, action: recovered[Math.min(index, recovered.length - 1)] }))
+}
+
 function ensureActors(scene: DynamicExplanationScene, kind: DynamicExplanationStageKind): StageActor[] {
   const stageActors = scene.stage?.zones?.map(zone => ({ id: zone.id, label: zone.label, role: zone.role })) || []
   const simulationActors = scene.simulation?.actors || []
@@ -217,12 +249,12 @@ function splitLegacyNarration(narration: string) {
     .filter(Boolean)
 }
 
-function ensureBeats(scene: DynamicExplanationScene, actors: StageActor[]): DynamicExplanationBeat[] {
-  if (scene.director_beats?.length) return scene.director_beats
-  if (scene.simulation?.beats?.length) return scene.simulation.beats
+function ensureBeats(scene: DynamicExplanationScene, actors: StageActor[], kind: DynamicExplanationStageKind): DynamicExplanationBeat[] {
+  if (scene.director_beats?.length) return recoverStageMotion(scene.director_beats, kind)
+  if (scene.simulation?.beats?.length) return recoverStageMotion(scene.simulation.beats, kind)
   const cueNarrations = scene.stage?.cues?.map(cue => cue.caption.trim()).filter(Boolean) || []
   const narrationParts = splitLegacyNarration(scene.narration)
-  return actors.map((actor, index) => {
+  return recoverStageMotion(actors.map((actor, index) => {
     const visualItem = scene.visual.items[index]
     const fallbackNarration = index === actors.length - 1
       ? scene.key_point
@@ -242,7 +274,7 @@ function ensureBeats(scene: DynamicExplanationScene, actors: StageActor[]): Dyna
       from: index > 0 ? actors[index - 1].id : undefined,
       to: actor.id,
     }
-  })
+  }), kind)
 }
 
 function estimatedBeatDuration(beat: DynamicExplanationBeat | undefined, text: string, rate: number) {
@@ -515,7 +547,7 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
   const kind = getCinematicStageKind(scene) || 'process-lab'
   const tr = (chinese: string, english: string) => language === 'en' ? english : chinese
   const actors = useMemo(() => ensureActors(scene, kind), [kind, scene])
-  const fullBeats = useMemo(() => ensureBeats(scene, actors), [actors, scene])
+  const fullBeats = useMemo(() => ensureBeats(scene, actors, kind), [actors, kind, scene])
   const beats = useMemo(() => learningMode === 'quick' ? quickRoute(fullBeats) : fullBeats, [fullBeats, learningMode])
   const [step, setStep] = useState(0)
   const [playing, setPlaying] = useState(false)

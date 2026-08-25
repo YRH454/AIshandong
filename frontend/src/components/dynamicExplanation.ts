@@ -181,6 +181,7 @@ export type DynamicExplanationBeat = {
 export type DynamicExplanationDirectorBeat = DynamicExplanationBeat & {
   source?: 'model' | 'fallback'
   target_repaired?: boolean
+  action_repaired?: boolean
 }
 
 export type DynamicExplanationSimulation = {

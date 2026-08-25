@@ -3862,6 +3862,106 @@ body.interactive-presentation-open { overflow: hidden; }
 .case-evidence-progress { color: #786b56; font-size: 9px; text-align: right; }
 .case-lab-scene:not(.conclusion-ready) .case-verdict-arrow { opacity: .24; }.case-lab-scene:not(.conclusion-ready) .case-evidence-board > aside > strong { color: #857d70; font-size: clamp(20px, 2.5vw, 34px); }.case-lab-scene.conclusion-ready .case-verdict-arrow { color: #39745a; animation: case-verdict-arrive .46s cubic-bezier(.16, 1, .3, 1) both; }.case-lab-scene.conclusion-ready .case-evidence-board > aside { border-color: rgb(57 116 90 / .24); }
 
+/* Directed action language: each knowledge grammar moves in the way that relation behaves. */
+.universal-scene .motion-target { will-change: transform, opacity; }
+
+/* A concept is born from one core, then the camera rests on the selected branch. */
+.constellation-focus-ray { height: 1px; position: absolute; top: 50%; left: 50%; z-index: 2; width: var(--constellation-ray-length); background: #9b7436; opacity: 0; transform: translateY(-50%) rotate(var(--constellation-ray-angle)) scaleX(0); transform-origin: left center; pointer-events: none; }
+.concept-constellation-scene.motion-spawn .constellation-field > button { animation: constellation-branch-bloom .62s cubic-bezier(.16, 1, .3, 1) both; animation-delay: var(--node-delay); }
+.concept-constellation-scene.motion-spawn .constellation-core { animation: constellation-core-settle .62s cubic-bezier(.16, 1, .3, 1) both; }
+.concept-constellation-scene.motion-spawn .constellation-focus-ray,
+.concept-constellation-scene.motion-focus .constellation-focus-ray,
+.concept-constellation-scene.motion-branch .constellation-focus-ray { opacity: 1; animation: constellation-ray-reveal .56s cubic-bezier(.16, 1, .3, 1) both; }
+.concept-constellation-scene.motion-focus .constellation-field > button:not(.motion-target) { opacity: .62; filter: saturate(.72); }
+.concept-constellation-scene.motion-focus .constellation-field > button.motion-target { animation: constellation-focus-arrive .46s cubic-bezier(.16, 1, .3, 1) both; }
+.concept-constellation-scene.motion-branch .constellation-field > svg line.cross-link { stroke-dasharray: 1.5 1.5; animation: constellation-cross-link-draw .64s ease-out both; }
+.concept-constellation-scene.motion-return .constellation-field > button { opacity: 1; filter: none; }
+@keyframes constellation-branch-bloom { from { opacity: 0; transform: translate(-50%, -50%) translate(var(--node-origin-x), var(--node-origin-y)) scale(.6); } 74% { opacity: 1; transform: translate(-50%, -50%) translate(0, 0) scale(1.025); } to { opacity: 1; transform: translate(-50%, -50%) translate(0, 0) scale(1); } }
+@keyframes constellation-core-settle { from { transform: translate(-50%, -50%) scale(.88); } to { transform: translate(-50%, -50%) scale(1); } }
+@keyframes constellation-ray-reveal { from { transform: translateY(-50%) rotate(var(--constellation-ray-angle)) scaleX(0); opacity: 0; } 58% { opacity: .72; } to { transform: translateY(-50%) rotate(var(--constellation-ray-angle)) scaleX(1); opacity: .72; } }
+@keyframes constellation-focus-arrive { from { transform: translate(-50%, -50%) scale(.94); } 62% { transform: translate(-50%, -50%) scale(1.1); } to { transform: translate(-50%, -50%) scale(1.07); } }
+@keyframes constellation-cross-link-draw { from { stroke-dashoffset: 8; opacity: 0; } to { stroke-dashoffset: 0; opacity: 1; } }
+
+/* Cause and effect should visibly travel forward, and stop when the chain is blocked. */
+.causal-progress::before { width: 14px; height: 14px; position: absolute; top: 50%; left: 0; border: 3px solid #39745a; border-radius: 50%; background: #eef3f0; content: ''; opacity: 0; transform: translateY(-50%) scale(.55); }
+.causal-chain-scene.motion-move .causal-progress::before,
+.causal-chain-scene.motion-change .causal-progress::before,
+.causal-chain-scene.motion-branch .causal-progress::before { animation: causal-signal-run .76s cubic-bezier(.2, .78, .24, 1) both; }
+.causal-chain-scene.motion-move .causal-link button.motion-target,
+.causal-chain-scene.motion-change .causal-link button.motion-target { animation: causal-target-lift .42s cubic-bezier(.16, 1, .3, 1) both; }
+.causal-chain-scene.is-blocked .causal-progress::before { border-color: #8a5d52; background: #f5ebe8; animation-play-state: paused; }
+@keyframes causal-signal-run { 0% { left: 0; opacity: 0; transform: translateY(-50%) scale(.55); } 12% { opacity: 1; } 82% { opacity: 1; } 100% { left: calc(100% - 14px); opacity: 0; transform: translateY(-50%) scale(.8); } }
+@keyframes causal-target-lift { from { transform: translateY(0); } 62% { transform: translateY(-17px); } to { transform: translateY(-13px); } }
+
+/* A timeline never pops randomly: the route is drawn and the current moment lands on it. */
+.timeline-advance-signal { width: 34px; aspect-ratio: 1; position: absolute; top: var(--timeline-y); left: var(--timeline-x); z-index: 2; border: 1px solid #668ea4; border-radius: 50%; opacity: 0; transform: translate(-50%, -50%) scale(.36); pointer-events: none; }
+.timeline-river-scene.motion-move .timeline-advance-signal,
+.timeline-river-scene.motion-change .timeline-advance-signal,
+.timeline-river-scene.motion-resolve .timeline-advance-signal { animation: timeline-moment-land .58s cubic-bezier(.16, 1, .3, 1) both; }
+.timeline-river-scene.motion-move .timeline-river-flow button.motion-target,
+.timeline-river-scene.motion-change .timeline-river-flow button.motion-target { animation: timeline-chapter-arrive .44s cubic-bezier(.16, 1, .3, 1) both; }
+.timeline-river-scene.motion-branch .timeline-river-flow button.turning-point.motion-target { animation: timeline-turning-point .56s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes timeline-moment-land { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.36); } 52% { opacity: .72; transform: translate(-50%, -50%) scale(1.45); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(1.8); } }
+@keyframes timeline-chapter-arrive { from { transform: translate(-50%, -50%) scale(.92); } 64% { transform: translate(-50%, -50%) scale(1.11); } to { transform: translate(-50%, -50%) scale(1.08); } }
+@keyframes timeline-turning-point { from { box-shadow: 0 0 0 0 rgb(166 119 53 / 0); } 55% { box-shadow: 0 0 0 12px rgb(166 119 53 / .14); } to { box-shadow: 0 0 0 0 rgb(166 119 53 / 0); } }
+
+/* Comparisons align matching criteria, then let one condition become decisive. */
+.comparison-axis { position: relative; overflow: hidden; }
+.comparison-axis::after { width: 1px; height: 132px; position: absolute; top: 50%; left: 50%; background: #8b5d47; content: ''; opacity: 0; transform: translate(-50%, -50%) scaleY(.2); transform-origin: center; pointer-events: none; }
+.comparison-studio-scene.motion-change .comparison-axis::after,
+.comparison-studio-scene.motion-branch .comparison-axis::after { animation: comparison-decision-line .54s cubic-bezier(.16, 1, .3, 1) both; }
+.comparison-studio-scene.motion-change > section > div > button.motion-target,
+.comparison-studio-scene.motion-focus > section > div > button.motion-target { animation: comparison-criterion-lock .4s cubic-bezier(.16, 1, .3, 1) both; }
+.comparison-studio-scene.motion-branch.focus-left > section:nth-of-type(2),
+.comparison-studio-scene.motion-branch.focus-right > section:first-of-type { opacity: .42; transform: translateY(5px) scale(.95); }
+@keyframes comparison-decision-line { 0% { opacity: 0; transform: translate(-50%, -50%) scaleY(.2); } 45% { opacity: .58; } 100% { opacity: 0; transform: translate(-50%, -50%) scaleY(1.25); } }
+@keyframes comparison-criterion-lock { from { background: transparent; transform: translateX(var(--comparison-offset)); } to { background: rgb(255 255 255 / .72); transform: translateX(0); } }
+
+/* Networks use a packet-like pulse; only the active route is animated, then it settles. */
+.system-network-field > svg g.trace-active line { animation-iteration-count: 2; }
+.system-network-field > svg line.feedback.active { animation-iteration-count: 2; }
+.system-network-scene.motion-move .network-pulse,
+.system-network-scene.motion-branch .network-pulse,
+.system-network-scene.motion-resolve .network-pulse { animation: network-pulse-arrive .66s cubic-bezier(.16, 1, .3, 1) both; }
+.system-network-scene.motion-move .system-network-field > button.motion-target,
+.system-network-scene.motion-branch .system-network-field > button.motion-target { animation: network-target-lock .42s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes network-pulse-arrive { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.48); } 56% { opacity: 1; transform: translate(-50%, -50%) scale(1.28); } 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+@keyframes network-target-lock { from { transform: translate(-50%, -50%) scale(.94); } 62% { transform: translate(-50%, -50%) scale(1.12); } to { transform: translate(-50%, -50%) scale(1.08); } }
+
+/* State changes deserve a true hand-off: a token crosses from one state to the next. */
+.state-transition-token { width: 28px; height: 28px; position: absolute; top: var(--state-token-y); left: var(--state-token-x); z-index: 8; display: grid; place-items: center; border: 1px solid rgb(101 81 109 / .24); border-radius: 50%; background: #fff; color: #65516d; opacity: 0; transform: translate(-50%, -50%) scale(.55); pointer-events: none; }
+.state-machine-scene.motion-move .state-transition-token,
+.state-machine-scene.motion-change .state-transition-token,
+.state-machine-scene.motion-branch .state-transition-token,
+.state-machine-scene.motion-return .state-transition-token { animation: state-token-pass .76s cubic-bezier(.2, .78, .24, 1) both; }
+.state-machine-scene.motion-change .state-machine-core,
+.state-machine-scene.motion-return .state-machine-core { animation: state-core-reframe .44s cubic-bezier(.16, 1, .3, 1) both; }
+.state-machine-scene.motion-branch .state-machine-core { border-color: rgb(152 107 86 / .32); animation: state-branch-reframe .52s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes state-token-pass { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.55); } 12% { opacity: 1; } 76% { opacity: 1; transform: translate(-50%, -50%) translate(var(--state-token-dx), var(--state-token-dy)) scale(1); } 100% { opacity: 0; transform: translate(-50%, -50%) translate(var(--state-token-dx), var(--state-token-dy)) scale(1.08); } }
+@keyframes state-core-reframe { from { transform: translate(-50%, -50%) scale(.92); } 58% { transform: translate(-50%, -50%) scale(1.035); } to { transform: translate(-50%, -50%) scale(1); } }
+@keyframes state-branch-reframe { from { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.04); } to { transform: translate(-50%, -50%) scale(1); } }
+
+/* A case earns its conclusion as evidence is checked, not as another slide appears. */
+.case-lab-scene.motion-focus .case-evidence-board > section button:not(.motion-target):not(.opened) { opacity: .64; }
+.case-lab-scene.motion-focus .case-evidence-board > section button.motion-target,
+.case-lab-scene.motion-branch .case-evidence-board > section button.motion-target { animation: case-evidence-open .44s cubic-bezier(.16, 1, .3, 1) both; }
+.case-lab-scene.motion-resolve .case-verdict-arrow,
+.case-lab-scene.motion-resolve .case-evidence-board > aside { animation: case-conclusion-reveal .54s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes case-evidence-open { from { transform: translateX(0) scale(.96); } 62% { transform: translateX(13px) scale(1.02); } to { transform: translateX(10px) scale(1); } }
+@keyframes case-conclusion-reveal { from { opacity: .42; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* A parameter change propagates into a live response field rather than merely changing a number. */
+.parameter-wave::after { width: 28px; aspect-ratio: 1; position: absolute; bottom: -14px; left: calc(var(--parameter-ratio) * 100%); border: 1px solid #466985; border-radius: 50%; content: ''; opacity: 0; transform: translateX(-50%) scale(.35); pointer-events: none; }
+.parameter-lab-scene.motion-change .parameter-wave::after,
+.parameter-lab-scene.motion-move .parameter-wave::after,
+.parameter-lab-scene.motion-resolve .parameter-wave::after { animation: parameter-response-pulse .58s cubic-bezier(.16, 1, .3, 1) both; }
+.parameter-lab-scene.motion-change .parameter-wave button.motion-target,
+.parameter-lab-scene.motion-focus .parameter-wave button.motion-target { animation: parameter-threshold-lock .42s cubic-bezier(.16, 1, .3, 1) both; }
+.parameter-lab-scene.motion-change .parameter-control-bench > b { animation: parameter-value-settle .38s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes parameter-response-pulse { 0% { opacity: 0; transform: translateX(-50%) scale(.35); } 45% { opacity: .7; transform: translateX(-50%) scale(1.24); } 100% { opacity: 0; transform: translateX(-50%) scale(1.75); } }
+@keyframes parameter-threshold-lock { from { transform: translateX(-50%) translateY(6px) scale(.94); } 62% { transform: translateX(-50%) translateY(-3px) scale(1.04); } to { transform: translateX(-50%) translateY(0) scale(1); } }
+@keyframes parameter-value-settle { from { transform: translateY(7px); opacity: .58; } to { transform: translateY(0); opacity: 1; } }
+
 .cinematic-scene-handoff { width: min(430px, calc(100% - 48px)); position: absolute; top: 44px; right: clamp(18px, 3vw, 46px); z-index: 34; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; padding: 11px 13px; border: 1px solid rgb(57 116 90 / .2); border-radius: 8px; background: rgb(250 252 248 / .96); box-shadow: 0 16px 34px rgb(35 55 44 / .11); animation: scene-handoff-in .48s cubic-bezier(.16, 1, .3, 1) both; }
 .cinematic-scene-handoff small { grid-column: 1 / -1; color: #66786d; font-size: 8px; font-weight: 720; }.cinematic-scene-handoff > strong { min-width: 0; overflow: hidden; color: #2f5a43; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }.cinematic-scene-handoff > span { min-width: 0; display: flex; align-items: center; gap: 5px; color: #606b65; font-size: 9px; line-height: 1.4; }.cinematic-scene-handoff > span svg { flex: 0 0 auto; color: #39745a; }
 .cinematic-stage-window.has-story-thread.has-carried-result { grid-template-rows: 40px 40px minmax(0, 1fr); }.cinematic-carried-result { min-width: 0; display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 8px; padding: 6px clamp(18px, 3vw, 46px); border-bottom: 1px solid rgb(57 116 90 / .16); background: #f5f8f3; color: #59665f; }.cinematic-carried-result small { color: #39745a; font-size: 8px; font-weight: 780; }.cinematic-carried-result strong { max-width: 28ch; overflow: hidden; color: #2f5a43; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.cinematic-carried-result span { min-width: 0; overflow: hidden; font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }

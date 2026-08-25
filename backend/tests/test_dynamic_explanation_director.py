@@ -162,6 +162,24 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         director_codes = [code for issue in result["quality_report"]["issues"] for code in issue["codes"] if code.startswith("director_")]
         self.assertEqual(director_codes, [])
 
+    def test_static_director_actions_are_recovered_into_a_stage_motion_arc(self):
+        from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
+
+        scenes = [
+            _attach_director_beats(_attach_protocol(_scene("因果传递", "process", "sequence", 0), "causal-chain")),
+            _attach_director_beats(_attach_protocol(_scene("阶段推进", "timeline", "timeline", 1), "timeline-river")),
+            _attach_director_beats(_attach_protocol(_scene("案例核查", "story", "example", 2), "case-lab")),
+        ]
+        result = normalize_dynamic_explanation(
+            {"title": "动作恢复", "summary": "静态镜头也要形成真实传递。", "scenes": scenes},
+            require_director_beats=True,
+        )
+        beats = result["scenes"][0]["director_beats"]
+
+        self.assertEqual([beat["action"] for beat in beats], ["spawn", "move", "resolve"])
+        self.assertTrue(beats[1]["action_repaired"])
+        self.assertFalse(any("director_motion_thin" in issue["codes"] for issue in result["quality_report"]["issues"]))
+
     def test_legacy_scene_keeps_a_playable_director_fallback(self):
         from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
 

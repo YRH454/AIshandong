@@ -65,18 +65,57 @@ _GENERAL_STAGE_KINDS = (
     "parameter-lab",
 )
 _STAGE_ENGINE_COMPATIBILITY = {
-    "process": {"causal-chain", "timeline-river", "system-network", "process-lab", "instruction-cycle", "pipeline-overlap", "service-flow"},
-    "state": {"state-machine", "system-network", "storage-hierarchy", "hazard-lab", "number-transform", "instruction-cycle"},
-    "comparison": {"comparison-studio", "case-lab", "hazard-lab", "performance-lab"},
-    "spatial": {"concept-constellation", "system-network", "storage-hierarchy", "service-flow"},
-    "timeline": {"timeline-river", "causal-chain", "pipeline-overlap"},
-    "experiment": {"parameter-lab", "case-lab", "performance-lab", "hazard-lab", "number-transform"},
-    "story": {"case-lab", "concept-constellation", "timeline-river"},
+    "process": {"causal-chain", "timeline-river", "system-network", "comparison-studio", "case-lab", "process-lab", "instruction-cycle", "pipeline-overlap", "service-flow"},
+    "state": {"state-machine", "system-network", "parameter-lab", "comparison-studio", "storage-hierarchy", "hazard-lab", "number-transform", "instruction-cycle"},
+    "comparison": {"comparison-studio", "case-lab", "causal-chain", "state-machine", "hazard-lab", "performance-lab"},
+    "spatial": {"concept-constellation", "system-network", "comparison-studio", "case-lab", "storage-hierarchy", "service-flow"},
+    "timeline": {"timeline-river", "causal-chain", "case-lab", "comparison-studio", "pipeline-overlap"},
+    "experiment": {"parameter-lab", "case-lab", "comparison-studio", "state-machine", "performance-lab", "hazard-lab", "number-transform"},
+    "story": {"case-lab", "concept-constellation", "timeline-river", "comparison-studio", "causal-chain"},
 }
 _GENERIC_VISUAL_LABELS = {
     "核心概念", "关键属性", "成立条件", "实际应用", "起因", "作用机制", "中间变化", "最终结果",
     "输入", "规则", "变化", "结果", "要点", "知识点", "过程", "阶段", "案例", "结论",
     "理解", "掌握", "继续学习", "深入理解", "方案a", "方案b", "关键条件", "选择依据",
+}
+_GENERIC_ATOM_SIGNATURES = {_text for _text in (re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", label.lower()) for label in _GENERIC_VISUAL_LABELS) if _text}
+_RICH_SCENE_ATOM_TARGETS = {
+    "concept-constellation": 4,
+    "causal-chain": 5,
+    "timeline-river": 4,
+    "comparison-studio": 5,
+    "system-network": 4,
+    "state-machine": 4,
+    "case-lab": 4,
+    "parameter-lab": 4,
+}
+_MEANINGFUL_DIRECTOR_ACTIONS = {"move", "change", "branch", "return"}
+_STAGE_MOTION_CORE_ACTIONS = {
+    "concept-constellation": "branch",
+    "causal-chain": "move",
+    "timeline-river": "move",
+    "comparison-studio": "change",
+    "system-network": "move",
+    "state-machine": "change",
+    "case-lab": "branch",
+    "parameter-lab": "change",
+    "service-flow": "move",
+    "number-transform": "change",
+    "instruction-cycle": "move",
+    "storage-hierarchy": "move",
+    "pipeline-overlap": "move",
+    "hazard-lab": "branch",
+    "performance-lab": "change",
+}
+_STAGE_MOTION_SEQUENCES = {
+    "concept-constellation": ("spawn", "focus", "branch", "return", "resolve"),
+    "causal-chain": ("spawn", "focus", "move", "change", "resolve"),
+    "timeline-river": ("spawn", "move", "change", "return", "resolve"),
+    "comparison-studio": ("spawn", "focus", "change", "branch", "resolve"),
+    "system-network": ("spawn", "move", "focus", "branch", "resolve"),
+    "state-machine": ("spawn", "move", "change", "return", "resolve"),
+    "case-lab": ("spawn", "focus", "branch", "change", "resolve"),
+    "parameter-lab": ("spawn", "focus", "change", "move", "resolve"),
 }
 
 _SCENE_PAYLOAD_MINIMUMS = {
@@ -99,8 +138,8 @@ _SCENE_PAYLOAD_PROMPT = (
     "state-machine => states[{id,label,description}], transitions[{from,to,trigger,effect}], initial_state, terminal_states[], exception_paths[{from,to,trigger,effect}]; "
     "case-lab => background, evidence[{id,label,detail,supports}], reasoning_steps[], conclusion, counterevidence[]; "
     "parameter-lab => parameter_label, unit, min, max, initial, thresholds[{value,label,effect}], response_points[{value,label,result}], stable_range{min,max,label}. "
-    "When the topic supports it, aim for four constellation branches, three causal steps, four timeline events, three comparison dimensions, four network nodes, four states, three case evidences, or three parameter thresholds; "
-    "for a genuinely narrow topic, use fewer facts only if every remaining fact is specific and necessary. Do not collapse these protocols into a generic node list. Use topic-specific facts, real relation labels, and distinct fact sets in neighboring scenes."
+    "A substantial scene must carry enough real material to be explored: normally use four constellation branches, three causal steps plus trigger and outcome, four timeline events, three comparison dimensions, four network nodes, four states, three case evidences, or three parameter thresholds and three response points. "
+    "For a genuinely narrow topic, use fewer records only if every remaining fact is specific and necessary. Do not collapse these protocols into a generic node list. Use topic-specific facts, real relation labels, and distinct fact sets in neighboring scenes."
 )
 
 _CONTINUITY_PROMPT = (
@@ -120,6 +159,15 @@ _VISUAL_ARC_PROMPT = (
     "For state or parameter topics, move from initial state to transition or response, threshold, exception, then stable conclusion. "
     "Do not force a fixed scene count: choose the smallest complete arc. Across a lesson of four or more scenes, never repeat the same stage kind plus scene_engine plus visual_type, "
     "and use a stage kind no more than twice. Each scene must visibly do one of: locate, connect, trace, compare, test, diagnose, decide, or synthesize."
+)
+
+_CONTENT_COMPOSITION_PROMPT = (
+    "Before emitting JSON, silently make a scene composition plan. For every scene decide: (1) the single learning job it performs; (2) the knowledge relation that makes that job visible; "
+    "(3) the stage kind whose interaction naturally reveals that relation; (4) four to seven concrete, topic-specific knowledge atoms; and (5) the visible action that changes during the director beats. "
+    "The atoms must be named objects, conditions, events, variables, evidence, states, rules, or outcomes from the tutor answer—not headings such as 'key point', 'process', 'step', or 'result'. "
+    "A scene that only relabels the same facts in a different diagram is invalid. Neighboring scenes must introduce a new relation, a new question, or a new set of atoms. "
+    "Director beats must contain at least three different action types and include a real move, change, branch, or return when the scene describes transfer, comparison, a state, a case, or a parameter. "
+    "Keep visual.items as a short reading index; scene_payload is the rich source of truth. Do not output this plan separately."
 )
 
 _BRANCHING_PROMPT = (
@@ -206,6 +254,56 @@ def _scene_terms(scene: dict) -> set[str]:
     return {_text_signature(value) for value in values if len(_text_signature(value)) >= 2}
 
 
+def _payload_atoms(scene: dict) -> list[str]:
+    """Return the topic-bearing objects in a scene payload, not its structural labels."""
+    payload = scene.get("scene_payload") if isinstance(scene.get("scene_payload"), dict) else {}
+    kind = str(payload.get("kind") or "")
+    values: list[object] = []
+
+    def add_records(name: str, *fields: str) -> None:
+        for item in payload.get(name, []) if isinstance(payload.get(name), list) else []:
+            if isinstance(item, dict):
+                values.extend(item.get(field) for field in fields if item.get(field))
+
+    if kind == "concept-constellation":
+        values.extend((payload.get("core"), *payload.get("boundary_conditions", [])))
+        add_records("branches", "label", "detail")
+    elif kind == "causal-chain":
+        values.extend((payload.get("trigger"), payload.get("outcome"), *payload.get("blockers", [])))
+        add_records("steps", "label", "mechanism", "effect")
+    elif kind == "timeline-river":
+        values.extend((payload.get("period_label"), payload.get("retrospective")))
+        add_records("events", "title", "change", "impact")
+    elif kind == "comparison-studio":
+        values.extend((payload.get("left_title"), payload.get("right_title"), payload.get("shared_condition"), payload.get("recommendation")))
+        add_records("dimensions", "left", "right", "deciding_factor")
+    elif kind == "system-network":
+        values.extend((*payload.get("inputs", []), *payload.get("outputs", [])))
+        add_records("nodes", "label", "detail")
+    elif kind == "state-machine":
+        add_records("states", "label", "description")
+        add_records("transitions", "trigger", "effect")
+        add_records("exception_paths", "trigger", "effect")
+    elif kind == "case-lab":
+        values.extend((payload.get("background"), payload.get("conclusion"), *payload.get("counterevidence", [])))
+        add_records("evidence", "label", "detail", "supports")
+    elif kind == "parameter-lab":
+        values.extend((payload.get("parameter_label"),))
+        add_records("thresholds", "label", "effect")
+        add_records("response_points", "label", "result")
+
+    atoms: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        label = _clean(value, 190)
+        signature = _text_signature(label)
+        if len(signature) < 2 or signature in seen:
+            continue
+        seen.add(signature)
+        atoms.append(label)
+    return atoms
+
+
 def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_beats: bool = False) -> dict:
     scenes = presentation.get("scenes") if isinstance(presentation.get("scenes"), list) else []
     scene_by_id = {str(scene.get("id") or ""): scene for scene in scenes if isinstance(scene, dict)}
@@ -267,6 +365,11 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
                 if any(beat.get("target_repaired") for beat in director_beats) or not all(targets) or len(set(targets)) < min(2, len(targets)):
                     codes.append("director_target_invalid")
                     messages.append("导演节拍没有稳定指向画面中的具体对象或状态。")
+                    penalty += 18
+                actions = {str(beat.get("action") or "") for beat in director_beats}
+                if len(actions) < 3 or not actions & _MEANINGFUL_DIRECTOR_ACTIONS:
+                    codes.append("director_motion_thin")
+                    messages.append("导演节拍缺少真实的传递、变化、分支或回退动作，画面会退化成逐页讲解。")
                     penalty += 18
                 if sum(1 for beat in director_beats if beat.get("pause_for_interaction")) > 1:
                     codes.append("director_interaction_overloaded")
@@ -359,6 +462,18 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
                     codes.append("payload_structure_thin")
                     messages.append(structural_issue)
                     penalty += 20
+
+                payload_atoms = _payload_atoms(scene)
+                atom_target = _RICH_SCENE_ATOM_TARGETS.get(stage_kind, 4)
+                if len(payload_atoms) < atom_target:
+                    codes.append("payload_atom_thin")
+                    messages.append(f"本幕只有 {len(payload_atoms)} 个可探索的真实知识原子，至少需要 {atom_target} 个。")
+                    penalty += 20
+                generic_atoms = [atom for atom in payload_atoms if _text_signature(atom) in _GENERIC_ATOM_SIGNATURES]
+                if len(generic_atoms) >= 2:
+                    codes.append("payload_atoms_generic")
+                    messages.append("专属场景数据仍使用了过多通用知识词，缺少主题本身的对象和条件。")
+                    penalty += 18
 
         terms = _scene_terms(scene)
         for earlier_index, earlier in enumerate(scenes[:index]):
@@ -695,18 +810,22 @@ def _infer_scene_engine(visual_type: str) -> str:
 
 def _stage_candidates(scene_engine: str, visual_type: str) -> tuple[str, ...]:
     if scene_engine == "process":
-        return ("causal-chain", "timeline-river") if visual_type == "timeline" else ("causal-chain", "system-network")
+        if visual_type == "timeline":
+            return ("timeline-river", "causal-chain", "case-lab", "system-network", "comparison-studio")
+        if visual_type in {"pitfall", "error-lab", "contrast"}:
+            return ("comparison-studio", "case-lab", "causal-chain", "system-network", "timeline-river")
+        return ("causal-chain", "system-network", "case-lab", "comparison-studio", "timeline-river")
     if scene_engine == "state":
-        return ("state-machine", "system-network")
+        return ("state-machine", "system-network", "parameter-lab", "comparison-studio")
     if scene_engine == "comparison":
-        return ("comparison-studio", "case-lab")
+        return ("comparison-studio", "case-lab", "causal-chain", "state-machine")
     if scene_engine == "spatial":
-        return ("system-network", "concept-constellation") if visual_type == "network" else ("concept-constellation", "system-network")
+        return ("system-network", "concept-constellation", "comparison-studio", "case-lab") if visual_type == "network" else ("concept-constellation", "system-network", "comparison-studio", "case-lab")
     if scene_engine == "timeline":
-        return ("timeline-river", "causal-chain")
+        return ("timeline-river", "causal-chain", "case-lab", "comparison-studio")
     if scene_engine == "experiment":
-        return ("parameter-lab", "case-lab")
-    return ("case-lab", "concept-constellation")
+        return ("parameter-lab", "case-lab", "comparison-studio", "state-machine")
+    return ("case-lab", "concept-constellation", "timeline-river", "comparison-studio")
 
 
 def _fallback_stage(scene: dict, kind: str) -> dict:
@@ -760,10 +879,20 @@ def _fallback_stage(scene: dict, kind: str) -> dict:
 
 def _assign_general_stages(scenes: list[dict]) -> None:
     used: dict[str, int] = {}
+    previous_kind = ""
     for scene in scenes:
         stage = scene.get("stage")
-        if stage and stage.get("kind") != "process-lab":
-            kind = stage["kind"]
+        raw_kind = str((stage or {}).get("kind") or "")
+        compatible = _STAGE_ENGINE_COMPATIBILITY.get(scene["scene_engine"], set())
+        should_rebalance = (
+            not stage
+            or raw_kind not in _STAGE_KINDS
+            or raw_kind == "process-lab"
+            or raw_kind not in compatible
+            or (raw_kind in _GENERAL_STAGE_KINDS and (raw_kind == previous_kind or used.get(raw_kind, 0) >= 2))
+        )
+        if stage and not should_rebalance:
+            kind = raw_kind
             fallback = _fallback_stage(scene, kind)
             scene["stage"] = {
                 **fallback,
@@ -775,12 +904,23 @@ def _assign_general_stages(scenes: list[dict]) -> None:
             }
         else:
             candidates = _stage_candidates(scene["scene_engine"], scene["visual_type"])
+            candidates = tuple(item for item in candidates if item in compatible and item in _GENERAL_STAGE_KINDS)
+            if not candidates:
+                candidates = tuple(item for item in _GENERAL_STAGE_KINDS if item in compatible)
             kind = next(
-                (item for item in (*candidates, *_GENERAL_STAGE_KINDS) if used.get(item, 0) < 2),
-                candidates[0],
+                (item for item in candidates if item != previous_kind and used.get(item, 0) < 2),
+                next((item for item in candidates if used.get(item, 0) < 2), candidates[0]),
             )
-            scene["stage"] = _fallback_stage(scene, kind)
+            fallback = _fallback_stage(scene, kind)
+            if stage:
+                fallback.update({
+                    "environment": stage.get("environment") or fallback["environment"],
+                    "focal_question": stage.get("focal_question") or fallback["focal_question"],
+                    "chapter_label": stage.get("chapter_label") or fallback["chapter_label"],
+                })
+            scene["stage"] = fallback
         used[kind] = used.get(kind, 0) + 1
+        previous_kind = kind
 
 
 def _fallback_teaching_phase(index: int, total: int) -> str:
@@ -1072,6 +1212,41 @@ def _fallback_director_beats(scene: dict, catalog: list[dict]) -> list[dict]:
     return beats
 
 
+def _repair_director_actions(beats: list[dict], scene: dict) -> list[dict]:
+    """Recover a stage-appropriate action arc without an extra model call.
+
+    A model can name valid targets yet mark every shot as spawn/focus/resolve.
+    That replays like a slide deck, even though the stage tells us whether the
+    learner should see a transfer, a change, a branch, or a return. Only action
+    labels are recovered here; the model's targets, narration, timing, and
+    interaction pauses remain unchanged.
+    """
+    actions = {str(beat.get("action") or "") for beat in beats}
+    if len(actions) >= 3 and actions & _MEANINGFUL_DIRECTOR_ACTIONS:
+        for beat in beats:
+            beat["action_repaired"] = False
+        return beats
+
+    stage_kind = str((scene.get("stage") or {}).get("kind") or "")
+    core_action = _STAGE_MOTION_CORE_ACTIONS.get(stage_kind, "change")
+    sequence = _STAGE_MOTION_SEQUENCES.get(
+        stage_kind,
+        ("spawn", "focus", core_action, "return", "resolve"),
+    )
+    if len(beats) == 3:
+        recovered_actions = ("spawn", core_action, "resolve")
+    elif len(beats) == 4:
+        recovered_actions = ("spawn", "focus", core_action, "resolve")
+    else:
+        recovered_actions = tuple(sequence[min(index, len(sequence) - 1)] for index in range(len(beats)))
+
+    for index, beat in enumerate(beats):
+        recovered = recovered_actions[index]
+        beat["action_repaired"] = beat.get("action") != recovered
+        beat["action"] = recovered
+    return beats
+
+
 def _normalize_director_beats(value: object, scene: dict) -> list[dict]:
     """Normalize the scene-wide shot list used by every cinematic stage."""
     catalog = _director_target_catalog(scene)
@@ -1111,10 +1286,11 @@ def _normalize_director_beats(value: object, scene: dict) -> list[dict]:
             "tone": tone if tone in _BEAT_TONES else "guide",
             "source": "model",
             "target_repaired": target_repaired or not _clean(raw_beat.get("target"), 90),
+            "action_repaired": False,
         })
     if len(beats) < 3:
         return _fallback_director_beats(scene, catalog)
-    return beats
+    return _repair_director_actions(beats, scene)
 
 
 def _normalize_stage(value: object) -> dict | None:

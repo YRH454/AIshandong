@@ -565,6 +565,8 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
   const waitingSentRef = useRef(false)
   const completionSentRef = useRef(false)
   const playbackTokenRef = useRef(0)
+  const stageWindowRef = useRef<HTMLDivElement>(null)
+  const beatMotionRef = useRef({ id: '', elapsed: 0, startedAt: 0 })
   const safeStep = Math.min(step, Math.max(0, beats.length - 1))
   const activeBeat = beats[safeStep]
   const cue = scene.stage?.cues?.find(item => item.beat_id === activeBeat?.id)
@@ -577,6 +579,7 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
     ? `${story.previousOutcome.label} 已成为本幕条件：${baseFocalQuestion}`
     : baseFocalQuestion
   const activeDetail = activeBeat?.narration || cue?.caption || activeBeat?.detail || scene.narration
+  const activeDuration = estimatedBeatDuration(activeBeat, activeDetail, voice?.rate || 1)
   const compactStageCue = stageCue(activeDetail)
   const activeTone = activeBeat?.tone || (scene.path_role === 'remediation' ? 'correction' : scene.path_role === 'advanced' ? 'challenge' : safeStep === beats.length - 1 ? 'conclusion' : 'guide')
   const activeTargetLabel = actors.find(actor => actor.id === activeTarget)?.label || activeBeat?.label || scene.title
@@ -621,6 +624,60 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
     emitDirectorEvent('awaiting-interaction')
   }, [emitDirectorEvent, waitingForInteraction])
 
+  // The scene itself receives a continuous playhead, separate from the
+  // step-based teaching state. This keeps paths, focus, and the virtual
+  // camera moving during a beat rather than jumping only after narration ends.
+  useEffect(() => {
+    const stageWindow = stageWindowRef.current
+    const beatId = activeBeat?.id || ''
+    if (!stageWindow) return undefined
+
+    if (beatMotionRef.current.id !== beatId) {
+      beatMotionRef.current = { id: beatId, elapsed: 0, startedAt: 0 }
+    }
+
+    const applyMotion = (elapsed: number) => {
+      const raw = Math.min(1, Math.max(0, elapsed / Math.max(1, activeDuration)))
+      // A calm ease-out keeps the object movement readable; the final third
+      // is reserved for the learner to inspect the newly formed relation.
+      const eased = 1 - (1 - raw) ** 3
+      stageWindow.style.setProperty('--beat-progress', raw.toFixed(4))
+      stageWindow.style.setProperty('--beat-eased', eased.toFixed(4))
+      stageWindow.style.setProperty('--beat-path-offset', (100 - eased * 100).toFixed(2))
+      stageWindow.style.setProperty('--beat-camera-scale', (0.972 + eased * .052).toFixed(4))
+      // Evidence reasoning has a horizontal direction.  Let the virtual camera
+      // follow its short route from the question into the verdict instead of
+      // merely breathing in place as the narration advances.
+      const cameraX = kind === 'case-lab' ? 8 - eased * 16 : 0
+      stageWindow.style.setProperty('--beat-camera-x', `${cameraX.toFixed(2)}px`)
+      stageWindow.style.setProperty('--beat-camera-y', `${((.5 - raw) * 6).toFixed(2)}px`)
+      stageWindow.dataset.beatAction = activeBeat?.action || 'focus'
+    }
+
+    applyMotion(beatMotionRef.current.elapsed)
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      applyMotion(activeDuration)
+      return undefined
+    }
+    if (!effectivePlaying || waitingForInteraction || !activeBeat) return undefined
+
+    let frame = 0
+    const tick = (now: number) => {
+      const motion = beatMotionRef.current
+      if (!motion.startedAt) motion.startedAt = now
+      motion.elapsed = Math.min(activeDuration, motion.elapsed + now - motion.startedAt)
+      motion.startedAt = now
+      applyMotion(motion.elapsed)
+      if (motion.elapsed < activeDuration) frame = window.requestAnimationFrame(tick)
+    }
+    frame = window.requestAnimationFrame(tick)
+
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      beatMotionRef.current.startedAt = 0
+    }
+  }, [activeBeat?.action, activeBeat?.id, activeDuration, effectivePlaying, kind, waitingForInteraction])
+
   useEffect(() => {
     if (!effectivePlaying || waitingForInteraction || !activeBeat) return undefined
     const token = playbackTokenRef.current + 1
@@ -645,7 +702,7 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
       }
       setStep(current => Math.min(current + 1, beats.length - 1))
     }
-    const duration = estimatedBeatDuration(activeBeat, activeDetail, voice?.rate || 1)
+    const duration = activeDuration
     if (voice?.enabled && speechSupported) {
       const utterance = new SpeechSynthesisUtterance(activeDetail)
       utterance.lang = language
@@ -668,7 +725,7 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
       if (voice?.enabled && speechSupported) window.speechSynthesis.cancel()
     }
-  }, [activeBeat, activeDetail, activeTone, beats.length, directorActive, effectivePlaying, emitDirectorEvent, interactionPauseStep, interactionSatisfied, language, safeStep, speechSupported, voice?.enabled, voice?.rate, waitingForInteraction])
+  }, [activeBeat, activeDetail, activeDuration, activeTone, beats.length, directorActive, effectivePlaying, emitDirectorEvent, interactionPauseStep, interactionSatisfied, language, safeStep, speechSupported, voice?.enabled, voice?.rate, waitingForInteraction])
 
   const moveTo = (next: number) => {
     setPlaying(false)
@@ -727,7 +784,7 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
         </aside>
       </header>}
 
-      <div className={`cinematic-stage-window${!stageFirstPresentation && storyIndex >= 0 ? ' has-story-thread' : ''}${!stageFirstPresentation && story?.previousOutcome ? ' has-carried-result' : ''}`}>
+      <div ref={stageWindowRef} className={`cinematic-stage-window${!stageFirstPresentation && storyIndex >= 0 ? ' has-story-thread' : ''}${!stageFirstPresentation && story?.previousOutcome ? ' has-carried-result' : ''}`} data-stage-kind={kind} data-stage-action={activeBeat?.action || 'focus'}>
         {!stageFirstPresentation && storyIndex >= 0 && <div className="cinematic-story-thread" aria-label={tr('连续讲解主线', 'Continuous lesson thread')}><strong>{story?.threadLabel}</strong><span><b>{storyIndex + 1}/{storyTotal}</b>{story?.phaseLabel ? `${story.phaseLabel} · ` : ''}{story?.chapterLabel}</span><i><em style={{ '--story-progress': (storyIndex + 1) / Math.max(1, storyTotal) } as CSSProperties} /></i></div>}
         {!stageFirstPresentation && handoffVisible && story?.previousConclusion && <div className="cinematic-scene-handoff" role="status"><small>{story.previousOutcome ? tr('你的操作成为本幕输入', 'Your action becomes this scene input') : tr('承接上一幕', 'From the previous scene')}</small><strong>{story.previousOutcome?.label || story.previousConclusion}</strong>{story.currentQuestion && <span><ArrowRight size={13} />{story.currentQuestion}</span>}</div>}
         {!stageFirstPresentation && story?.previousOutcome && <div className="cinematic-carried-result"><small>{tr('已带入', 'Carried in')}</small><strong>{story.previousOutcome.label}</strong><span>{story.receives || story.previousOutcome.detail}</span></div>}

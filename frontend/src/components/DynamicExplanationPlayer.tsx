@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from 'react-dom'
 import { ArrowDown, ArrowUp, CirclePause, CirclePlay, FastForward, Gauge, GripVertical, Maximize2, Save, Sparkles, Target, X } from 'lucide-react'
 import type { DynamicExplanationBranchCondition, DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationInteractionOutcome, DynamicExplanationScene } from './dynamicExplanation'
-import { ContinuousKnowledgeTheater } from './ContinuousKnowledgeTheater'
 
 export type { DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
 
@@ -526,10 +525,16 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         setPlaying(value => !value)
       }
     }
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
+      if (event.data?.channel === 'rhyme-explainer' && event.data?.action === 'close') setImmersive(false)
+    }
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('message', onMessage)
     return () => {
       document.body.classList.remove('interactive-presentation-open')
       window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('message', onMessage)
     }
   }, [advanceTo, immersive, returnToPreviousScene])
 
@@ -639,31 +644,20 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   )
 
   const immersiveStage = (
-    <section className="interactive-presentation continuous-presentation palette-sage" aria-label={tr('互动学习演示', 'Interactive learning presentation')}>
-      <ContinuousKnowledgeTheater
-        data={presentation}
-        language={language}
-        activeIndex={activeIndex}
-        learningMode={learningMode}
-        completedSceneIds={[...completedScenes.current]}
-        visitedSceneIds={visitHistory}
-        interactionOutcomes={interactionOutcomes}
-        nextSceneIndex={resolvedNext.index}
-        activeBranchDecision={activeBranchDecision}
-        selectedAnswer={selectedAnswer}
-        checkpoint={persistedCheckpoint}
-        showNarration={showNarration}
-        editing={editorOpen}
-        completionNotice={completionNotice}
-        onExit={() => setImmersive(false)}
-        onSelectScene={jumpTo}
-        onBack={returnToPreviousScene}
-        onAdvance={() => advanceTo(resolvedNext.index, resolvedNext.decision)}
-        onInteractionOutcome={(outcomeScene, outcome) => setInteractionOutcomes(current => ({ ...current, [outcomeScene.id]: outcome }))}
-        onModeChange={chooseLearningMode}
-        onAnswer={answerCheckpoint}
-        onRevealNarration={() => setRevealedSceneIds(current => ({ ...current, [scene.id]: true }))}
-        onEdit={onSavePresentation ? () => { setEditorOpen(value => !value); setEditorError(null); setPlaying(false) } : undefined}
+    <section className="rhyme-explorable-frame" aria-label={tr('RHYME 互动知识推演', 'RHYME explorable lesson')}>
+      <iframe
+        src={`/rhyme-explainer/index.html?topic=${encodeURIComponent(presentation.title)}`}
+        title={tr(`${presentation.title}：互动知识推演`, `${presentation.title}: explorable lesson`)}
+        allow="autoplay"
+        data-rhyme-context={JSON.stringify({
+          sourceScene: scene.id,
+          nextScene: resolvedNext.index ?? -1,
+          narrationVisible: showNarration,
+          branchTarget: activeBranchDecision?.targetSceneId || '',
+          hasSavedCheckpoint: Boolean(persistedCheckpoint),
+          hasCompletionNotice: Boolean(completionNotice),
+          supportsCheckpoints: Boolean(answerCheckpoint),
+        })}
       />
 
       {editorOpen && onSavePresentation && (

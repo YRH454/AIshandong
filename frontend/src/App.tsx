@@ -349,6 +349,83 @@ function removeStoredDynamicExplanationJob(loadingId: string) {
   localStorage.setItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, JSON.stringify(stored))
 }
 
+type BackgroundGenerationKind = 'notes' | 'practice' | 'map' | 'video'
+
+type BackgroundTaskProgress = {
+  label?: string
+  message?: string
+  percent?: number
+}
+
+type StoredBackgroundGenerationTask = {
+  loadingId: string
+  kind: BackgroundGenerationKind
+  turnId: string
+  sessionId: number
+  createdAt: number
+  jobId?: string
+  status?: 'failed' | 'completed'
+  error?: string
+  errorCode?: string
+  retryable?: boolean
+  course: string
+  topic: string
+  title: string
+  resultArtifactId?: string
+  progress?: BackgroundTaskProgress
+  documentTemplate?: LearningArtifactRecord['document_template']
+  practiceMode?: PracticeMode
+  sourceMapArtifactId?: number
+  focusPoints?: string[]
+  videoContext?: VideoSearchContext
+  videoResultCount?: number
+  videoSearchUrl?: string
+  videoResults?: ExternalVideoResource[]
+}
+
+const BACKGROUND_GENERATION_TASKS_STORAGE_KEY = 'rhyme-background-generation-tasks'
+
+function readStoredBackgroundGenerationTasks(): Record<string, StoredBackgroundGenerationTask> {
+  try {
+    const value = JSON.parse(localStorage.getItem(BACKGROUND_GENERATION_TASKS_STORAGE_KEY) || '{}')
+    if (!value || typeof value !== 'object') return {}
+    return Object.fromEntries(Object.entries(value).filter(([, item]) => {
+      if (!item || typeof item !== 'object') return false
+      const task = item as Partial<StoredBackgroundGenerationTask>
+      return typeof task.loadingId === 'string'
+        && ['notes', 'practice', 'map', 'video'].includes(String(task.kind))
+        && typeof task.turnId === 'string'
+        && typeof task.sessionId === 'number'
+        && typeof task.createdAt === 'number'
+        && typeof task.course === 'string'
+        && typeof task.topic === 'string'
+        && typeof task.title === 'string'
+    })) as Record<string, StoredBackgroundGenerationTask>
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredBackgroundGenerationTask(task: StoredBackgroundGenerationTask) {
+  const stored = readStoredBackgroundGenerationTasks()
+  stored[task.loadingId] = task
+  const retained = Object.values(stored)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 36)
+    .reduce<Record<string, StoredBackgroundGenerationTask>>((items, item) => {
+      items[item.loadingId] = item
+      return items
+    }, {})
+  localStorage.setItem(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, JSON.stringify(retained))
+}
+
+function removeStoredBackgroundGenerationTask(loadingId: string) {
+  const stored = readStoredBackgroundGenerationTasks()
+  if (!(loadingId in stored)) return
+  delete stored[loadingId]
+  localStorage.setItem(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, JSON.stringify(stored))
+}
+
 type DocumentPurpose = 'review' | 'preview' | 'exam'
 type DocumentDepth = 'concise' | 'standard' | 'deep'
 type DocumentStyle = 'plain' | 'notes' | 'exam'
@@ -410,6 +487,7 @@ type InlineVideoSearch = {
   searchUrl: string
   loading: boolean
   error: string
+  taskId?: string
 }
 
 type ExternalVideoContent = {
@@ -1424,6 +1502,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
   const [backgroundTasksOpen, setBackgroundTasksOpen] = useState(false)
+  const [backgroundGenerationTasks, setBackgroundGenerationTasks] = useState<Record<string, StoredBackgroundGenerationTask>>(() => readStoredBackgroundGenerationTasks())
+  const backgroundGenerationJobMonitors = useRef(new Set<string>())
+  const backgroundVideoSearchMonitors = useRef(new Set<string>())
+  const restoredBackgroundGenerationTasks = useRef(new Set<string>())
   const [documentSetup, setDocumentSetup] = useState<DocumentSetup | null>(null)
   const [documentGenerating, setDocumentGenerating] = useState(false)
   const [documentPackSetup, setDocumentPackSetup] = useState<DocumentPackSetup | null>(null)
@@ -1553,9 +1635,9 @@ function App() {
       ...replacedArtifact,
       id: loadingId,
       kind: 'interactive',
-      title: '正在编排动态讲解…',
-      summary: '正在把核心过程拆成可播放的场景，并加入关键的理解检查。',
-      details: ['提炼从“为什么”到“怎么做”的讲解顺序', '为每一幕匹配概念、步骤、对比或示例图示'],
+      title: '正在后台精修动态讲解…',
+      summary: '云端模型正在把核心过程编排成可播放的场景，单次生成最长约 2 分钟；你可以继续学习。',
+      details: ['提炼从“为什么”到“怎么做”的讲解顺序', '完成前会检查文字密度、交互点和状态变化'],
       source: replacedArtifact?.source || turn.prompt,
       course: replacedArtifact?.course || learningState.subject || '未分类课程',
       topic: replacedArtifact?.topic || learningState.current_topic || '本次学习',
@@ -1575,6 +1657,103 @@ function App() {
       style: 'plain',
     }
   }, [learningState.current_topic, learningState.subject])
+
+  function persistBackgroundGenerationTask(task: StoredBackgroundGenerationTask) {
+    writeStoredBackgroundGenerationTask(task)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+  }
+
+  function patchBackgroundGenerationTask(loadingId: string, updates: Partial<StoredBackgroundGenerationTask>) {
+    const current = readStoredBackgroundGenerationTasks()[loadingId]
+    if (!current) return
+    persistBackgroundGenerationTask({ ...current, ...updates, loadingId: current.loadingId })
+  }
+
+  function dismissBackgroundGenerationTask(loadingId: string) {
+    removeStoredBackgroundGenerationTask(loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+  }
+
+  const createBackgroundGenerationPlaceholder = useCallback((
+    turn: ChatTurn,
+    task: StoredBackgroundGenerationTask,
+    replacedArtifact?: Artifact,
+  ): Artifact | null => {
+    if (task.kind === 'video') return null
+    const failed = task.status === 'failed'
+    const common = {
+      ...replacedArtifact,
+      id: task.loadingId,
+      kind: task.kind,
+      source: replacedArtifact?.source || turn.prompt,
+      sessionId: task.sessionId,
+      qaId: turn.id,
+      course: task.course,
+      topic: task.topic,
+      topicMastery: 0,
+      recommendedCourse: task.course,
+      recommendedTopic: task.topic,
+      classificationSource: 'learning_state' as const,
+      classificationConfidence: 0.9,
+      classificationOverridden: false,
+      saved: false,
+      favorite: false,
+      versionGroupId: 0,
+      version: 1,
+      status: failed ? 'error' as const : 'generating' as const,
+    }
+    if (task.kind === 'notes') {
+      const template = task.documentTemplate ? documentTemplateById[task.documentTemplate] : undefined
+      const label = template?.label || '学习文档'
+      return {
+        ...common,
+        kind: 'notes',
+        title: failed ? `${label}暂未完成` : `正在生成${label}…`,
+        summary: failed
+          ? task.error || '学习文档没有完成，原始问答仍然保留。'
+          : `正在按「${label}」的专属结构整理当前内容。`,
+        details: failed
+          ? ['原始问答已保留，可从后台任务直接重试。']
+          : ['读取当前问题与回答', `应用${label}模板`, '完成后可从后台任务直接打开'],
+        documentTemplate: task.documentTemplate,
+        purpose: 'review',
+        depth: 'standard',
+        style: 'plain',
+      }
+    }
+    if (task.kind === 'practice') {
+      const profile = practiceProfiles[task.practiceMode || 'standard']
+      return {
+        ...common,
+        kind: 'practice',
+        title: failed ? `${profile.label}暂未完成` : `正在生成${profile.label}…`,
+        summary: failed
+          ? task.error || '练习测验没有完成，原始问答仍然保留。'
+          : `正在围绕当前回答编写 ${profile.count} 道${profile.label}内容。`,
+        details: failed
+          ? ['原始问答已保留，可从后台任务直接重试。']
+          : [profile.description, '完成后可从后台任务直接进入作答'],
+        sourceMapArtifactId: task.sourceMapArtifactId,
+        purpose: 'review',
+        depth: 'standard',
+        style: 'exam',
+      }
+    }
+    return {
+      ...common,
+      kind: 'map',
+      title: failed ? '知识图解暂未完成' : '正在梳理知识图解…',
+      summary: failed
+        ? task.error || '知识图解没有完成，原始问答仍然保留。'
+        : '图解正在后台准备。你可以继续提问或去资料库，完成后可从后台任务打开。',
+      details: failed
+        ? ['原始问答已保留，可从后台任务直接重试。']
+        : ['根据当前问答识别核心概念与关联分支', '无需停留等待，任务会在后台继续完成'],
+      purpose: 'review',
+      depth: 'standard',
+      style: 'plain',
+    }
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('rhyme-interface-style', interfaceStyle)
@@ -1694,6 +1873,76 @@ function App() {
         }, true))
     }
   }, [createDynamicExplanationPlaceholder, sessionId, turns])
+
+  useEffect(() => {
+    if (!sessionId || turns.length === 0) return
+    const tasks = Object.values(backgroundGenerationTasks)
+      .filter(task => task.sessionId === sessionId)
+      .sort((left, right) => left.createdAt - right.createdAt)
+
+    for (const task of tasks) {
+      const restoreKey = `${task.loadingId}:${task.jobId || 'video'}:${task.status || 'running'}`
+      if (restoredBackgroundGenerationTasks.current.has(restoreKey)) continue
+      const turn = turns.find(item => item.id === task.turnId)
+      if (!turn) continue
+      restoredBackgroundGenerationTasks.current.add(restoreKey)
+
+      if (task.kind === 'video') {
+        setInlineVideoSearches(current => ({
+          ...current,
+          [task.turnId]: {
+            context: task.videoContext || {
+              turnId: task.turnId,
+              sessionId: task.sessionId,
+              query: task.title,
+              course: task.course,
+              topic: task.topic,
+            },
+            results: task.videoResults || [],
+            searchUrl: task.videoSearchUrl || '',
+            loading: !task.status,
+            error: task.status === 'failed' ? task.error || '课程视频检索没有完成。' : '',
+            taskId: task.loadingId,
+          },
+        }))
+        if (!task.status && task.videoContext) void runVideoSearch(task.turnId, task.videoContext, task)
+        continue
+      }
+
+      const artifactId = task.resultArtifactId || task.loadingId
+      const existing = turn.artifacts.find(artifact => artifact.id === artifactId || artifact.id === task.loadingId)
+      if (!existing && task.status !== 'completed') {
+        const placeholder = createBackgroundGenerationPlaceholder(turn, task)
+        if (placeholder) {
+          setTurns(current => current.map(item => item.id === task.turnId
+            ? { ...item, artifacts: [...item.artifacts, placeholder] }
+            : item))
+        }
+      }
+      if (task.status === 'failed') continue
+      if (task.status === 'completed' && existing) continue
+      if (!task.jobId) {
+        patchBackgroundGenerationTask(task.loadingId, {
+          status: 'failed',
+          error: '后台服务已重新启动，原生成任务未能继续；原始问答仍在，可立即重试。',
+          errorCode: 'job_expired',
+          retryable: true,
+        })
+        continue
+      }
+      void getGenerationJob<{ artifact: LearningArtifactRecord }>(LOCAL_USER_ID, task.jobId)
+        .then(job => monitorBackgroundGenerationJob(task, job, true))
+        .catch(() => monitorBackgroundGenerationJob(task, {
+          job_id: task.jobId!,
+          kind: task.kind === 'notes' ? 'notes' : task.kind === 'practice' ? 'practice' : 'map',
+          status: 'failed',
+          created_at: new Date(task.createdAt).toISOString(),
+          error: '后台服务已重新启动，原生成任务未能继续；原始问答仍在，可立即重试。',
+          error_code: 'job_expired',
+          retryable: true,
+        }, true))
+    }
+  }, [backgroundGenerationTasks, createBackgroundGenerationPlaceholder, sessionId, turns])
 
   useEffect(() => {
     if (!practiceSetupTurnId) return
@@ -1925,6 +2174,23 @@ function App() {
       const rank = (task: typeof a) => task.running ? 0 : !task.complete ? 1 : 2
       return rank(a) - rank(b)
     })
+  const backgroundGenerationTaskViews = Object.values(backgroundGenerationTasks)
+    .filter(task => task.sessionId === sessionId)
+    .map(task => {
+      const turn = turns.find(item => item.id === task.turnId)
+      const artifactId = task.resultArtifactId || task.loadingId
+      const artifact = task.kind === 'video'
+        ? undefined
+        : turn?.artifacts.find(item => item.id === artifactId || item.id === task.loadingId)
+      const failed = task.status === 'failed' || artifact?.status === 'error'
+      const complete = !failed && (task.status === 'completed' || (task.kind === 'video' && Boolean(task.videoResults)))
+      const running = !failed && !complete
+      return { task, artifact, running, failed, complete }
+    })
+    .sort((left, right) => {
+      const rank = (task: typeof left) => task.running ? 0 : task.failed ? 1 : 2
+      return rank(left) - rank(right) || right.task.createdAt - left.task.createdAt
+    })
   const backgroundDynamicTasks = turns
     .flatMap(turn => turn.artifacts
       .filter(artifact => (
@@ -1947,12 +2213,16 @@ function App() {
       const rank = (task: typeof a) => task.running ? 0 : task.failed ? 1 : 2
       return rank(a) - rank(b)
     })
-  const backgroundRunningTaskCount = backgroundMapTasks.filter(task => task.running).length
+  const backgroundRunningTaskCount = backgroundGenerationTaskViews.filter(task => task.running).length
+    + backgroundMapTasks.filter(task => task.running).length
     + backgroundDynamicTasks.filter(task => task.running).length
-  const backgroundAttentionTaskCount = backgroundMapTasks.filter(task => !task.running && !task.complete).length
+  const backgroundAttentionTaskCount = backgroundGenerationTaskViews.filter(task => task.failed).length
+    + backgroundMapTasks.filter(task => !task.running && !task.complete).length
     + backgroundDynamicTasks.filter(task => task.failed).length
-  const backgroundCompletedTaskCount = backgroundDynamicTasks.filter(task => task.complete).length
+  const backgroundCompletedTaskCount = backgroundGenerationTaskViews.filter(task => task.complete).length
+    + backgroundDynamicTasks.filter(task => task.complete).length
   const foregroundDynamicTask = backgroundDynamicTasks[0]
+  const foregroundBackgroundGenerationTask = backgroundGenerationTaskViews[0]
   const mapWorkspaceSavingNodeId = mapWorkspaceArtifact && mapProgressSavingKey?.startsWith(`${mapWorkspaceArtifact.id}:`)
     ? mapProgressSavingKey.slice(mapWorkspaceArtifact.id.length + 1)
     : null
@@ -2790,40 +3060,41 @@ function App() {
       course,
       topic,
     }
+    const task: StoredBackgroundGenerationTask = {
+      loadingId: `video-search-${Date.now()}`,
+      kind: 'video',
+      turnId: targetTurnId,
+      sessionId: context.sessionId,
+      createdAt: Date.now(),
+      course,
+      topic,
+      title: '正在检索课程视频…',
+      progress: {
+        label: '正在检索课程视频',
+        message: '已转入后台检索，你可以继续学习或稍后从后台任务查看结果。',
+      },
+      videoContext: context,
+    }
+    persistBackgroundGenerationTask(task)
     setInlineVideoSearches(current => ({
       ...current,
-      [targetTurnId]: { context, results: [], searchUrl: '', loading: true, error: '' },
+      [targetTurnId]: { context, results: [], searchUrl: '', loading: true, error: '', taskId: task.loadingId },
     }))
     setGenerateOpen(false)
-    void runVideoSearch(targetTurnId, context)
+    setNotice('课程视频正在后台检索。你可以继续使用其他功能，完成后在左下角“后台任务”打开。')
+    void runVideoSearch(targetTurnId, context, task)
   }
 
-  async function runVideoSearch(turnId: string, context: VideoSearchContext) {
+  async function runVideoSearch(
+    turnId: string,
+    context: VideoSearchContext,
+    backgroundTask?: StoredBackgroundGenerationTask,
+  ) {
+    const monitorKey = backgroundTask?.loadingId
+    if (monitorKey && backgroundVideoSearchMonitors.current.has(monitorKey)) return
+    if (monitorKey) backgroundVideoSearchMonitors.current.add(monitorKey)
     const cleanedQuery = context.query.trim()
     if (!cleanedQuery) {
-      setInlineVideoSearches(current => ({
-        ...current,
-        [turnId]: { context, results: [], searchUrl: '', loading: false, error: '暂时无法判断学习主题，请先在对话里说清课程或知识点。' },
-      }))
-      return
-    }
-    try {
-      const response = await searchExternalVideos(cleanedQuery, context.course, context.topic)
-      setInlineVideoSearches(current => ({
-        ...current,
-        [turnId]: {
-          context: { ...context, query: response.query },
-          results: response.results,
-          searchUrl: response.search_url,
-          loading: false,
-          error: '',
-        },
-      }))
-      window.requestAnimationFrame(() => document.getElementById(`course-videos-${turnId}`)?.scrollIntoView({
-        block: 'nearest',
-        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-      }))
-    } catch (error) {
       setInlineVideoSearches(current => ({
         ...current,
         [turnId]: {
@@ -2831,9 +3102,86 @@ function App() {
           results: [],
           searchUrl: '',
           loading: false,
-          error: error instanceof Error ? error.message : '课程视频检索失败，请稍后重试。',
+          error: '暂时无法判断学习主题，请先在对话里说清课程或知识点。',
+          taskId: backgroundTask?.loadingId,
         },
       }))
+      if (backgroundTask) {
+        patchBackgroundGenerationTask(backgroundTask.loadingId, {
+          status: 'failed',
+          error: '暂时无法判断学习主题，请先在对话里说清课程或知识点。',
+          errorCode: 'missing_query',
+          retryable: true,
+          progress: { label: '缺少检索主题', message: '补充课程或知识点后可重新检索。', percent: 0 },
+        })
+      }
+      if (monitorKey) backgroundVideoSearchMonitors.current.delete(monitorKey)
+      return
+    }
+    try {
+      const response = await searchExternalVideos(cleanedQuery, context.course, context.topic)
+      const resolvedContext = { ...context, query: response.query }
+      setInlineVideoSearches(current => ({
+        ...current,
+        [turnId]: {
+          context: resolvedContext,
+          results: response.results,
+          searchUrl: response.search_url,
+          loading: false,
+          error: '',
+          taskId: backgroundTask?.loadingId,
+        },
+      }))
+      if (backgroundTask) {
+        patchBackgroundGenerationTask(backgroundTask.loadingId, {
+          status: 'completed',
+          title: `课程视频：${context.topic}`,
+          videoContext: resolvedContext,
+          videoResults: response.results,
+          videoResultCount: response.results.length,
+          videoSearchUrl: response.search_url,
+          progress: {
+            label: response.results.length ? `已找到 ${response.results.length} 个课程视频` : '已完成检索',
+            message: response.results.length
+              ? '课程视频已经整理好，可从后台任务直接查看。'
+              : '没有找到匹配的视频，可以调整课程或知识点后重试。',
+            percent: 100,
+          },
+        })
+        setNotice(response.results.length
+          ? `课程视频已检索完成，找到 ${response.results.length} 个结果。`
+          : '课程视频检索完成，但暂未找到匹配结果。')
+      } else {
+        window.requestAnimationFrame(() => document.getElementById(`course-videos-${turnId}`)?.scrollIntoView({
+          block: 'nearest',
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        }))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '课程视频检索失败，请稍后重试。'
+      setInlineVideoSearches(current => ({
+        ...current,
+        [turnId]: {
+          context,
+          results: [],
+          searchUrl: '',
+          loading: false,
+          error: message,
+          taskId: backgroundTask?.loadingId,
+        },
+      }))
+      if (backgroundTask) {
+        patchBackgroundGenerationTask(backgroundTask.loadingId, {
+          status: 'failed',
+          error: message,
+          errorCode: 'video_search_failed',
+          retryable: true,
+          progress: { label: '课程视频检索没有完成', message, percent: 0 },
+        })
+        setNotice(message)
+      }
+    } finally {
+      if (monitorKey) backgroundVideoSearchMonitors.current.delete(monitorKey)
     }
   }
 
@@ -3073,21 +3421,26 @@ function App() {
     setNotice(`${artifactOptions.find(item => item.kind === kind)?.label}将在后续阶段接通，当前先完成学习文档。`)
   }
 
-  async function runDocumentGeneration() {
-    if (!documentSetup || !sessionId || documentGenerating) return
-    const turn = turns.find(item => item.id === documentSetup.turnId)
+  async function runDocumentGeneration(setupOverride?: DocumentSetup, replaceArtifactId?: string) {
+    const setup = setupOverride || documentSetup
+    if (!setup || !sessionId || documentGenerating) return
+    const turn = turns.find(item => item.id === setup.turnId)
     if (!turn || turn.id.startsWith('pending-')) {
       setNotice('这条回答还没有保存完成，请稍后重试。')
       return
     }
-    const loadingId = `generating-${Date.now()}`
+    const template = setup.template
+    const templateLabel = documentTemplateById[template].label
+    const loadingId = replaceArtifactId || `document-generating-${Date.now()}`
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'notes',
-      title: `正在生成${documentTemplateById[documentSetup.template].label}…`,
-      summary: `正在按「${documentTemplateById[documentSetup.template].label}」的专属结构整理当前内容。`,
-      details: ['读取当前问题与回答', `应用${documentTemplateById[documentSetup.template].label}模板`, '结合学习状态校验重点'],
+      title: `正在生成${templateLabel}…`,
+      summary: `正在按「${templateLabel}」的专属结构整理当前内容。`,
+      details: ['读取当前问题与回答', `应用${templateLabel}模板`, '无需停留等待，完成后可从后台任务直接打开'],
       source: turn.prompt,
+      sessionId,
+      qaId: turn.id,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
       topicMastery: 0,
@@ -3101,34 +3454,72 @@ function App() {
       versionGroupId: 0,
       version: 1,
       status: 'generating',
-      documentTemplate: documentSetup.template,
+      documentTemplate: template,
+      purpose: 'review',
+      depth: 'standard',
+      style: 'plain',
     }
+    removeStoredBackgroundGenerationTask(loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
     setDocumentGenerating(true)
     setDocumentSetup(null)
     setTurns(current => current.map(item => item.id === turn.id
-      ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
+      ? {
+          ...item,
+          artifacts: replaceArtifactId
+            ? item.artifacts.map(artifact => artifact.id === replaceArtifactId ? loadingArtifact : artifact)
+            : [...item.artifacts, loadingArtifact],
+        }
       : item))
+    setNotice(`${templateLabel}已经转入后台生成。你可以继续学习，完成后在左下角“后台任务”打开。`)
     try {
       const queued = await generateLearningDocument(
         LOCAL_USER_ID,
         sessionId,
         turn.id,
-        { document_template: documentSetup.template },
+        { document_template: template },
       )
-      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
-      const generated = artifactFromRecord(data.artifact)
-      setTurns(current => current.map(item => item.id === turn.id
-        ? { ...item, artifacts: item.artifacts.map(artifact => artifact.id === loadingId ? generated : artifact) }
-        : item))
-      setExpandedArtifactId(generated.id)
-      setNotice(`${documentTemplateById[documentSetup.template].label}已生成，作为临时资料保存在当前对话。`)
+      const task: StoredBackgroundGenerationTask = {
+        loadingId,
+        kind: 'notes',
+        turnId: turn.id,
+        sessionId,
+        jobId: queued.job.job_id,
+        createdAt: Date.now(),
+        course: loadingArtifact.course,
+        topic: loadingArtifact.topic,
+        title: `正在生成${templateLabel}…`,
+        documentTemplate: template,
+        progress: {
+          label: queued.job.status === 'queued' ? '正在等待生成' : '正在整理学习文档',
+          message: '任务已经在后台运行，你可以随时从后台任务查看进度。',
+        },
+      }
+      persistBackgroundGenerationTask(task)
+      void monitorBackgroundGenerationJob(task, queued.job)
     } catch (error) {
       const message = error instanceof Error ? error.message : '学习文档生成失败'
+      persistBackgroundGenerationTask({
+        loadingId,
+        kind: 'notes',
+        turnId: turn.id,
+        sessionId,
+        createdAt: Date.now(),
+        status: 'failed',
+        error: message,
+        errorCode: 'queue_unavailable',
+        retryable: true,
+        course: loadingArtifact.course,
+        topic: loadingArtifact.topic,
+        title: `${templateLabel}暂未完成`,
+        documentTemplate: template,
+        progress: { label: '任务没有进入后台队列', message, percent: 0 },
+      })
       setTurns(current => current.map(item => item.id === turn.id
         ? {
             ...item,
             artifacts: item.artifacts.map(artifact => artifact.id === loadingId
-              ? { ...artifact, title: '生成没有完成', summary: message, details: ['可以重新选择设置后再试'], status: 'error' }
+              ? { ...artifact, title: `${templateLabel}暂未完成`, summary: message, details: ['原始问答已保留，可从后台任务直接重试。'], status: 'error' }
               : artifact),
           }
         : item))
@@ -3286,6 +3677,7 @@ function App() {
     sourceMapArtifactId?: number,
     practiceMode: PracticeMode = 'standard',
     focusPoints: string[] = [],
+    replaceArtifactId?: string,
   ) {
     if (!sessionId || practiceGenerating || practiceGenerationLocked.current) return
     const turn = turns.find(item => item.id === turnId)
@@ -3294,14 +3686,16 @@ function App() {
       return
     }
     const profile = practiceProfiles[practiceMode]
-    const loadingId = `practice-generating-${Date.now()}`
+    const loadingId = replaceArtifactId || `practice-generating-${Date.now()}`
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'practice',
       title: `正在生成${profile.label}…`,
       summary: `正在围绕当前回答编写 ${profile.count} 道${profile.label}内容。`,
-      details: [profile.description, '作答后提供逐题解析、薄弱点定位，并可保存到资料库'],
+      details: [profile.description, '无需停留等待，完成后可从后台任务直接进入作答'],
       source: turn.prompt,
+      sessionId,
+      qaId: turn.id,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
       topicMastery: 0,
@@ -3318,30 +3712,69 @@ function App() {
       purpose: 'review',
       depth: 'standard',
       style: 'exam',
+      sourceMapArtifactId,
     }
+    removeStoredBackgroundGenerationTask(loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
     practiceGenerationLocked.current = true
     setPracticeGenerating(true)
     setPracticeSetupTurnId(null)
-    setNotice(`正在根据这条回答生成${profile.label}…`)
+    setNotice(`${profile.label}已经转入后台生成。你可以继续学习，完成后在左下角“后台任务”进入作答。`)
     setTurns(current => current.map(item => item.id === turn.id
-      ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
+      ? {
+          ...item,
+          artifacts: replaceArtifactId
+            ? item.artifacts.map(artifact => artifact.id === replaceArtifactId ? loadingArtifact : artifact)
+            : [...item.artifacts, loadingArtifact],
+        }
       : item))
     try {
       const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, focusPoints, sourceMapArtifactId, practiceMode)
-      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
-      const artifact = artifactFromRecord(data.artifact)
-      setTurns(current => current.map(item => item.id === turn.id
-        ? { ...item, artifacts: item.artifacts.map(item => item.id === loadingId ? artifact : item) }
-        : item))
-      setPracticeRun(createPracticeRun(artifact, data.practice))
-      setNotice(`已生成${data.practice.question_count}项${practiceProfiles[data.practice.practice_mode].label}。完成后可查看解析并保存到资料库。`)
+      const task: StoredBackgroundGenerationTask = {
+        loadingId,
+        kind: 'practice',
+        turnId: turn.id,
+        sessionId,
+        jobId: queued.job.job_id,
+        createdAt: Date.now(),
+        course: loadingArtifact.course,
+        topic: loadingArtifact.topic,
+        title: `正在生成${profile.label}…`,
+        practiceMode,
+        sourceMapArtifactId,
+        focusPoints,
+        progress: {
+          label: queued.job.status === 'queued' ? '正在等待出题' : '正在编写练习题',
+          message: '任务已经在后台运行，完成后可直接开始做题。',
+        },
+      }
+      persistBackgroundGenerationTask(task)
+      void monitorBackgroundGenerationJob(task, queued.job)
     } catch (error) {
       const message = error instanceof Error ? error.message : '练习测验生成失败'
+      persistBackgroundGenerationTask({
+        loadingId,
+        kind: 'practice',
+        turnId: turn.id,
+        sessionId,
+        createdAt: Date.now(),
+        status: 'failed',
+        error: message,
+        errorCode: 'queue_unavailable',
+        retryable: true,
+        course: loadingArtifact.course,
+        topic: loadingArtifact.topic,
+        title: `${profile.label}暂未完成`,
+        practiceMode,
+        sourceMapArtifactId,
+        focusPoints,
+        progress: { label: '任务没有进入后台队列', message, percent: 0 },
+      })
       setTurns(current => current.map(item => item.id === turn.id
         ? {
             ...item,
             artifacts: item.artifacts.map(item => item.id === loadingId
-              ? { ...item, title: '练习测验生成失败', summary: message, details: ['可以点击“重新生成”再次尝试'], status: 'error' }
+              ? { ...item, title: `${profile.label}暂未完成`, summary: message, details: ['原始问答已保留，可从后台任务直接重试。'], status: 'error' }
               : item),
           }
         : item))
@@ -3352,7 +3785,7 @@ function App() {
     }
   }
 
-  async function runKnowledgeMapGeneration(turnId: string) {
+  async function runKnowledgeMapGeneration(turnId: string, replaceArtifactId?: string) {
     if (!sessionId) {
       setNotice('学习对话还在恢复，请稍等一秒后再试。')
       return
@@ -3364,21 +3797,21 @@ function App() {
     }
     const existingGeneratingMap = turn.artifacts.find(artifact => artifact.kind === 'map' && artifact.status === 'generating')
     if (knowledgeMapGeneratingTurnId) {
-      if (existingGeneratingMap) openMapWorkspace(existingGeneratingMap, 'chat')
-      setNotice('已有一张知识图解正在后台生成，完成后会自动更新。')
+      if (existingGeneratingMap) setBackgroundTasksOpen(true)
+      setNotice('已有一张知识图解正在后台生成，可从左下角“后台任务”查看。')
       return
     }
     const activeLock = knowledgeMapGenerationLock.current
     if (activeLock && Date.now() - activeLock.startedAt < 1500) {
-      if (existingGeneratingMap) openMapWorkspace(existingGeneratingMap, 'chat')
-      setNotice('知识图解任务已经开始，正在打开生成画面…')
+      if (existingGeneratingMap) setBackgroundTasksOpen(true)
+      setNotice('知识图解任务已经开始，可从左下角“后台任务”查看。')
       return
     }
     // A hot reload, interrupted request, or restored conversation can leave the
     // synchronous click guard behind after React state has already recovered.
     // Treat an old guard without an active generating state as stale.
     if (activeLock) knowledgeMapGenerationLock.current = null
-    const loadingId = `map-generating-${Date.now()}`
+    const loadingId = replaceArtifactId || `map-generating-${Date.now()}`
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'map',
@@ -3403,29 +3836,60 @@ function App() {
       depth: 'standard',
       style: 'plain',
     }
+    removeStoredBackgroundGenerationTask(loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
     knowledgeMapGenerationLock.current = { turnId: turn.id, loadingId, startedAt: Date.now() }
     setKnowledgeMapGeneratingTurnId(turn.id)
-    setNotice('正在把这条内容整理成可点击的知识图解…')
+    setNotice('知识图解已经转入后台生成。你可以继续学习，完成后在左下角“后台任务”打开。')
     setTurns(current => current.map(item => item.id === turn.id
-      ? { ...item, artifacts: [...item.artifacts.filter(artifact => !(artifact.kind === 'map' && artifact.status === 'generating')), loadingArtifact] }
+      ? {
+          ...item,
+          artifacts: replaceArtifactId
+            ? item.artifacts.map(artifact => artifact.id === replaceArtifactId ? loadingArtifact : artifact)
+            : [...item.artifacts.filter(artifact => !(artifact.kind === 'map' && artifact.status === 'generating')), loadingArtifact],
+        }
       : item))
-    openMapWorkspace(loadingArtifact, 'chat')
     try {
       const queued = await generateKnowledgeMap(LOCAL_USER_ID, sessionId, turn.id)
-      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
-      const artifact = artifactFromRecord(data.artifact)
-      setTurns(current => current.map(item => item.id === turn.id
-        ? { ...item, artifacts: item.artifacts.map(item => item.id === loadingId ? artifact : item) }
-        : item))
-      openMapWorkspace(artifact, 'chat')
-      setNotice('知识图解已生成。点击节点可查看定义、例子和易错点。')
+      const task: StoredBackgroundGenerationTask = {
+        loadingId,
+        kind: 'map',
+        turnId: turn.id,
+        sessionId,
+        jobId: queued.job.job_id,
+        createdAt: Date.now(),
+        course: loadingArtifact.course,
+        topic: loadingArtifact.topic,
+        title: '正在梳理知识图解…',
+        progress: {
+          label: queued.job.status === 'queued' ? '正在等待图解生成' : '正在梳理知识关系',
+          message: '任务已经在后台运行，完成后可直接打开图解。',
+        },
+      }
+      persistBackgroundGenerationTask(task)
+      void monitorBackgroundGenerationJob(task, queued.job)
     } catch (error) {
       const message = error instanceof Error ? error.message : '知识图解生成失败'
+      persistBackgroundGenerationTask({
+        loadingId,
+        kind: 'map',
+        turnId: turn.id,
+        sessionId,
+        createdAt: Date.now(),
+        status: 'failed',
+        error: message,
+        errorCode: 'queue_unavailable',
+        retryable: true,
+        course: loadingArtifact.course,
+        topic: loadingArtifact.topic,
+        title: '知识图解暂未完成',
+        progress: { label: '任务没有进入后台队列', message, percent: 0 },
+      })
       setTurns(current => current.map(item => item.id === turn.id
         ? {
             ...item,
             artifacts: item.artifacts.map(item => item.id === loadingId
-              ? { ...item, title: '知识图解生成失败', summary: message, details: ['可以点击“重新生成”再次尝试'], status: 'error' }
+              ? { ...item, title: '知识图解暂未完成', summary: message, details: ['原始问答已保留，可从后台任务直接重试。'], status: 'error' }
               : item),
           }
         : item))
@@ -3433,6 +3897,101 @@ function App() {
     } finally {
       if (knowledgeMapGenerationLock.current?.loadingId === loadingId) knowledgeMapGenerationLock.current = null
       setKnowledgeMapGeneratingTurnId(null)
+    }
+  }
+
+  async function monitorBackgroundGenerationJob(
+    task: StoredBackgroundGenerationTask,
+    initialJob: GenerationJob<{ artifact: LearningArtifactRecord }>,
+    resumed = false,
+  ) {
+    if (backgroundGenerationJobMonitors.current.has(task.jobId || task.loadingId)) return
+    const monitorKey = task.jobId || task.loadingId
+    backgroundGenerationJobMonitors.current.add(monitorKey)
+    const label = task.kind === 'notes'
+      ? task.documentTemplate ? documentTemplateById[task.documentTemplate].label : '学习文档'
+      : task.kind === 'practice'
+        ? practiceProfiles[task.practiceMode || 'standard'].label
+        : '知识图解'
+    let latestJob = initialJob
+    let latestProgressSignature = ''
+    try {
+      const data = await waitForGenerationJob(LOCAL_USER_ID, initialJob, job => {
+        latestJob = job
+        const rawProgress = job.progress as BackgroundTaskProgress | undefined
+        const progress: BackgroundTaskProgress = {
+          label: rawProgress?.label || (job.status === 'queued' ? '正在等待生成' : '正在后台生成'),
+          message: rawProgress?.message || '任务会继续运行，你可以正常使用其他功能。',
+          ...(typeof rawProgress?.percent === 'number' ? { percent: rawProgress.percent } : {}),
+        }
+        const signature = JSON.stringify(progress)
+        if (signature === latestProgressSignature) return
+        latestProgressSignature = signature
+        patchBackgroundGenerationTask(task.loadingId, { progress })
+      })
+      const artifact = artifactFromRecord(data.artifact)
+      patchBackgroundGenerationTask(task.loadingId, {
+        status: 'completed',
+        title: artifact.title,
+        resultArtifactId: artifact.id,
+        error: undefined,
+        errorCode: undefined,
+        retryable: undefined,
+        progress: {
+          label: `${label}已完成`,
+          message: '内容已经准备好，可从后台任务直接打开。',
+          percent: 100,
+        },
+      })
+      setTurns(current => current.map(item => item.id === task.turnId
+        ? {
+            ...item,
+            artifacts: item.artifacts.some(item => item.id === task.loadingId)
+              ? item.artifacts.map(item => item.id === task.loadingId ? artifact : item)
+              : [...item.artifacts, artifact],
+          }
+        : item))
+      if (!resumed) setNotice(`${label}已生成。结果已保留在“后台任务”中，点击即可打开。`)
+    } catch (error) {
+      const rawMessage = latestJob.error || (error instanceof Error ? error.message : `${label}生成失败`)
+      const jobMissing = /任务暂时无法读取|任务不存在|已过期|后台服务已重新启动/.test(rawMessage)
+      const message = jobMissing
+        ? '后台服务已重新启动，原生成任务未能继续；原始问答仍在，可立即重试。'
+        : rawMessage
+      const failureTask: StoredBackgroundGenerationTask = {
+        ...task,
+        status: 'failed',
+        error: message,
+        errorCode: jobMissing ? 'job_expired' : latestJob.error_code,
+        retryable: jobMissing ? true : latestJob.retryable !== false,
+        progress: {
+          label: '本次生成未完成',
+          message,
+          percent: 0,
+        },
+      }
+      persistBackgroundGenerationTask(failureTask)
+      setTurns(current => current.map(item => item.id === task.turnId
+        ? {
+            ...item,
+            artifacts: item.artifacts.map(artifact => artifact.id === task.loadingId
+              ? {
+                  ...artifact,
+                  title: `${label}暂未完成`,
+                  summary: message,
+                  details: [
+                    failureTask.retryable === false
+                      ? '请先检查来源回答是否仍存在，再重新发起生成。'
+                      : '原始问答已保留，可从后台任务直接重试。',
+                  ],
+                  status: 'error',
+                }
+              : artifact),
+          }
+        : item))
+      setNotice(message)
+    } finally {
+      backgroundGenerationJobMonitors.current.delete(monitorKey)
     }
   }
 
@@ -3571,7 +4130,7 @@ function App() {
       next.delete(loadingId)
       return next
     })
-    setNotice('动态讲解已经开始在后台生成。页面已定位到生成进度，也可以随时从左下角“后台任务”查看。')
+    setNotice('动态讲解已转入后台精修。单次云端分镜生成最长约 2 分钟；你可以继续学习，完成前会进行动画质量检查。')
     setTurns(current => current.map(item => item.id === turn.id
       ? {
           ...item,
@@ -4363,6 +4922,126 @@ function App() {
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }))
+  }
+
+  function backgroundGenerationTaskLabel(kind: BackgroundGenerationKind) {
+    const labels: Record<BackgroundGenerationKind, [string, string]> = {
+      notes: ['学习文档', 'Learning document'],
+      practice: ['练习测验', 'Practice set'],
+      map: ['知识图解', 'Knowledge map'],
+      video: ['课程视频', 'Course videos'],
+    }
+    return t(...labels[kind])
+  }
+
+  function backgroundGenerationTaskAction(kind: BackgroundGenerationKind) {
+    const labels: Record<BackgroundGenerationKind, [string, string]> = {
+      notes: ['打开文档', 'Open document'],
+      practice: ['开始做题', 'Start practice'],
+      map: ['打开图解', 'Open map'],
+      video: ['查看视频', 'View videos'],
+    }
+    return t(...labels[kind])
+  }
+
+  function openBackgroundGenerationTask(task: StoredBackgroundGenerationTask) {
+    setBackgroundTasksOpen(false)
+    setSidebarOpen(false)
+    setView('chat')
+    if (task.kind === 'video') {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        document.getElementById(`course-videos-${task.turnId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }))
+      return
+    }
+    const turn = turns.find(item => item.id === task.turnId)
+    const artifactId = task.resultArtifactId || task.loadingId
+    const artifact = turn?.artifacts.find(item => item.id === artifactId || item.id === task.loadingId)
+    if (!artifact) {
+      setNotice(task.status === 'completed'
+        ? '结果正在恢复到当前对话，请稍等一秒后再打开。'
+        : '任务仍在后台准备中，可稍后从后台任务继续查看。')
+      return
+    }
+    if (artifact.status === 'generating' || artifact.status === 'error') {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }))
+      return
+    }
+    if (task.kind === 'map') {
+      openMapWorkspace(artifact, 'chat')
+      return
+    }
+    if (task.kind === 'practice') {
+      void openPractice(artifact)
+      return
+    }
+    setExpandedArtifactId(artifact.id)
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }))
+  }
+
+  function retryBackgroundGenerationTask(task: StoredBackgroundGenerationTask) {
+    if (task.retryable === false) {
+      setNotice('这条任务的来源内容已不可用，请返回原对话重新发起生成。')
+      return
+    }
+    if (task.kind === 'notes') {
+      if (!task.documentTemplate) {
+        setNotice('缺少学习文档模板，请回到原对话重新选择生成方式。')
+        return
+      }
+      void runDocumentGeneration({ turnId: task.turnId, template: task.documentTemplate }, task.loadingId)
+      return
+    }
+    if (task.kind === 'practice') {
+      void runPracticeGeneration(
+        task.turnId,
+        task.sourceMapArtifactId,
+        task.practiceMode || 'standard',
+        task.focusPoints || [],
+        task.loadingId,
+      )
+      return
+    }
+    if (task.kind === 'map') {
+      void runKnowledgeMapGeneration(task.turnId, task.loadingId)
+      return
+    }
+    if (!task.videoContext) {
+      setNotice('缺少视频检索条件，请回到原对话重新发起检索。')
+      return
+    }
+    const retryTask: StoredBackgroundGenerationTask = {
+      ...task,
+      status: undefined,
+      error: undefined,
+      errorCode: undefined,
+      retryable: undefined,
+      createdAt: Date.now(),
+      progress: {
+        label: '正在重新检索课程视频',
+        message: '已转入后台检索，你可以继续使用其他功能。',
+      },
+      videoResults: undefined,
+      videoResultCount: undefined,
+      videoSearchUrl: undefined,
+    }
+    persistBackgroundGenerationTask(retryTask)
+    setInlineVideoSearches(current => ({
+      ...current,
+      [task.turnId]: {
+        context: task.videoContext!,
+        results: [],
+        searchUrl: '',
+        loading: true,
+        error: '',
+        taskId: task.loadingId,
+      },
+    }))
+    void runVideoSearch(task.turnId, task.videoContext, retryTask)
   }
 
   function dismissBackgroundDynamicTask(artifact: Artifact) {
@@ -7315,14 +7994,59 @@ function App() {
               <button type="button" aria-label={t('关闭后台任务', 'Close background tasks')} onClick={() => setBackgroundTasksOpen(false)}><Icon name="x" size={16} /></button>
             </header>
 
-            {backgroundMapTasks.length === 0 && backgroundDynamicTasks.length === 0 ? (
+            {backgroundGenerationTaskViews.length === 0 && backgroundMapTasks.length === 0 && backgroundDynamicTasks.length === 0 ? (
               <div className="background-task-empty">
                 <ListChecks size={20} strokeWidth={1.7} />
                 <b>{t('暂无后台任务', 'No background tasks')}</b>
-                <span>{t('动态讲解和整套知识图解等耗时任务会集中显示在这里。', 'Long-running dynamic lessons and knowledge-map packages appear here.')}</span>
+                <span>{t('学习文档、练习、图解、动态讲解和课程视频都会集中显示在这里。', 'Documents, practice, maps, dynamic lessons, and course videos appear here.')}</span>
               </div>
             ) : (
               <div className="background-task-list">
+                {backgroundGenerationTaskViews.map(task => {
+                  const title = task.artifact?.title || task.task.title
+                  const progress = task.task.progress
+                  const hasProgress = typeof progress?.percent === 'number'
+                  const completeDescription = task.task.kind === 'video'
+                    ? task.task.videoResultCount
+                      ? t(`已整理 ${task.task.videoResultCount} 个课程视频，点击即可查看。`, `${task.task.videoResultCount} course videos are ready. Open to view them.`)
+                      : t('检索已经完成，可查看结果或更换关键词再次检索。', 'Search is complete. View the result or try a different query.')
+                    : t('内容已经回到原对话，点击即可直接打开。', 'The result is back in the original conversation. Open it directly.')
+                  return (
+                    <article className={`background-task-item ${task.task.kind} ${task.running ? 'running' : task.failed ? 'failed' : 'complete'}`} key={task.task.loadingId}>
+                      <div className="background-task-item-status" aria-hidden="true">
+                        {task.running ? <RotateCcw size={15} /> : task.failed ? <X size={15} /> : <Check size={15} />}
+                      </div>
+                      <button className="background-task-item-main" type="button" onClick={() => openBackgroundGenerationTask(task.task)}>
+                        <span>
+                          <b>{title}</b>
+                          <small>{backgroundGenerationTaskLabel(task.task.kind)} · {task.task.course} / {task.task.topic}</small>
+                        </span>
+                        <em>{task.running
+                          ? progress?.label || t('后台生成中', 'Generating')
+                          : task.failed
+                            ? t('需要重试', 'Retry needed')
+                            : t('已完成', 'Complete')}</em>
+                      </button>
+                      <div className={`background-task-progress${task.running && !hasProgress ? ' indeterminate' : ''}`} aria-label={task.running ? progress?.label || t('任务正在后台生成', 'Task is generating in the background') : task.complete ? t('任务已完成', 'Task is complete') : t('任务生成失败', 'Task failed')}>
+                        <span style={{ width: task.failed ? '0%' : task.complete ? '100%' : hasProgress ? `${progress?.percent}%` : '10%' }} />
+                      </div>
+                      <p>{task.running
+                        ? progress?.message || t('任务会继续运行，你可以关闭面板继续使用其他功能。', 'The task keeps running. Close this panel and keep using other features.')
+                        : task.failed
+                          ? task.task.error || task.artifact?.summary || t('原始学习内容已保留，可立即重试。', 'Your original study content is preserved. Retry now.')
+                          : completeDescription}</p>
+                      <div className="background-task-item-actions">
+                        <button type="button" onClick={() => openBackgroundGenerationTask(task.task)}>{task.running ? t('查看生成位置', 'View position') : task.failed ? t('查看详情', 'View details') : backgroundGenerationTaskAction(task.task.kind)}</button>
+                        {task.failed && task.task.retryable !== false && (
+                          <button className="primary" type="button" onClick={() => retryBackgroundGenerationTask(task.task)}>{t('立即重试', 'Retry now')}</button>
+                        )}
+                        {!task.running && (
+                          <button className="dismiss" type="button" aria-label={t('从任务列表移除', 'Remove from task list')} onClick={() => dismissBackgroundGenerationTask(task.task.loadingId)}><Icon name="x" size={13} /></button>
+                        )}
+                      </div>
+                    </article>
+                  )
+                })}
                 {backgroundDynamicTasks.map(task => (
                   <article className={`background-task-item dynamic ${task.running ? 'running' : task.failed ? 'failed' : 'complete'}`} key={task.artifact.id}>
                     <div className="background-task-item-status" aria-hidden="true">
@@ -7553,7 +8277,40 @@ function App() {
         </Suspense>
       )}
 
-      {foregroundDynamicTask && !backgroundTasksOpen && (
+      {foregroundBackgroundGenerationTask && !backgroundTasksOpen && (
+        <aside
+          className={`dynamic-task-dock${foregroundBackgroundGenerationTask.running ? ' running' : foregroundBackgroundGenerationTask.failed ? ' failed' : ' complete'}${foregroundBackgroundGenerationTask.running && typeof foregroundBackgroundGenerationTask.task.progress?.percent === 'number' ? ' has-progress' : ''}`}
+          aria-label={backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}
+          style={{ '--task-progress': Math.max(0, Math.min(1, (foregroundBackgroundGenerationTask.task.progress?.percent || 0) / 100)) } as CSSProperties}
+        >
+          <span className="dynamic-task-dock-icon" aria-hidden="true">
+            {foregroundBackgroundGenerationTask.running ? <RotateCcw size={16} /> : foregroundBackgroundGenerationTask.failed ? <X size={16} /> : <Check size={16} />}
+          </span>
+          <div>
+            <b>{foregroundBackgroundGenerationTask.running
+              ? foregroundBackgroundGenerationTask.task.progress?.label || t(`${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}正在后台生成`, `${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)} is generating`)
+              : foregroundBackgroundGenerationTask.failed
+                ? t(`${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}生成失败`, `${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)} failed`)
+                : t(`${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}已经完成`, `${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)} is ready`)}</b>
+            <span>{foregroundBackgroundGenerationTask.running
+              ? foregroundBackgroundGenerationTask.task.progress?.message || foregroundBackgroundGenerationTask.task.title
+              : foregroundBackgroundGenerationTask.artifact?.title || foregroundBackgroundGenerationTask.task.title}</span>
+          </div>
+          <button className="dynamic-task-dock-action" type="button" onClick={() => foregroundBackgroundGenerationTask.failed ? retryBackgroundGenerationTask(foregroundBackgroundGenerationTask.task) : openBackgroundGenerationTask(foregroundBackgroundGenerationTask.task)}>
+            {foregroundBackgroundGenerationTask.running
+              ? t('查看进度', 'View progress')
+              : foregroundBackgroundGenerationTask.failed
+                ? t('立即重试', 'Retry now')
+                : backgroundGenerationTaskAction(foregroundBackgroundGenerationTask.task.kind)}
+          </button>
+          {!foregroundBackgroundGenerationTask.running && (
+            <button className="dynamic-task-dock-dismiss" type="button" aria-label={t('关闭任务提醒', 'Dismiss task reminder')} onClick={() => dismissBackgroundGenerationTask(foregroundBackgroundGenerationTask.task.loadingId)}><Icon name="x" size={13} /></button>
+          )}
+          {foregroundBackgroundGenerationTask.running && <i aria-hidden="true"><span /></i>}
+        </aside>
+      )}
+
+      {foregroundDynamicTask && !foregroundBackgroundGenerationTask && !backgroundTasksOpen && (
         <aside
           className={`dynamic-task-dock${foregroundDynamicTask.running ? ' running' : foregroundDynamicTask.failed ? ' failed' : ' complete'}${foregroundDynamicTask.running && typeof foregroundDynamicTask.artifact.generationProgress?.percent === 'number' ? ' has-progress' : ''}`}
           aria-label={t('动态讲解任务', 'Dynamic lesson task')}

@@ -24,11 +24,19 @@ deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, http_cli
 mimo = OpenAI(api_key=MIMO_API_KEY, base_url=MIMO_BASE_URL, http_client=http_client) if MIMO_BASE_URL else None
 
 
-def chat_qwen(messages: list, temperature=0.7, max_tokens=2048, json_mode=False, request_timeout: float | None = None):
+def chat_qwen(
+    messages: list,
+    temperature=0.7,
+    max_tokens=2048,
+    json_mode=False,
+    request_timeout: float | None = None,
+    request_max_retries: int | None = None,
+):
     """调用千问主力模型"""
     return chat_qwen_model(QWEN_MODEL, messages, temperature=temperature,
                            max_tokens=max_tokens, json_mode=json_mode,
-                           request_timeout=request_timeout)
+                           request_timeout=request_timeout,
+                           request_max_retries=request_max_retries)
 
 
 # ── 千问多模型调用 ─────────────────────────────────────────
@@ -47,7 +55,8 @@ MODEL_REGISTRY = {
 
 
 def chat_qwen_model(model: str, messages: list, temperature=0.3, max_tokens=4096,
-                    json_mode=False, stream=False, request_timeout: float | None = None):
+                    json_mode=False, stream=False, request_timeout: float | None = None,
+                    request_max_retries: int | None = None):
     """调用指定千问模型。
 
     model 可为 "qwen-max" / "qwen-coder" / "qwen-flash" / "qwen-long" 等（MODEL_REGISTRY 键）
@@ -64,7 +73,11 @@ def chat_qwen_model(model: str, messages: list, temperature=0.3, max_tokens=4096
         kwargs["timeout"] = request_timeout
     if stream or real_model == "qwq-plus":
         kwargs["stream"] = True
-    return qwen.chat.completions.create(**kwargs)
+    # Some callers own their own retry/fallback policy.  Let them opt out of
+    # the SDK's hidden retries so a short request timeout cannot silently turn
+    # into several minutes of waiting.
+    client = qwen if request_max_retries is None else qwen.with_options(max_retries=request_max_retries)
+    return client.chat.completions.create(**kwargs)
 
 
 def get_qwen_client(model: str):

@@ -1378,8 +1378,8 @@ def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest
             dedupe_key=f"interactive:{req.user_id}:{req.session_id}:{req.qa_id}",
             progress_initial={
                 "phase": "queued",
-                "label": "等待智能导演开始",
-                "message": "任务已经转入后台队列。",
+                "label": "等待云端导演开始",
+                "message": "任务已经转入后台队列。单次云端分镜生成最长约 2 分钟，完成前会进行动画质量检查。",
                 "percent": 2,
             },
             with_progress=True,

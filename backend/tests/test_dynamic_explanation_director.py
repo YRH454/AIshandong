@@ -499,11 +499,15 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         scenes = [
             _scene("结构观察", "spatial", "concept", 0),
             _scene("机制推进", "process", "sequence", 1),
-            _scene("案例验证", "story", "example", 2),
+            _scene("状态切换", "state", "stack", 2),
+            _scene("路径对照", "comparison", "contrast", 3),
+            _scene("案例验证", "story", "example", 4),
         ]
         narrations = [
             "先识别系统中的对象、条件、连接和边界，把零散名词整理成能够继续推理的整体结构。这一幕专门建立概念位置，不提前解释后续过程。",
             "随后从触发条件开始，沿中间作用、状态变化和最终结果连续推进，让每一步都能回答为什么会产生下一步，而不是只呈现结论。过程中还要指出传递被打断时会发生什么，从而看清机制成立的必要条件。",
+            "再把过程拆成可观察的状态，只有当前条件被满足，系统才会切换到下一格；一旦条件缺失，就必须回到前一状态重新检查。",
+            "随后把条件成立与条件缺失放在同一坐标里比较，明确哪一个变量会使相同问题走向不同的可用路径或失效路径。",
             "最后进入一个具体案例，逐条打开现象、证据、判断依据和结论，再用反例检查这套解释是否越过了适用范围。案例中的每条证据都必须指向明确判断，不能把相关性误写成因果关系。",
         ]
         for index, scene in enumerate(scenes):
@@ -511,7 +515,9 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
             scene["key_point"] = f"第 {index + 1} 幕只承担“{scene['title']}”这一项任务。"
         _attach_protocol(scenes[0], "concept-constellation")
         _attach_protocol(scenes[1], "causal-chain")
-        _attach_protocol(scenes[2], "case-lab")
+        _attach_protocol(scenes[2], "state-machine")
+        _attach_protocol(scenes[3], "comparison-studio")
+        _attach_protocol(scenes[4], "case-lab")
         for scene in scenes:
             _attach_storyboard(scene)
             _attach_director_beats(scene)
@@ -566,34 +572,51 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         self.assertEqual(report["generation_source"], "resilient_recovery")
         self.assertEqual(
             [scene["stage"]["kind"] for scene in result["explanation"]["scenes"]],
-            ["concept-constellation", "causal-chain", "case-lab"],
+            ["concept-constellation", "causal-chain", "state-machine", "comparison-studio", "system-network", "case-lab"],
         )
         self.assertEqual(progress[-2]["phase"], "recovering")
         self.assertEqual(progress[-1]["phase"], "finalizing")
 
-    def test_model_connection_is_retried_before_a_response_is_accepted(self):
+    def test_model_connection_uses_one_bounded_attempt_before_recovery(self):
         import httpx
         from app.agents.dynamic_explanation_agent import _chat_qwen_with_retry
 
         progress: list[dict] = []
-        response = SimpleNamespace(choices=[])
         with (
-            patch("app.agents.dynamic_explanation_agent.chat_qwen", side_effect=[httpx.ConnectError("offline"), response]) as mocked_chat,
+            patch("app.agents.dynamic_explanation_agent.chat_qwen", side_effect=httpx.ConnectError("offline")) as mocked_chat,
             patch("app.agents.dynamic_explanation_agent.time.sleep") as mocked_sleep,
         ):
-            result = _chat_qwen_with_retry(
-                [{"role": "user", "content": "测试"}],
-                temperature=0.2,
-                max_tokens=400,
-                json_mode=True,
-                progress_callback=progress.append,
-            )
+            with self.assertRaises(httpx.ConnectError):
+                _chat_qwen_with_retry(
+                    [{"role": "user", "content": "测试"}],
+                    temperature=0.2,
+                    max_tokens=400,
+                    json_mode=True,
+                    progress_callback=progress.append,
+                )
 
-        self.assertIs(result, response)
-        self.assertEqual(mocked_chat.call_count, 2)
-        mocked_sleep.assert_called_once()
-        self.assertEqual(progress[0]["phase"], "retrying")
-        self.assertEqual(progress[0]["retry_attempt"], 1)
+        self.assertEqual(mocked_chat.call_count, 1)
+        mocked_sleep.assert_not_called()
+        self.assertEqual(progress, [])
+        self.assertEqual(mocked_chat.call_args.kwargs["request_timeout"], 120.0)
+        self.assertEqual(mocked_chat.call_args.kwargs["request_max_retries"], 0)
+
+    def test_recovery_terms_split_markdown_tables_into_clean_evidence(self):
+        from app.agents.dynamic_explanation_agent import _recovery_terms
+
+        _, terms = _recovery_terms(
+            "我想学计算机组成",
+            """CPU 通过缓存缩短访问主存的等待，命中时数据会直接返回。
+| 你的目标 | 计算机组成能帮你的地方 |
+| --- | --- |
+| 做一个 AI 学习助手 | 理解模型在什么硬件上运行更快 |
+| 优化代码 | 检查缓存命中与分支预测 |
+指令执行依次经过取指、译码、执行和写回。""",
+        )
+
+        self.assertNotIn("你的目标", terms)
+        self.assertTrue(any("缓存" in term or "指令" in term for term in terms))
+        self.assertTrue(all("|" not in term for term in terms))
 
     def test_invalid_model_json_recovers_to_a_playable_local_explanation(self):
         from app.agents.dynamic_explanation_agent import generate_dynamic_explanation
@@ -612,7 +635,7 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         explanation = result["explanation"]
         self.assertEqual(explanation["generation_source"], "resilient_recovery")
         self.assertTrue(explanation["quality_report"]["display_ready"])
-        self.assertEqual(len(explanation["scenes"]), 3)
+        self.assertEqual(len(explanation["scenes"]), 6)
         self.assertIn("recovering", [item["phase"] for item in progress])
 
     def test_all_eight_scene_payload_protocols_are_preserved(self):

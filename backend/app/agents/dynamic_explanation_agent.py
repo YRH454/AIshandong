@@ -8,6 +8,7 @@ import time
 
 import httpx
 
+from app.config import QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL
 from app.services.llm import chat_qwen
 
 
@@ -102,6 +103,7 @@ _VISUAL_FIRST_TAKEAWAY_LIMIT = 58
 _VISUAL_FIRST_BEAT_COPY_LIMIT = 58
 _VISUAL_FIRST_BEAT_DETAIL_LIMIT = 96
 _VISUAL_FIRST_LABEL_LIMIT = 36
+_CLOUD_STORYBOARD_TIMEOUT_SECONDS = 120.0
 _VISUAL_FIRST_DISPLAY_BLOCKING_CODES = frozenset({
     "text_heavy",
     "takeaway_heavy",
@@ -296,15 +298,59 @@ def _parse_json(text: str) -> dict:
 def _recovery_terms(question: str, answer: str, maximum: int = 12) -> tuple[str, list[str]]:
     """Extract concrete, topic-bearing labels for a browser-safe local recovery."""
     topic = _short_visual_cue(question, 42) or "当前问题"
-    candidates = re.split(r"[。！？!?；;\n]+", f"{answer}\n{question}")
+    topic_core = re.sub(r"^(?:我想学|我想了解|请解释|帮我理解|解释一下|讲讲|什么是)", "", topic).strip(" ：:，,。")
+    topic_tokens = [token for token in re.split(r"[、，,：:（）()\s]+", topic_core) if len(_text_signature(token)) >= 3]
+    # Markdown tables are common in tutor answers.  Treat their cells as
+    # separate facts, never as one literal string full of `|` separators; the
+    # latter used to leak directly onto the evidence stage as unreadable labels.
+    table_headers = {
+        "你的目标", "建议任务", "时间", "正确理解", "重点理解", "工具推荐", "课程视频", "小练习", "实验建议",
+    }
+    source_lines: list[str] = []
+    for raw_line in f"{answer}\n{question}".splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|" not in line:
+            source_lines.append(line)
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|") if cell.strip()]
+        if not cells or all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
+            continue
+        if all(cell in table_headers for cell in cells):
+            continue
+        source_lines.extend(cells)
+    candidates = [part for line in source_lines for part in re.split(r"[。！？!?；;]+", line)]
     terms: list[str] = []
     seen: set[str] = set()
-    for candidate in candidates:
-        cleaned = _short_visual_cue(re.sub(r"^[#>*\-\d.\s]+", "", candidate), 34)
+    ranked: list[tuple[int, int, str, str]] = []
+    profile_markers = ("你目前", "你现在", "你的目标", "你想学", "学习目标", "准备好", "今天晚上", "下周", "周末")
+    concrete_markers = ("条件", "状态", "机制", "过程", "步骤", "关系", "证据", "边界", "结果", "变量", "输入", "输出", "规则", "指令", "缓存", "内存", "总线", "cpu", "寄存器", "流水线", "数据通路", "控制信号")
+    for index, candidate in enumerate(candidates):
+        normalized = re.sub(r"[`*_#>]", "", candidate)
+        normalized = re.sub(r"^[\-\d.\s]+", "", normalized).strip()
+        cleaned = _short_visual_cue(normalized, 26)
         signature = _text_signature(cleaned)
-        if len(signature) < 4 or signature in seen:
+        if len(signature) < 4 or signature in seen or len(cleaned) < 3:
+            continue
+        lower = cleaned.lower()
+        score = 0
+        if topic_core and topic_core in cleaned:
+            score += 7
+        score += sum(2 for token in topic_tokens if token and token in cleaned)
+        score += sum(2 for marker in concrete_markers if marker in lower)
+        if "→" in cleaned or "—" in cleaned or "=" in cleaned:
+            score += 2
+        if any(marker in cleaned for marker in profile_markers):
+            score -= 8
+        if cleaned in table_headers:
+            score -= 9
+        if score < 0:
             continue
         seen.add(signature)
+        ranked.append((-score, index, cleaned, signature))
+
+    for _, _, cleaned, _ in sorted(ranked):
         terms.append(cleaned)
         if len(terms) >= maximum:
             break
@@ -366,7 +412,8 @@ def _build_resilient_dynamic_explanation(question: str, answer: str, *, reason: 
 
     This is deliberately a recovery path, not a second generic template: it only
     uses phrases present in the learner's question and tutor answer, then maps
-    them into three distinct interactive stage protocols.
+    them into six distinct interactive stage protocols. Recovery must still feel
+    like a complete guided exploration instead of a three-slide placeholder.
     """
     topic, terms = _recovery_terms(question, answer)
     structure_terms = terms[:4]
@@ -403,19 +450,163 @@ def _build_resilient_dynamic_explanation(question: str, answer: str, *, reason: 
         }
         for index, label in enumerate(evidence_terms)
     ]
+    state_terms = [structure_terms[0], process_terms[0], process_terms[2], evidence_terms[0]]
+    states = [
+        {
+            "id": f"state-{index + 1}",
+            "label": label,
+            "description": f"当前推演处于“{label}”这一可观察状态，需要确认它是否满足继续向前的条件。",
+        }
+        for index, label in enumerate(state_terms)
+    ]
+    transitions = [
+        {
+            "id": f"transition-{index + 1}",
+            "from": states[index]["id"],
+            "to": states[index + 1]["id"],
+            "trigger": f"“{process_terms[index]}”被确认",
+            "effect": f"推演从“{states[index]['label']}”转入“{states[index + 1]['label']}”。",
+        }
+        for index in range(len(states) - 1)
+    ]
+    dimensions = [
+        {
+            "id": f"dimension-{index + 1}",
+            "label": label,
+            "left": f"“{label}”成立：可以继续沿当前解释推演。",
+            "right": f"“{label}”缺失：必须回到条件重新检查。",
+            "deciding_factor": f"是否能在原问题中观察到“{label}”。",
+        }
+        for index, label in enumerate(process_terms[:3])
+    ]
+    network_terms = [structure_terms[0], structure_terms[2], process_terms[1], evidence_terms[1]]
+    network_nodes = [
+        {
+            "id": f"network-{index + 1}",
+            "label": label,
+            "role": ("输入条件", "结构约束", "作用环节", "可检验证据")[index],
+            "detail": f"“{label}”把当前问题与下一步判断连接起来。",
+        }
+        for index, label in enumerate(network_terms)
+    ]
+    network_edges = [
+        {
+            "id": f"edge-{index + 1}",
+            "from": network_nodes[index]["id"],
+            "to": network_nodes[index + 1]["id"],
+            "label": ("限定", "推动", "验证")[index],
+            "direction": "forward",
+        }
+        for index in range(len(network_nodes) - 1)
+    ]
+    recovery_mid_scenes = [
+        {
+            "title": "观察状态怎样切换",
+            "narration": "把过程拆成连续状态：每次满足一个条件，系统才会切到下一格。",
+            "key_point": "状态不是新名词，而是当前条件满足到哪一步的可见标记。",
+            "visual_type": "stack",
+            "scene_engine": "state",
+            "visual": {"headline": "条件推动状态", "items": state_terms, "before": state_terms[0], "after": state_terms[-1], "example": answer[:160]},
+            "simulation": None,
+            "stage": {
+                "kind": "state-machine",
+                "environment": "条件切换空间",
+                "focal_question": "哪个条件会让当前状态进入下一步？",
+                "chapter_label": "看见状态",
+                "interaction_prompt": "选择一个状态，查看它的进入条件与去向",
+                "requires_interaction": True,
+                "zones": [{"id": item["id"], "label": item["label"], "role": "可观察状态"} for item in states],
+                "cues": [],
+            },
+            "scene_payload": {
+                "kind": "state-machine",
+                "states": states,
+                "transitions": transitions,
+                "initial_state": states[0]["id"],
+                "terminal_states": [states[-1]["id"]],
+                "exception_paths": [{"id": "exception-1", "from": states[1]["id"], "to": states[0]["id"], "trigger": f"“{process_terms[1]}”没有成立", "effect": "回到前一状态重新核对条件，不能直接跳到结论。"}],
+            },
+            "storyboard": _recovery_storyboard("状态切换", state_terms, "条件被确认或缺失时，当前状态会前进或返回。", f"选择“{state_terms[1]}”，查看它会让状态如何转换"),
+            "director_beats": _recovery_beats([(item["id"], item["label"]) for item in states], action_arc=("spawn", "focus", "change", "return", "resolve")),
+            "check": None,
+            "suggested_seconds": 44,
+        },
+        {
+            "title": "把正确路径与失效路径并排",
+            "narration": "同一问题放在两条路径里比较，决定差异的不是表面结果，而是关键条件是否成立。",
+            "key_point": "对照能暴露真正决定结果的条件，也能防止把结论套用到不相同的情境。",
+            "visual_type": "contrast",
+            "scene_engine": "comparison",
+            "visual": {"headline": "两条路径的分界", "items": [item["label"] for item in dimensions], "before": "条件满足", "after": "条件缺失", "example": answer[:160]},
+            "simulation": None,
+            "stage": {
+                "kind": "comparison-studio",
+                "environment": "条件对照台",
+                "focal_question": "哪一个条件把可用解释与失效解释分开？",
+                "chapter_label": "做出对照",
+                "interaction_prompt": "点击一个判断维度，比较两条路径",
+                "requires_interaction": True,
+                "zones": [{"id": item["id"], "label": item["label"], "role": "决定条件"} for item in dimensions],
+                "cues": [],
+            },
+            "scene_payload": {
+                "kind": "comparison-studio",
+                "shared_condition": f"围绕“{topic}”回到同一问题比较条件是否满足。",
+                "dimensions": dimensions,
+                "left_title": "条件成立的路径",
+                "right_title": "条件缺失的路径",
+                "recommendation": f"先核对“{dimensions[0]['label']}”，再决定是否沿用当前关于“{topic}”的解释。",
+            },
+            "storyboard": _recovery_storyboard("路径对照", [item["label"] for item in dimensions], "同一问题在关键条件成立与缺失时会走向不同结果。", f"比较“{dimensions[0]['label']}”成立与缺失时的差别"),
+            "director_beats": _recovery_beats([(item["id"], item["label"]) for item in dimensions], action_arc=("spawn", "focus", "change", "branch", "resolve")),
+            "check": None,
+            "suggested_seconds": 46,
+        },
+        {
+            "title": "回到系统看关系怎么传递",
+            "narration": "把对象、条件、作用环节和证据放到同一张网络里，追踪它们怎样把解释送到结论。",
+            "key_point": "一个结论可靠，不只看单个对象，还要看它在整条关系网络里接收与传出了什么。",
+            "visual_type": "network",
+            "scene_engine": "spatial",
+            "visual": {"headline": "解释的关系网络", "items": network_terms, "before": network_terms[0], "after": network_terms[-1], "example": answer[:160]},
+            "simulation": None,
+            "stage": {
+                "kind": "system-network",
+                "environment": "关系传递网络",
+                "focal_question": "信息从哪里进入，又通过哪些连接变成可检验结论？",
+                "chapter_label": "放回系统",
+                "interaction_prompt": "点击一个节点，追踪它接收与传出的关系",
+                "requires_interaction": True,
+                "zones": [{"id": item["id"], "label": item["label"], "role": item["role"]} for item in network_nodes],
+                "cues": [],
+            },
+            "scene_payload": {
+                "kind": "system-network",
+                "nodes": network_nodes,
+                "edges": network_edges,
+                "inputs": [network_nodes[0]["label"]],
+                "outputs": [network_nodes[-1]["label"]],
+                "feedback_loops": [{"id": "feedback-1", "from": network_nodes[-1]["id"], "to": network_nodes[1]["id"], "label": "回到条件复核"}],
+            },
+            "storyboard": _recovery_storyboard("关系传递", network_terms, "对象通过有方向的连接把输入条件转成可检验依据。", f"选择“{network_terms[1]}”，查看它连接了什么"),
+            "director_beats": _recovery_beats([(item["id"], item["label"]) for item in network_nodes], action_arc=("spawn", "focus", "move", "return", "resolve")),
+            "check": None,
+            "suggested_seconds": 48,
+        },
+    ]
 
     raw = {
         "title": f"{topic}：关键过程演示",
-        "summary": "把当前问答中的关键对象、传递过程和检验依据整理成可操作的三段讲解。",
+        "summary": "把当前问答中的关键对象、机制、状态、对照、系统关系和检验依据整理成六段可操作讲解。",
         "palette": "sage",
         "highlights": [structure_terms[0], process_terms[1], evidence_terms[-1]],
         "director_profile": {
             "domain": "稳定讲解模式",
             "thread_label": topic,
-            "knowledge_structure": "结构—传递—检验",
-            "teaching_arc": "先定位对象，再追踪变化，最后回到证据核验。",
-            "scene_count_reason": "云端分镜暂不可用时，用三种不同交互舞台保留最短有效学习路径。",
-            "phase_plan": ["question", "mechanism", "synthesis"],
+            "knowledge_structure": "结构—传递—状态—对照—系统—检验",
+            "teaching_arc": "先定位对象，再追踪变化、状态和分支，随后放回系统关系，最后回到证据核验。",
+            "scene_count_reason": "云端分镜暂不可用时，仍以六种不同交互舞台保留完整的理解、判断与检验路径。",
+            "phase_plan": ["question", "intuition", "mechanism", "boundary", "verification", "synthesis"],
         },
         "scenes": [
             {
@@ -482,6 +673,7 @@ def _build_resilient_dynamic_explanation(question: str, answer: str, *, reason: 
                 "check": None,
                 "suggested_seconds": 48,
             },
+            *recovery_mid_scenes,
             {
                 "title": "最后用证据检验",
                 "narration": "把结论放回原问题，逐条检查哪些依据支持它、哪些情况会让它失效。",
@@ -1106,6 +1298,12 @@ def _is_transient_model_error(exc: BaseException) -> bool:
     for item in _exception_chain(exc):
         if isinstance(item, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
             return True
+        # Any OpenAI-compatible provider error (including an expired key or a
+        # rejected response format) still leaves us with a valid learner
+        # question and tutor answer.  The local recovery stage can render from
+        # those safely, so do not strand the learner on a failed job.
+        if item.__class__.__module__.startswith("openai"):
+            return True
         if item.__class__.__name__ in transient_names:
             return True
         status_code = getattr(item, "status_code", None)
@@ -1123,8 +1321,14 @@ def _chat_qwen_with_retry(
     progress_callback: Callable[[dict], None] | None = None,
     phase_percent: int = 12,
 ) -> object:
-    """Retry short-lived provider failures before giving the learner a fallback lesson."""
-    retries = 2
+    """Use one bounded cloud attempt, then preserve the learner's study path locally."""
+    # The OpenAI SDK has its own retry policy.  A second retry layer turned a
+    # nominally short dynamic-generation request into minutes of waiting when
+    # the provider was unavailable.  One patient, bounded attempt is enough
+    # here: the durable background job lets a rich storyboard finish without
+    # trapping the learner in this view, while a failed request still has a
+    # complete browser-playable recovery lesson.
+    retries = 0
     for attempt in range(retries + 1):
         try:
             return chat_qwen(
@@ -1132,10 +1336,11 @@ def _chat_qwen_with_retry(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 json_mode=json_mode,
-                # A full dynamic lesson can be expensive, but waiting through
-                # three 90-second transport timeouts is worse than switching
-                # to the structured recovery path.
-                request_timeout=48.0,
+                # Give the cloud model enough room to return a complete rich
+                # storyboard. The request is already running in the durable
+                # background queue, so this does not block the study flow.
+                request_timeout=_CLOUD_STORYBOARD_TIMEOUT_SECONDS,
+                request_max_retries=0,
             )
         except Exception as exc:
             if not _is_transient_model_error(exc) or attempt >= retries:
@@ -2261,6 +2466,31 @@ def generate_dynamic_explanation(
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     """Create a variable-length, browser-safe interactive presentation from a tutoring turn."""
+    # The local demo remains useful before a cloud model is configured.  Do not
+    # send an invalid OpenAI-compatible request (which used to surface as an
+    # opaque failed job); build the same browser-playable recovery lesson
+    # directly from the learner's question and the tutor's answer instead.
+    if not QWEN_API_KEY or not QWEN_MODEL or not QWEN_BASE_URL:
+        logger.info("dynamic explanation using local recovery: cloud model is not configured")
+        _report_progress(
+            progress_callback,
+            phase="recovering",
+            label="正在启用稳定讲解模式",
+            message="当前未配置云端模型，系统会直接用本次问答生成可播放的互动讲解。",
+            percent=28,
+        )
+        recovered = _build_resilient_dynamic_explanation(question, answer, reason="model_unconfigured")
+        _report_progress(
+            progress_callback,
+            phase="finalizing",
+            label="稳定讲解已经就绪",
+            message="已根据当前问题与回答生成可播放的互动讲解，正在保存。",
+            percent=94,
+            total_scenes=len(recovered["explanation"]["scenes"]),
+            quality_score=recovered["explanation"]["quality_report"].get("score"),
+            recovery_mode=True,
+        )
+        return recovered
     messages = [
         {
             "role": "system",
@@ -2270,8 +2500,8 @@ def generate_dynamic_explanation(
                 "It is an animation storyboard, never a deck of slides, and it must not be a fixed six-scene template. Return exactly one JSON object "
                 "with title, summary, palette, highlights, director_profile, and scenes. director_profile contains domain, thread_label, knowledge_structure, teaching_arc, scene_count_reason, and phase_plan.\n"
                 "Before writing scenes, silently classify the knowledge structure: concept system, causal mechanism, chronological evolution, state transition, comparison, case reasoning, parameter experiment, or a purposeful mixture. "
-                "Choose 3 to 10 scenes from the learning task. A short definition can use 3 or 4 focused scenes; most substantial lessons should use 5 to 9. A process, "
-                "problem-solving method, examination topic, or difficult misconception may need 7 to 10 scenes. Explain the chosen count in scene_count_reason. Every scene "
+                "Generate 5 to 9 scenes from the learning task. Do not return a three-scene or four-scene mini-deck: even a concise definition needs a visual structure, a mechanism or state change, a concrete comparison/case, and a recallable synthesis. A process, "
+                "problem-solving method, examination topic, or difficult misconception should normally use 6 to 9 scenes. Explain the chosen count in scene_count_reason. Every scene "
                 "must earn its place in the teaching arc.\n"
                 "palette must be one of sage, cobalt, ember, plum, ink. Use one coherent palette for the whole presentation.\n"
                 "Each scene must contain title, narration, key_point, visual_type, scene_engine, visual, simulation, stage, scene_payload, storyboard, director_beats, continuity, path_role, branching, branch_brief, check, suggested_seconds. narration is "
@@ -2341,15 +2571,15 @@ def generate_dynamic_explanation(
     _report_progress(
         progress_callback,
         phase="drafting",
-        label="正在编排动画分镜",
-        message="智能导演正在为每一幕选择可交互的全屏动画舞台。",
+        label="正在用云端模型精修分镜",
+        message="单次云端分镜生成最长约 2 分钟；任务会在后台继续运行。完成前还会检查文字密度、交互点和状态变化。",
         percent=12,
     )
     try:
         response = _chat_qwen_with_retry(
             messages,
             temperature=0.25,
-            max_tokens=3800,
+            max_tokens=6200,
             json_mode=True,
             progress_callback=progress_callback,
             phase_percent=12,
@@ -2360,6 +2590,8 @@ def generate_dynamic_explanation(
             require_director_beats=True,
             visual_first=True,
         )
+        if len(result["scenes"]) < 5:
+            raise ValueError("动态讲解需要至少 5 个连续场景，不能退化成短页演示")
     except Exception as exc:
         # The main model is remote and can occasionally return a truncated JSON
         # object or be unavailable despite a valid learner request. Preserve the

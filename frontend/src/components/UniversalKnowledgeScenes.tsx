@@ -47,6 +47,12 @@ type StoryboardVisualItem = {
   role?: string
 }
 
+// A stage's learning grammar (causal chain, timeline, network…) determines
+// how an idea moves.  Its subject material determines what the learner feels
+// they are looking at.  Keeping those two decisions separate prevents every
+// subject from turning into the same set of neutral cards with a new colour.
+type StoryboardMood = 'circuit' | 'archive' | 'organic' | 'formula' | 'dossier' | 'flow' | 'route' | 'paper'
+
 type CausalTransmissionNode = StoryboardVisualItem & {
   id: string
   label: string
@@ -81,22 +87,53 @@ const networkPositions = [
   { x: 56, y: 82 }, { x: 23, y: 75 }, { x: 48, y: 50 },
 ]
 
-const dossierPositions = [
-  { x: 15, y: 22, rotation: -4 }, { x: 81, y: 18, rotation: 3 }, { x: 84, y: 69, rotation: -2 },
-  { x: 28, y: 79, rotation: 4 }, { x: 47, y: 12, rotation: -1 }, { x: 12, y: 58, rotation: 2 },
-]
-
 const stateRoutePositions = [
   { x: 11, y: 57 }, { x: 27, y: 30 }, { x: 49, y: 26 }, { x: 73, y: 43 },
   { x: 84, y: 71 }, { x: 53, y: 78 }, { x: 25, y: 73 },
 ]
 
 function stageDossierPositions(count: number) {
-  if (count <= 1) return [{ x: 18, y: 28, rotation: -4 }]
-  if (count === 2) return [{ x: 18, y: 34, rotation: -4 }, { x: 82, y: 34, rotation: 4 }]
-  if (count === 3) return [{ x: 17, y: 24, rotation: -4 }, { x: 83, y: 24, rotation: 4 }, { x: 50, y: 80, rotation: -1 }]
-  if (count === 4) return [{ x: 17, y: 23, rotation: -4 }, { x: 83, y: 22, rotation: 4 }, { x: 82, y: 77, rotation: -3 }, { x: 18, y: 78, rotation: 3 }]
-  return dossierPositions
+  // A case is read left-to-right: the learner's question sets the condition,
+  // short evidence signals travel on two lanes, and only then does the verdict
+  // form.  Keeping the cards on this route prevents the old "postcards around
+  // a circle" composition from turning an argument into a slide.
+  const runway = [
+    { x: 35, y: 31, rotation: 0 }, { x: 53, y: 31, rotation: 0 }, { x: 35, y: 69, rotation: 0 },
+    { x: 53, y: 69, rotation: 0 }, { x: 44, y: 50, rotation: 0 }, { x: 63, y: 50, rotation: 0 },
+  ]
+  if (count <= 1) return [{ x: 44, y: 50, rotation: 0 }]
+  if (count === 2) return [runway[0], runway[2]]
+  if (count === 3) return [runway[0], runway[1], runway[2]]
+  if (count === 4) return runway.slice(0, 4)
+  return runway
+}
+
+function dossierRoutePath(point: { x: number; y: number }, index: number) {
+  const bend = point.y < 50 ? -5 : 5
+  const firstControlX = Math.min(64, point.x + 14)
+  const secondControlX = 72
+  return `M ${point.x + 6} ${point.y} C ${firstControlX} ${point.y}, ${secondControlX} ${50 + bend + (index % 2 ? 1.5 : -1.5)}, 78 50`
+}
+
+function compactCaseLabel(value: string | undefined, fallback: string) {
+  const raw = (value || '').replace(/\[[^\]]+\]\([^)]*\)/g, match => match.replace(/^\[|\]\([^)]*\)$/g, ''))
+  const tableCells = raw
+    .split('|')
+    .map(cell => cell.replace(/[`*_#>]/g, '').replace(/^\s*(?:[-•]|\d+[.)])\s*/, '').trim())
+    .filter(Boolean)
+  const genericTableLabels = /^(?:你的目标|建议任务|时间|正确理解|重点理解|工具推荐|课程视频|小练习|实验建议)$/
+  const candidate = (tableCells.length > 1
+    ? tableCells.find(cell => !genericTableLabels.test(cell))
+    : tableCells[0]) || fallback
+  const plain = candidate
+    .replace(/[“”"']/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/(?:^|\s)(?:例如|比如|包含|包括).*/u, '')
+    .trim()
+  if (!plain) return fallback
+  const naturalStop = plain.search(/[，、。；;：:（(]/u)
+  const short = naturalStop >= 4 ? plain.slice(0, naturalStop) : plain
+  return short.length > 14 ? `${short.slice(0, 13).replace(/[，、；;：: ]+$/u, '')}…` : short
 }
 
 function stageRoutePositions(count: number) {
@@ -156,7 +193,7 @@ function matchingItemIndex(items: StoryboardVisualItem[], term?: string) {
   return items.findIndex(item => itemStoryboardTerms(item).some(value => storyboardTermsMatch(value, term)))
 }
 
-function storyboardMood(scene: DynamicExplanationScene, kind: DynamicExplanationStageKind) {
+function storyboardMood(scene: DynamicExplanationScene, kind: DynamicExplanationStageKind): StoryboardMood {
   const source = [
     scene.title,
     scene.narration,
@@ -174,6 +211,83 @@ function storyboardMood(scene: DynamicExplanationScene, kind: DynamicExplanation
   if (kind === 'timeline-river' || kind === 'causal-chain') return 'flow'
   if (kind === 'state-machine') return 'route'
   return 'paper'
+}
+
+/**
+ * A quiet, content-shaped physical substrate for the universal stages.
+ *
+ * It intentionally contains no copy: the stage nodes keep the real knowledge
+ * labels, while this layer gives their relationships a recognisable material
+ * language.  The director playhead from CinematicKnowledgeStage drives the
+ * highlighted path through CSS variables, so it advances during a beat rather
+ * than popping between static slides.
+ */
+function SubjectStageScaffold({ mood }: { mood: StoryboardMood }) {
+  if (!['circuit', 'archive', 'organic', 'formula'].includes(mood)) return null
+
+  if (mood === 'circuit') {
+    return (
+      <div className="subject-stage-scaffold subject-stage-scaffold--circuit" aria-hidden="true">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path className="subject-trace trace-a" pathLength={100} d="M 2 26 H 19 V 47 H 40 V 34 H 63 V 62 H 83 V 44 H 98" />
+          <path className="subject-trace trace-b" pathLength={100} d="M 2 73 H 16 V 56 H 33 V 71 H 54 V 45 H 75 V 31 H 98" />
+          <path className="subject-trace trace-c" pathLength={100} d="M 25 2 V 18 H 48 V 29 H 71 V 17 H 91 V 2" />
+          <circle className="subject-terminal terminal-a" cx="19" cy="47" r="1.8" />
+          <circle className="subject-terminal terminal-b" cx="63" cy="62" r="1.8" />
+          <circle className="subject-terminal terminal-c" cx="75" cy="31" r="1.8" />
+        </svg>
+        <i className="subject-signal signal-a" />
+        <i className="subject-signal signal-b" />
+      </div>
+    )
+  }
+
+  if (mood === 'archive') {
+    return (
+      <div className="subject-stage-scaffold subject-stage-scaffold--archive" aria-hidden="true">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path className="subject-thread" pathLength={100} d="M 5 71 C 17 54, 24 76, 37 58 S 56 43, 69 53 S 85 36, 96 22" />
+          <path className="subject-thread subject-thread--ghost" d="M 5 83 C 20 66, 28 88, 44 68 S 62 56, 77 62 S 91 49, 98 42" />
+          <rect className="subject-record record-a" x="14" y="49" width="13" height="17" rx="1" />
+          <rect className="subject-record record-b" x="45" y="40" width="15" height="19" rx="1" />
+          <rect className="subject-record record-c" x="77" y="28" width="12" height="16" rx="1" />
+        </svg>
+        <i className="subject-seal seal-a" />
+        <i className="subject-seal seal-b" />
+      </div>
+    )
+  }
+
+  if (mood === 'organic') {
+    return (
+      <div className="subject-stage-scaffold subject-stage-scaffold--organic" aria-hidden="true">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path className="subject-membrane" d="M 18 45 C 16 20, 41 8, 63 17 C 85 26, 92 53, 76 73 C 62 91, 31 88, 20 68 C 16 60, 20 52, 18 45 Z" />
+          <path className="subject-vein vein-a" pathLength={100} d="M 20 62 C 33 51, 41 59, 51 47 S 70 34, 80 25" />
+          <path className="subject-vein vein-b" pathLength={100} d="M 25 30 C 37 38, 45 32, 57 46 S 69 66, 78 73" />
+          <circle className="subject-organelle organelle-a" cx="37" cy="47" r="4" />
+          <circle className="subject-organelle organelle-b" cx="63" cy="56" r="3.2" />
+          <circle className="subject-organelle organelle-c" cx="55" cy="31" r="2.4" />
+        </svg>
+        <i className="subject-drift drift-a" />
+        <i className="subject-drift drift-b" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="subject-stage-scaffold subject-stage-scaffold--formula" aria-hidden="true">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+        <path className="subject-axis" d="M 8 82 H 96 M 17 94 V 8" />
+        <path className="subject-curve" pathLength={100} d="M 18 74 C 31 74, 33 58, 46 53 S 57 33, 69 36 S 77 18, 92 15" />
+        <path className="subject-curve subject-curve--secondary" pathLength={100} d="M 18 24 C 33 31, 37 47, 52 51 S 73 69, 92 76" />
+        <circle className="subject-coordinate coordinate-a" cx="46" cy="53" r="2.2" />
+        <circle className="subject-coordinate coordinate-b" cx="69" cy="36" r="2.2" />
+      </svg>
+      <i className="subject-variable variable-a" />
+      <i className="subject-variable variable-b" />
+    </div>
+  )
 }
 
 function beatIndex(index: number, count: number, beats: DynamicExplanationBeat[]) {
@@ -294,6 +408,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
   const [selectedStateId, setSelectedStateId] = useState<string | null>(null)
   const [showExceptionPath, setShowExceptionPath] = useState(false)
   const [openedEvidenceIds, setOpenedEvidenceIds] = useState<string[]>([])
+  const [counterEvidenceOpen, setCounterEvidenceOpen] = useState(false)
   const parameterPayload = scene.scene_payload?.kind === 'parameter-lab' ? scene.scene_payload : null
   const inputMin = parameterPayload?.min ?? scene.simulation?.input_min ?? 0
   const inputMax = parameterPayload?.max ?? scene.simulation?.input_max ?? 100
@@ -355,6 +470,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     setSelectedStateId(null)
     setShowExceptionPath(false)
     setOpenedEvidenceIds([])
+    setCounterEvidenceOpen(false)
     setParameterValue(initialInput)
     setExploredStoryboardAtoms([])
   }, [initialInput, scene.id])
@@ -391,6 +507,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     } as CSSProperties
     return (
       <div className={`universal-scene concept-constellation-scene ${motionClass} ${storyboardSurfaceClass}`} data-motion={motionAction}>
+        <SubjectStageScaffold mood={sceneMood} />
         <div className="constellation-field" style={constellationStyle} aria-label={tr('概念星图', 'Concept constellation')}>
           <div className={`constellation-core ${storyboardAtomClass({ label: payload?.core || scene.visual.headline || scene.title })}`}><Atom size={31} /><strong>{payload?.core || scene.visual.headline || scene.title}</strong><span>{payload?.core_detail || scene.key_point}</span></div>
           <i className="constellation-focus-ray" aria-hidden="true" />
@@ -457,13 +574,17 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
       : Math.max(activeIndex, Math.min(causalNodes.length - 1, Math.round(progress * Math.max(0, causalNodes.length - 1))))
     const cutIndex = Math.min(Math.max(0, activeIndex), Math.max(0, causalNodes.length - 2))
     const focusedPoint = layout[activeIndex] || layout[0]
-    const signalStart = layout[Math.max(0, activeIndex - 1)] || focusedPoint
     const barrierPoint = causalBlocked && layout[cutIndex + 1]
       ? {
-          x: (layout[cutIndex].x + layout[cutIndex + 1].x) / 2,
-          y: (layout[cutIndex].y + layout[cutIndex + 1].y) / 2,
-        }
+        x: (layout[cutIndex].x + layout[cutIndex + 1].x) / 2,
+        y: (layout[cutIndex].y + layout[cutIndex + 1].y) / 2,
+      }
       : null
+    const activeLink = activeIndex > 0
+      ? causalLinkPath(layout[activeIndex - 1], focusedPoint, activeIndex - 1)
+      : ''
+    const stateBefore = focused?.state_before || focused?.mechanism || scene.visual.before || tr('条件尚未触发', 'Condition inactive')
+    const stateAfter = focused?.state_after || focused?.observable || focused?.effect || scene.visual.after || scene.key_point
     const stateChange = [focused?.state_before, focused?.state_after].filter(Boolean).join(' → ')
     const currentExplanation = causalBlocked
       ? tr('条件被切断，信号停在当前环节，后续状态不会继续形成。', 'The condition is cut, so the signal stops here and downstream states do not form.')
@@ -474,9 +595,11 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
       onInteraction?.({ kind, label: tr('从头观察机制链', 'Replay mechanism chain'), detail: payload?.trigger || scene.title, value: tr('回到触发条件', 'Back to trigger'), signal: 'complete' })
     }
     return (
-      <div className={`universal-scene causal-flux-stage ${motionClass}${causalBlocked ? ' is-blocked' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} aria-label={tr('因果机制传导台', 'Causal mechanism transmission desk')}>
+      <div className={`universal-scene causal-flux-stage ${motionClass}${causalBlocked ? ' is-blocked' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} data-causal-mood={sceneMood} aria-label={tr('因果机制传导台', 'Causal mechanism transmission desk')}>
+        <SubjectStageScaffold mood={sceneMood} />
         <div className="causal-flux-world" aria-label={tr('因果机制流动演示', 'Causal mechanism flow demonstration')}>
           <div className="causal-flux-title" aria-hidden="true"><GitBranch size={15} /><span>{scene.stage?.focal_question || scene.title}</span></div>
+          <div className={`causal-flux-focus-field role-${focused?.role || 'step'}`} style={{ '--causal-focus-x': `${focusedPoint.x}%`, '--causal-focus-y': `${focusedPoint.y}%` } as CSSProperties} key={`focus-${scene.id}-${activeIndex}-${causalBlocked ? 'blocked' : 'flow'}`} aria-hidden="true"><i /><i /><b /></div>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {causalNodes.slice(0, -1).map((_, index) => {
               const path = causalLinkPath(layout[index], layout[index + 1], index)
@@ -489,8 +612,17 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
             })}
             {barrierPoint && <g className="causal-flux-barrier" transform={`translate(${barrierPoint.x} ${barrierPoint.y})`}><path d="M -2.1 -4.1 L 2.1 -4.1 L 2.1 4.1 L -2.1 4.1 Z" /><path d="M -1.35 -2.65 L 1.35 2.65 M 1.35 -2.65 L -1.35 2.65" /></g>}
             <g className="causal-flux-signal" key={`signal-${scene.id}-${activeIndex}-${causalBlocked ? 'blocked' : 'flow'}`}>
-              <circle className="causal-flux-signal-halo" cx={focusedPoint.x} cy={focusedPoint.y} r="3.4"><animate attributeName="cx" from={signalStart.x} to={focusedPoint.x} dur="560ms" fill="freeze" /><animate attributeName="cy" from={signalStart.y} to={focusedPoint.y} dur="560ms" fill="freeze" /></circle>
-              <circle className="causal-flux-signal-core" cx={focusedPoint.x} cy={focusedPoint.y} r="1.35"><animate attributeName="cx" from={signalStart.x} to={focusedPoint.x} dur="560ms" fill="freeze" /><animate attributeName="cy" from={signalStart.y} to={focusedPoint.y} dur="560ms" fill="freeze" /></circle>
+              {activeLink && !causalBlocked ? (
+                <>
+                  <circle className="causal-flux-signal-halo" cx="0" cy="0" r="3.4"><animateMotion path={activeLink} dur="720ms" fill="freeze" /></circle>
+                  <circle className="causal-flux-signal-core" cx="0" cy="0" r="1.35"><animateMotion path={activeLink} dur="720ms" fill="freeze" /></circle>
+                </>
+              ) : (
+                <>
+                  <circle className="causal-flux-signal-halo" cx={focusedPoint.x} cy={focusedPoint.y} r="3.4" />
+                  <circle className="causal-flux-signal-core" cx={focusedPoint.x} cy={focusedPoint.y} r="1.35" />
+                </>
+              )}
             </g>
           </svg>
           {causalNodes.map((node, index) => {
@@ -504,6 +636,11 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
               <span className="causal-flux-node-mark" aria-hidden="true"><i /></span><small>{roleLabel}</small><strong>{node.label}</strong>{stateLabel && <em>{stateLabel}</em>}
             </button>
           })}
+          <div className="causal-flux-state-transform" key={`state-${scene.id}-${activeIndex}-${causalBlocked ? 'blocked' : 'flow'}`} aria-live="polite">
+            <span className="causal-flux-state-token causal-flux-state-token--before"><i aria-hidden="true" /><small>{tr('前一状态', 'Before')}</small><strong title={stateBefore}>{stateBefore}</strong></span>
+            <span className="causal-flux-state-arrow" aria-hidden="true"><ArrowRight size={18} /></span>
+            <span className="causal-flux-state-token causal-flux-state-token--after"><i aria-hidden="true" /><small>{causalBlocked ? tr('未形成', 'Blocked') : tr('可观察变化', 'After')}</small><strong title={causalBlocked ? payload?.blockers[0] || stateAfter : stateAfter}>{causalBlocked ? payload?.blockers[0] || stateAfter : stateAfter}</strong></span>
+          </div>
         </div>
         <aside className="causal-flux-insight"><div><span>{focused?.label || activeBeat?.label || scene.title}{stateChange ? ` · ${stateChange}` : ''}</span><strong>{currentExplanation}</strong></div><nav className="causal-flux-actions" aria-label={tr('机制控制', 'Mechanism controls')}>{payload?.blockers[0] && <button type="button" className={causalBlocked ? 'active' : ''} aria-pressed={causalBlocked} onClick={() => { const blocked = !causalBlocked; setCausalBlocked(blocked); onInteraction?.({ kind, label: blocked ? tr('因果链已被阻断', 'Causal chain blocked') : tr('因果链已恢复', 'Causal chain restored'), detail: blocked ? payload.blockers[0] : payload.outcome || scene.key_point, value: blocked ? tr('结果未形成', 'Outcome prevented') : payload.outcome || scene.key_point, signal: blocked ? 'blocked' : 'complete' }) }}><ShieldAlert size={14} />{causalBlocked ? tr('恢复流动', 'Restore flow') : tr('切断条件', 'Cut condition')}</button>}<button type="button" className="causal-flux-replay" onClick={replay}><RotateCcw size={14} />{tr('从头观察', 'Replay')}</button></nav></aside>
       </div>
@@ -519,6 +656,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     const activeY = activeIndex % 3 === 0 ? 54 : activeIndex % 3 === 1 ? 28 : 68
     return (
       <div className={`universal-scene timeline-river-scene ${motionClass} ${storyboardSurfaceClass}`} style={{ '--timeline-x': `${activeX}%`, '--timeline-y': `${activeY}%` } as CSSProperties} data-motion={motionAction}>
+        <SubjectStageScaffold mood={sceneMood} />
         <div className="timeline-river-heading"><Timer size={22} /><strong>{payload?.period_label || scene.visual.headline || scene.title}</strong><span>{scene.stage?.focal_question}</span></div>
         <div className="timeline-river-flow">
           <svg viewBox="0 0 1000 260" preserveAspectRatio="none" aria-hidden="true"><path d="M20 150 C180 40 260 235 430 128 C610 18 720 238 980 92" /><path className="active" pathLength="1" strokeDasharray="1" strokeDashoffset={1 - progress} d="M20 150 C180 40 260 235 430 128 C610 18 720 238 980 92" /></svg>
@@ -560,6 +698,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     const rightTitle = payload?.right_title || scene.visual.after || fallbackRight[0]?.label || scene.key_point
     return (
       <div className={`universal-scene comparison-decision-stage focus-${comparisonFocus} ${motionClass} ${storyboardSurfaceClass}`} style={{ '--comparison-bias': comparisonFocus === 'left' ? '-1' : '1' } as CSSProperties} data-motion={motionAction}>
+        <SubjectStageScaffold mood={sceneMood} />
         <div className="comparison-decision-halo" aria-hidden="true" />
         <button type="button" className={`comparison-candidate left ${storyboardAtomClass({ label: leftTitle }, comparisonFocus === 'left')}`} onClick={() => choose('left')} aria-pressed={comparisonFocus === 'left'}><Scale size={21} /><span>{tr('方案 A', 'Option A')}</span><strong>{leftTitle}</strong><i>{selected?.left || tr('等待对比', 'Ready to compare')}</i></button>
         <section className="comparison-decision-core" aria-label={tr('对比决策台', 'Comparison decision desk')}>
@@ -585,6 +724,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     const focusedPoint = positions.get(focused?.id) || networkPositions[0]
     return (
       <div className={`universal-scene system-network-scene ${motionClass} ${storyboardSurfaceClass}`} data-motion={motionAction}>
+        <SubjectStageScaffold mood={sceneMood} />
         <header><Network size={22} /><strong>{scene.visual.headline || scene.title}</strong><span>{tr('输入', 'Input')} · {payload?.inputs.join(' / ') || scene.stage?.focal_question}</span></header>
         <div className="system-network-field">
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">{networkEdges.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); return from && to ? <g className={tracedEdges.has(index) ? 'trace-active' : ''} key={`${edge.from}-${edge.to}-${index}`}><line className={tracedEdges.has(index) ? 'active' : ''} x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{edge.label}</text></g> : null })}{payload?.feedback_loops.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); return from && to ? <line className={`feedback${focused?.id === edge.from ? ' active' : ''}`} strokeDasharray="2 2" x1={from.x} y1={from.y} x2={to.x} y2={to.y} key={`feedback-${index}`} /> : null })}</svg>
@@ -610,6 +750,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     const routeRunnerPoint = transitionTo || statePositions.get(focused?.id || '') || stateRoutePositions[0]
     return (
       <div className={`universal-scene state-route-stage ${motionClass}${showExceptionPath ? ' exception-open' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} aria-label={tr('状态切换路线', 'State transition route')}>
+        <SubjectStageScaffold mood={sceneMood} />
         <header className="state-route-heading"><CircleDot size={18} /><strong>{scene.visual.headline || scene.title}</strong><span>{scene.stage?.focal_question}</span></header>
         <div className="state-route-field">
           <div className="state-route-wash" aria-hidden="true" />
@@ -657,6 +798,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     }
     return (
       <div className={`universal-scene parameter-lab-scene ${motionClass} ${storyboardSurfaceClass}`} style={{ '--parameter-ratio': parameterRatio } as CSSProperties} data-motion={motionAction}>
+        <SubjectStageScaffold mood={sceneMood} />
         <section className={`parameter-control-bench ${storyboardAtomClass({ label: parameterPayload?.parameter_label || scene.simulation?.input_label || scene.visual.headline || scene.title })}`}><SlidersHorizontal size={25} /><strong>{parameterPayload?.parameter_label || scene.simulation?.input_label || scene.visual.headline || tr('条件参数', 'Condition')}</strong><label><span>{inputMin}{parameterPayload?.unit}</span><input type="range" min={inputMin} max={inputMax} value={parameterValue} onChange={event => setParameter(Number(event.target.value))} /><span>{inputMax}{parameterPayload?.unit}</span></label><b>{parameterValue}<small>{parameterPayload?.unit}</small></b><p>{threshold?.effect || scene.simulation?.experiment?.description || scene.stage?.focal_question}</p>{parameterPayload && <em className={stable ? 'stable' : ''}>{stable ? parameterPayload.stable_range.label : threshold?.label}</em>}</section>
         <section className="parameter-response-field"><div className="parameter-wave"><i /><i /><i /><span />{parameterPayload?.response_points.map(point => { const ratio = (point.value - inputMin) / Math.max(1, inputMax - inputMin); return <button type="button" className={`${response === point ? 'active motion-target' : ''} ${storyboardAtomClass(point, response === point)}`} style={{ '--point-x': `${ratio * 100}%` } as CSSProperties} onClick={() => setParameter(point.value)} key={`${point.value}-${point.label}`}><small>{point.value}</small><strong>{point.label}</strong></button> })}</div><div><small>{tr('实时响应', 'Live response')}</small><strong>{response?.result || activeBeat?.value || scene.visual.after || scene.key_point}</strong><p>{response ? `${response.label} · ${threshold?.effect || response.result}` : activeBeat?.detail || scene.narration}</p></div></section>
       </div>
@@ -664,26 +806,78 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
   }
 
   const payload = scene.scene_payload?.kind === 'case-lab' ? scene.scene_payload : null
-  const evidence = payload?.evidence?.length ? payload.evidence.slice(0, 6) : nodes.slice(0, 6).map(node => ({ id: node.id, label: node.label, detail: node.role || scene.narration, supports: scene.key_point }))
+  const evidenceCandidates = [
+    ...(payload?.evidence || []),
+    ...nodes.map(node => ({ id: `zone-${node.id}`, label: node.label, detail: node.role || scene.narration, supports: scene.key_point })),
+    ...(payload?.reasoning_steps || []).map((detail, index) => ({ id: `reasoning-${index + 1}`, label: tr(`推理线索 ${index + 1}`, `Reasoning cue ${index + 1}`), detail, supports: payload?.conclusion || scene.key_point })),
+  ]
+  const seenEvidenceLabels = new Set<string>()
+  const evidence = evidenceCandidates.filter(item => {
+    const key = item.label.trim().toLocaleLowerCase()
+    if (!key || seenEvidenceLabels.has(key)) return false
+    seenEvidenceLabels.add(key)
+    return true
+  // Four clear, material pieces of evidence communicate an argument better
+  // than six tiny labels.  The remaining detail stays available in the active
+  // cue and the counterexample, rather than compressing the stage into a wall
+  // of text.
+  }).slice(0, 4)
   const activeIndex = focusIndex(evidence)
   const focusedEvidence = evidence[activeIndex]
-  const evidenceNeeded = Math.min(2, evidence.length)
+  const evidenceNeeded = Math.min(evidence.length, Math.max(2, Math.min(4, Math.ceil(evidence.length * .6))))
   const conclusionReady = openedEvidenceIds.length >= evidenceNeeded
   const dossierLayout = stageDossierPositions(evidence.length)
+  const counterEvidence = payload?.counterevidence[0] || tr('回到原始条件核对：它不成立时，当前结论就不能直接套用。', 'Return to the original condition: if it fails, the conclusion cannot be applied directly.')
+  const conclusion = payload?.conclusion || focusedEvidence?.supports || scene.key_point
+  const evidenceReadiness = evidenceNeeded ? Math.min(1, openedEvidenceIds.length / evidenceNeeded) : 0
+  const focalQuestion = scene.stage?.focal_question || scene.key_point
+  const compactQuestion = compactCaseLabel(focalQuestion, tr('当前问题', 'Current question'))
+  const compactConclusion = compactCaseLabel(conclusion, tr('等待证据汇流', 'Waiting for evidence'))
   return (
-    <div className={`universal-scene case-dossier-stage ${motionClass}${conclusionReady ? ' conclusion-ready' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} aria-label={tr('案例证据推演台', 'Case evidence reasoning desk')}>
-      <header className="case-dossier-heading"><BookOpenCheck size={18} /><strong>{scene.visual.headline || scene.title}</strong><span>{payload?.background || scene.stage?.focal_question}</span></header>
+    <div className={`universal-scene case-dossier-stage case-evidence-theater case-evidence-runway ${motionClass}${conclusionReady ? ' conclusion-ready' : ''} ${counterEvidenceOpen ? ' counterevidence-open' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} style={{ '--case-readiness': evidenceReadiness } as CSSProperties} aria-label={tr('案例证据推演台', 'Case evidence reasoning desk')}>
+      <header className="case-dossier-heading">
+        <div><BookOpenCheck size={18} /><strong>{scene.visual.headline || scene.title}</strong></div>
+        <span>{payload?.background || scene.stage?.focal_question}</span>
+        <small>{tr(`证据 ${Math.min(openedEvidenceIds.length, evidenceNeeded)}/${evidenceNeeded || 0}`, `Evidence ${Math.min(openedEvidenceIds.length, evidenceNeeded)}/${evidenceNeeded || 0}`)}</small>
+      </header>
       <div className="case-dossier-field">
-        <div className="case-dossier-paper" aria-hidden="true" />
-        <svg className="case-dossier-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">{evidence.map((item, index) => { const point = dossierLayout[index % dossierLayout.length]; const opened = openedEvidenceIds.includes(item.id); return <line className={`${opened ? 'opened' : ''}${index === activeIndex ? ' active' : ''}`} x1={point.x} y1={point.y} x2="50" y2="51" key={item.id} /> })}</svg>
-        <section className="case-conclusion-lens" aria-live="polite"><i>{conclusionReady ? <Check size={24} /> : <Search size={24} />}</i><span>{conclusionReady ? tr('结论已解锁', 'Conclusion unlocked') : tr('正在拼合证据', 'Assembling evidence')}</span><strong>{conclusionReady ? payload?.conclusion || focusedEvidence?.supports || scene.key_point : tr(`再核验 ${Math.max(0, evidenceNeeded - openedEvidenceIds.length)} 条`, `${Math.max(0, evidenceNeeded - openedEvidenceIds.length)} more`)}</strong></section>
-        {evidence.map((item, index) => {
-          const opened = openedEvidenceIds.includes(item.id)
-          const position = dossierLayout[index % dossierLayout.length]
-          return <button type="button" className={`${index === activeIndex ? 'active motion-target' : ''}${opened ? ' opened' : ''} ${storyboardAtomClass(item, index === activeIndex)}`} style={{ '--dossier-x': `${position.x}%`, '--dossier-y': `${position.y}%`, '--dossier-rotation': `${position.rotation}deg`, '--dossier-delay': `${index * 60}ms` } as CSSProperties} aria-pressed={opened} onClick={() => { rememberStoryboardAtom(item); const nextOpened = opened ? openedEvidenceIds : [...openedEvidenceIds, item.id]; setOpenedEvidenceIds(nextOpened); const unlocked = nextOpened.length >= evidenceNeeded; interactFor(index, evidence.length, { label: unlocked ? tr('证据链已完成', 'Evidence chain complete') : item.label, detail: unlocked ? payload?.conclusion || item.supports || scene.key_point : item.detail, value: unlocked ? payload?.counterevidence[0] : item.supports, signal: unlocked ? 'complete' : 'incomplete' }) }} key={item.id}><i>{opened ? <Check size={15} /> : <Search size={15} />}</i><span><small>{opened ? tr('已核验', 'Checked') : `${tr('证据', 'Evidence')} ${index + 1}`}</small><strong>{item.label}</strong></span></button>
-        })}
+        <div className="case-evidence-camera">
+          <div className="case-evidence-world">
+        <svg className="case-evidence-routes" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {evidence.map((item, index) => {
+            const point = dossierLayout[index % dossierLayout.length]
+            const opened = openedEvidenceIds.includes(item.id)
+            const route = dossierRoutePath(point, index)
+            const signalDuration = Math.max(1.8, Math.min(5, (activeBeat?.duration_ms || 3200) / 1000))
+            return <g key={item.id}>
+              <path className="case-route-base" d={route} />
+              <path className={`${opened ? 'opened' : ''}${index === activeIndex ? ' active' : ''}`} pathLength="100" d={route} />
+              <circle className="case-route-origin" cx={point.x + 6} cy={point.y} r=".7" />
+              {index === activeIndex && <circle className="case-route-signal" cx="0" cy="0" r="1.12"><animateMotion path={route} dur={`${signalDuration}s`} fill="freeze" /></circle>}
+            </g>
+          })}
+        </svg>
+        <section className="case-question-anchor" title={focalQuestion}><span>{tr('待回答的问题', 'Question to resolve')}</span><strong>{compactQuestion}</strong><i aria-hidden="true" /></section>
+        <section className="case-verdict-hub" aria-live="polite">
+          <i>{conclusionReady ? <Check size={26} /> : <Search size={26} />}</i>
+          <span>{conclusionReady ? tr('判断已形成', 'Verdict formed') : tr('证据正在汇入', 'Evidence converging')}</span>
+          <strong title={conclusionReady ? conclusion : undefined}>{conclusionReady ? compactConclusion : tr(`还需核验 ${Math.max(0, evidenceNeeded - openedEvidenceIds.length)} 条关键依据`, `${Math.max(0, evidenceNeeded - openedEvidenceIds.length)} more key cues`)}</strong>
+          <small>{focusedEvidence?.supports || scene.key_point}</small>
+          <em aria-hidden="true"><b /><b /><b /><b /></em>
+        </section>
+        <div className="case-evidence-scatter">
+          {evidence.map((item, index) => {
+            const opened = openedEvidenceIds.includes(item.id)
+            const position = dossierLayout[index % dossierLayout.length]
+            const compactLabel = compactCaseLabel(item.label, tr(`线索 ${index + 1}`, `Cue ${index + 1}`))
+            return <button type="button" className={`${index === activeIndex ? 'active motion-target' : ''}${opened ? ' opened' : ''} ${storyboardAtomClass(item, index === activeIndex)}`} style={{ '--dossier-x': `${position.x}%`, '--dossier-y': `${position.y}%`, '--dossier-rotation': `${position.rotation}deg`, '--dossier-delay': `${index * 60}ms`, '--dossier-order': index } as CSSProperties} aria-label={`${opened ? tr('已核验', 'Checked') : tr('核验证据', 'Check evidence')}：${item.label}`} aria-pressed={opened} onClick={() => { rememberStoryboardAtom(item); const nextOpened = opened ? openedEvidenceIds : [...openedEvidenceIds, item.id]; setOpenedEvidenceIds(nextOpened); const unlocked = nextOpened.length >= evidenceNeeded; interactFor(index, evidence.length, { label: unlocked ? tr('证据链已完成', 'Evidence chain complete') : item.label, detail: unlocked ? conclusion : item.detail, value: unlocked ? counterEvidence : item.supports, signal: unlocked ? 'complete' : 'incomplete' }) }} key={item.id}><i>{opened ? <Check size={15} /> : <Search size={15} />}</i><span><small>{opened ? tr('已核验', 'Checked') : `${tr('线索', 'Cue')} ${String(index + 1).padStart(2, '0')}`}</small><strong title={item.label}>{compactLabel}</strong></span></button>
+          })}
+        </div>
+        <button type="button" className="case-countercheck" aria-pressed={counterEvidenceOpen} onClick={() => { const next = !counterEvidenceOpen; setCounterEvidenceOpen(next); onInteraction?.({ kind, label: next ? tr('正在核对反证条件', 'Checking counterevidence') : tr('收起反证条件', 'Hide counterevidence'), detail: counterEvidence, value: scene.key_point, signal: next ? 'boundary' : 'complete' }) }}><ShieldAlert size={16} /><span>{tr('反证边界', 'Boundary check')}</span><strong>{counterEvidence}</strong><em>{counterEvidenceOpen ? tr('收起', 'Hide') : tr('查看', 'Inspect')}</em></button>
+          </div>
+        </div>
       </div>
-      <footer className="case-dossier-caption"><div><span>{focusedEvidence?.label || activeBeat?.label || tr('当前证据', 'Active evidence')}</span><strong>{focusedEvidence?.detail || activeBeat?.detail || scene.visual.example || scene.narration}</strong></div><small>{conclusionReady && payload?.counterevidence[0] ? `${tr('反证检查：', 'Countercheck: ')}${payload.counterevidence[0]}` : tr(`已核验 ${openedEvidenceIds.length}/${evidenceNeeded} 条关键证据`, `${openedEvidenceIds.length}/${evidenceNeeded} key evidence checked`)}</small></footer>
+      <footer className="case-evidence-footer"><div><span>{focusedEvidence?.label || activeBeat?.label || tr('当前证据', 'Current evidence')}</span><strong>{focusedEvidence?.detail || activeBeat?.detail || scene.visual.example || scene.narration}</strong></div><i aria-hidden="true"><b style={{ '--case-progress': evidenceReadiness } as CSSProperties} /></i></footer>
     </div>
   )
 }

@@ -1,0 +1,38 @@
+/* RHYME keeps the original hand-drawn Crowds presentation intact.
+   This layer only adds a tiny return control and no product chrome. */
+#rhyme_return {
+	position: fixed;
+	top: 15px;
+	right: 18px;
+	z-index: 1000;
+	display: inline-block;
+	padding: 3px 8px 5px;
+	border: 2px solid #222;
+	border-radius: 5px 8px 6px 7px;
+	background: #fff;
+	color: #222;
+	font-size: 18px;
+	line-height: 1;
+	letter-spacing: .4px;
+	text-decoration: none;
+	transform: rotate(-1.2deg);
+	transition: transform .16s ease, background .16s ease;
+}
+
+#rhyme_return:hover {
+	background: #fff3a7;
+	transform: rotate(1.2deg) translateY(-1px);
+}
+
+#rhyme_return:focus-visible {
+	outline: 3px solid #ffcc00;
+	outline-offset: 3px;
+}
+
+@media (max-width: 700px) {
+	#rhyme_return {
+		top: 10px;
+		right: 10px;
+		font-size: 15px;
+	}
+}

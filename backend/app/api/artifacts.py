@@ -1,14 +1,21 @@
 """Learning artifacts generated from tutoring conversations."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
+from threading import Lock
 import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.artifact_agent import generate_learning_document, generate_study_pack_blueprint
-from app.agents.map_agent import generate_knowledge_map, normalize_edited_knowledge_map
+from app.agents.map_agent import (
+    generate_knowledge_map,
+    generate_knowledge_map_deep_dive,
+    knowledge_map_deep_dive_fingerprint,
+    normalize_edited_knowledge_map,
+)
 from app.agents.map_collaboration_agent import collaborate_on_knowledge_map
 from app.agents.practice_agent import generate_practice_set
 from app.agents.dynamic_explanation_agent import (
@@ -53,6 +60,7 @@ from app.services.map_db import (
     get_map_progress,
     prune_map_progress,
     set_map_node_progress,
+    update_map_workspace_progress,
 )
 from app.services.learning_progress_db import (
     get_interactive_presentation_progress,
@@ -73,6 +81,7 @@ from app.services.video_search import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/artifacts", tags=["artifacts"])
+_map_deep_dive_merge_lock = Lock()
 
 
 def _json(value, default):
@@ -97,6 +106,11 @@ class GenerateDocumentRequest(BaseModel):
     )
     study_pack_blueprint: dict = Field(default_factory=dict)
     study_pack_templates: list[str] = Field(default_factory=list, max_length=7)
+    document_pack_id: str = Field(default="", max_length=120)
+    document_pack_template: str = Field(
+        default="",
+        pattern="^$|^(quick_overview|system_guide|problem_walkthrough|concept_comparison|formula_handbook|glossary|exam_cram)$",
+    )
     async_mode: bool = False
 
 
@@ -119,6 +133,11 @@ class GeneratePracticeRequest(BaseModel):
     )
     focus_points: list[str] = Field(default_factory=list, max_length=5)
     source_map_artifact_id: int | None = None
+    practice_pack_id: str = Field(default="", max_length=120)
+    practice_pack_mode: str = Field(
+        default="",
+        pattern="^$|^(similar|variants|special|mock|coding|oral)$",
+    )
     async_mode: bool = False
 
 
@@ -157,6 +176,21 @@ class UpdateKnowledgeMapRequest(BaseModel):
     map: dict
 
 
+class UpdateKnowledgeMapWorkspaceRequest(BaseModel):
+    user_id: int
+    active_node_id: str = Field(default="", max_length=80)
+    explored_node_ids: list[str] = Field(default_factory=list, max_length=24)
+
+
+class GenerateKnowledgeMapDeepDiveRequest(BaseModel):
+    user_id: int
+    force: bool = False
+
+
+class GenerateKnowledgeMapPackRequest(BaseModel):
+    user_id: int
+
+
 class UpdateInteractivePresentationRequest(BaseModel):
     user_id: int
     presentation: dict
@@ -170,6 +204,7 @@ class UpdateInteractivePresentationProgressRequest(BaseModel):
     user_id: int
     active_scene_id: str = Field(min_length=1, max_length=80)
     completed_scene_ids: list[str] = Field(default_factory=list, max_length=10)
+    visited_scene_ids: list[str] = Field(default_factory=list, max_length=80)
     is_completed: bool = False
 
 
@@ -451,6 +486,7 @@ def update_interactive_presentation_learning_progress(
         req.user_id,
         req.active_scene_id,
         req.completed_scene_ids,
+        req.visited_scene_ids,
         req.is_completed,
     )
     if progress is None:
@@ -488,6 +524,19 @@ def update_knowledge_map_node_progress(artifact_id: int, node_id: str, req: Upda
     return progress
 
 
+@router.patch("/{artifact_id}/map-workspace")
+def update_knowledge_map_workspace(artifact_id: int, req: UpdateKnowledgeMapWorkspaceRequest):
+    progress = update_map_workspace_progress(
+        artifact_id,
+        req.user_id,
+        req.active_node_id,
+        req.explored_node_ids,
+    )
+    if progress is None:
+        raise HTTPException(status_code=404, detail="知识图解或恢复位置已经失效")
+    return progress
+
+
 @router.post("/{artifact_id}/activity")
 def record_artifact_activity(artifact_id: int, req: RecordLearningActivityRequest):
     activity = record_learning_activity(
@@ -516,6 +565,265 @@ def update_knowledge_map(artifact_id: int, req: UpdateKnowledgeMapRequest):
         raise HTTPException(status_code=404, detail="知识图解不存在或已被删除")
     progress = prune_map_progress(artifact_id, req.user_id)
     return {"artifact": artifact, "map_progress": progress}
+
+
+def _knowledge_map_deep_dive_context(artifact: dict, user_id: int) -> tuple[str, str, list[dict]]:
+    messages: list[dict] = []
+    session_rows = query(
+        "SELECT messages FROM chat_sessions WHERE id = %s AND user_id = %s AND session_type = 'tutoring'",
+        (artifact.get("session_id"), user_id),
+    )
+    if session_rows:
+        messages = _json(session_rows[0].get("messages"), [])
+    assistant_index = next((
+        index for index, message in enumerate(messages)
+        if message.get("role") == "assistant" and message.get("id") == artifact.get("qa_id")
+    ), None)
+    assistant_message = messages[assistant_index] if assistant_index is not None else {}
+    user_message = next((
+        message for message in reversed(messages[:assistant_index]) if message.get("role") == "user"
+    ), {}) if assistant_index is not None else {}
+    question = str(user_message.get("content") or artifact.get("source_prompt") or "")
+    answer = str(assistant_message.get("content") or "")
+    recent_context = messages[max(0, (assistant_index or 0) - 4):(assistant_index or 0) + 1]
+    return question, answer, recent_context
+
+
+def _generate_and_persist_map_deep_dive(
+    artifact_id: int,
+    user_id: int,
+    node_id: str,
+    question: str,
+    answer: str,
+    recent_context: list[dict],
+) -> dict:
+    current_artifact = get_artifact(artifact_id, user_id)
+    if not current_artifact or current_artifact.get("kind") != "map" or current_artifact.get("status") == "deleted":
+        raise ValueError("知识图解已不存在")
+    current_map = _json(current_artifact.get("content"), {})
+    current_node = next((
+        node for node in current_map.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("id")) == node_id
+    ), None)
+    if not current_node:
+        raise ValueError("知识节点已不存在")
+    if not answer:
+        answer = "。".join(
+            str(node.get("detail") or "") for node in current_map.get("nodes", []) if isinstance(node, dict)
+        )
+
+    deep_dive = generate_knowledge_map_deep_dive(
+        source_node=current_node,
+        parent_map=current_map,
+        question=question,
+        answer=answer,
+        recent_context=recent_context,
+    )
+
+    # Parallel pack workers merge only their own result into the newest map,
+    # so completing one atom never overwrites another atom that just finished.
+    with _map_deep_dive_merge_lock:
+        latest_artifact = get_artifact(artifact_id, user_id)
+        latest_map = _json(latest_artifact.get("content"), {}) if latest_artifact else {}
+        latest_node = next((
+            node for node in latest_map.get("nodes", [])
+            if isinstance(node, dict) and str(node.get("id")) == node_id
+        ), None)
+        if not latest_node:
+            raise ValueError("知识节点在生成期间已被删除")
+        if knowledge_map_deep_dive_fingerprint(latest_node, latest_map) != deep_dive.get("source_fingerprint"):
+            raise ValueError("知识节点在生成期间已被修改，请重新生成")
+        next_map = {
+            **latest_map,
+            "deep_maps": {**(latest_map.get("deep_maps") or {}), node_id: deep_dive},
+        }
+        normalized_map = normalize_edited_knowledge_map(next_map)
+        saved = update_knowledge_map_content(
+            artifact_id,
+            user_id,
+            json.dumps(normalized_map, ensure_ascii=False),
+        )
+    if not saved:
+        raise ValueError("专题深读图无法保存")
+    persisted = (normalized_map.get("deep_maps") or {}).get(node_id, deep_dive)
+    return {"deep_dive": persisted, "artifact": saved, "cached": False}
+
+
+@router.post("/{artifact_id}/knowledge-map/deep-dives/{node_id}/generate")
+def generate_knowledge_map_node_deep_dive(
+    artifact_id: int,
+    node_id: str,
+    req: GenerateKnowledgeMapDeepDiveRequest,
+):
+    artifact = get_artifact(artifact_id, req.user_id)
+    if not artifact or artifact.get("kind") != "map" or artifact.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="知识图解不存在或已被删除")
+    parent_map = _json(artifact.get("content"), {})
+    if not isinstance(parent_map, dict) or not isinstance(parent_map.get("nodes"), list):
+        raise HTTPException(status_code=400, detail="知识图解内容无法读取")
+    source_node = next((
+        node for node in parent_map["nodes"]
+        if isinstance(node, dict) and str(node.get("id")) == node_id
+    ), None)
+    if not source_node:
+        raise HTTPException(status_code=404, detail="这个知识节点已经不存在，请刷新图解")
+
+    fingerprint = knowledge_map_deep_dive_fingerprint(source_node, parent_map)
+    existing = (parent_map.get("deep_maps") or {}).get(node_id)
+    if (
+        not req.force
+        and isinstance(existing, dict)
+        and existing.get("generation_source") in {"agent", "fallback"}
+        and int(existing.get("content_version") or 0) >= 2
+        and existing.get("source_fingerprint") == fingerprint
+    ):
+        return {"status": "ready", "deep_dive": existing, "cached": True}
+
+    def work() -> dict:
+        current_artifact = get_artifact(artifact_id, req.user_id)
+        if not current_artifact or current_artifact.get("kind") != "map" or current_artifact.get("status") == "deleted":
+            raise ValueError("知识图解已不存在")
+        question, answer, recent_context = _knowledge_map_deep_dive_context(current_artifact, req.user_id)
+        return _generate_and_persist_map_deep_dive(
+            artifact_id, req.user_id, node_id, question, answer, recent_context,
+        )
+
+    job = submit_generation_job(
+        "map_deep_dive",
+        req.user_id,
+        work,
+        dedupe_key=f"map-deep-dive:{artifact_id}:{node_id}:{fingerprint}",
+    )
+    return {"status": "generating", "job": job}
+
+
+@router.post("/{artifact_id}/knowledge-map/deep-dives/generate-all")
+def generate_knowledge_map_deep_dive_pack(artifact_id: int, req: GenerateKnowledgeMapPackRequest):
+    artifact = get_artifact(artifact_id, req.user_id)
+    if not artifact or artifact.get("kind") != "map" or artifact.get("status") == "deleted":
+        raise HTTPException(status_code=404, detail="知识图解不存在或已被删除")
+    parent_map = _json(artifact.get("content"), {})
+    nodes = [
+        node for node in parent_map.get("nodes", [])
+        if isinstance(node, dict) and node.get("role") != "core" and str(node.get("id") or "").strip()
+    ][:24]
+    if not nodes:
+        raise HTTPException(status_code=400, detail="这张图解还没有可以展开的知识原子")
+
+    def work(report_progress) -> dict:
+        current_artifact = get_artifact(artifact_id, req.user_id)
+        if not current_artifact or current_artifact.get("kind") != "map" or current_artifact.get("status") == "deleted":
+            raise ValueError("知识图解已不存在")
+        current_map = _json(current_artifact.get("content"), {})
+        current_nodes = [
+            node for node in current_map.get("nodes", [])
+            if isinstance(node, dict) and node.get("role") != "core" and str(node.get("id") or "").strip()
+        ][:24]
+        deep_maps = current_map.get("deep_maps") if isinstance(current_map.get("deep_maps"), dict) else {}
+        cached_ids: list[str] = []
+        targets: list[dict] = []
+        for node in current_nodes:
+            node_id = str(node.get("id"))
+            existing = deep_maps.get(node_id)
+            fingerprint = knowledge_map_deep_dive_fingerprint(node, current_map)
+            if (
+                isinstance(existing, dict)
+                and existing.get("generation_source") in {"agent", "fallback"}
+                and int(existing.get("content_version") or 0) >= 2
+                and existing.get("source_fingerprint") == fingerprint
+            ):
+                cached_ids.append(node_id)
+            else:
+                targets.append(node)
+
+        total = len(current_nodes)
+        report_progress({
+            "total": total,
+            "ready": len(cached_ids),
+            "completed": 0,
+            "failed": 0,
+            "pending": len(targets),
+            "current_labels": [],
+        })
+        if not targets:
+            return {
+                "artifact": current_artifact,
+                "total": total,
+                "ready": total,
+                "completed_node_ids": [],
+                "failed_nodes": [],
+            }
+
+        question, answer, recent_context = _knowledge_map_deep_dive_context(current_artifact, req.user_id)
+        completed_ids: list[str] = []
+        failed_nodes: list[dict] = []
+        active_labels: dict[str, str] = {}
+
+        def build(node: dict) -> dict:
+            node_id = str(node.get("id"))
+            return _generate_and_persist_map_deep_dive(
+                artifact_id, req.user_id, node_id, question, answer, recent_context,
+            )
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="rhyme-map-pack") as executor:
+            futures = {}
+            for node in targets[:2]:
+                node_id = str(node.get("id"))
+                label = str(node.get("label") or "知识原子")[:32]
+                active_labels[node_id] = label
+                futures[executor.submit(build, node)] = node
+            queued_nodes = targets[len(futures):]
+            report_progress({
+                "pending": len(futures) + len(queued_nodes),
+                "current_labels": list(active_labels.values()),
+            })
+
+            while futures:
+                future = next(as_completed(futures))
+                node = futures.pop(future)
+                node_id = str(node.get("id"))
+                label = str(node.get("label") or "知识原子")[:32]
+                active_labels.pop(node_id, None)
+                try:
+                    future.result()
+                    completed_ids.append(node_id)
+                except Exception as exc:
+                    logger.warning("整套知识图解中的专题图生成失败：artifact=%s node=%s error=%s", artifact_id, node.get("id"), exc)
+                    failed_nodes.append({"node_id": node_id, "label": label})
+
+                if queued_nodes:
+                    next_node = queued_nodes.pop(0)
+                    next_node_id = str(next_node.get("id"))
+                    next_label = str(next_node.get("label") or "知识原子")[:32]
+                    active_labels[next_node_id] = next_label
+                    futures[executor.submit(build, next_node)] = next_node
+
+                report_progress({
+                    "ready": len(cached_ids) + len(completed_ids),
+                    "completed": len(completed_ids),
+                    "failed": len(failed_nodes),
+                    "pending": len(futures) + len(queued_nodes),
+                    "current_labels": list(active_labels.values()),
+                })
+
+        latest_artifact = get_artifact(artifact_id, req.user_id)
+        return {
+            "artifact": latest_artifact,
+            "total": total,
+            "ready": len(cached_ids) + len(completed_ids),
+            "completed_node_ids": completed_ids,
+            "failed_nodes": failed_nodes,
+        }
+
+    job = submit_generation_job(
+        "map_deep_dive_pack",
+        req.user_id,
+        work,
+        dedupe_key=f"map-deep-dive-pack:{artifact_id}",
+        progress_initial={"total": len(nodes), "ready": 0, "completed": 0, "failed": 0, "pending": len(nodes)},
+        with_progress=True,
+    )
+    return {"status": "generating", "job": job}
 
 
 @router.patch("/{artifact_id}/interactive-presentation")
@@ -588,6 +896,8 @@ def generate_document(req: GenerateDocumentRequest):
             document_template=req.document_template,
             study_pack_blueprint=req.study_pack_blueprint,
             study_pack_templates=req.study_pack_templates,
+            document_pack_id=req.document_pack_id,
+            document_pack_template=req.document_pack_template,
         )
         return {"job": submit_generation_job("notes", req.user_id, lambda: generate_document(sync_req))}
     request_started = time.perf_counter()
@@ -654,6 +964,8 @@ def generate_document(req: GenerateDocumentRequest):
             "depth": req.depth,
             "style": req.style,
             "document_template": req.document_template,
+            "document_pack_id": req.document_pack_id,
+            "document_pack_template": req.document_pack_template or (req.document_template if req.document_pack_id else ""),
             "course_name": recommendation["course_name"],
             "topic_name": recommendation["topic_name"],
             "recommended_course_name": recommendation["course_name"],
@@ -840,7 +1152,14 @@ def generate_knowledge_map_artifact(req: GenerateKnowledgeMapRequest):
             session_id=req.session_id,
             qa_id=req.qa_id,
         )
-        return {"job": submit_generation_job("map", req.user_id, lambda: generate_knowledge_map_artifact(sync_req))}
+        return {
+            "job": submit_generation_job(
+                "map",
+                req.user_id,
+                lambda: generate_knowledge_map_artifact(sync_req),
+                dedupe_key=f"map:{req.user_id}:{req.session_id}:{req.qa_id}",
+            )
+        }
     request_started = time.perf_counter()
     rows = query(
         "SELECT messages, learning_state FROM chat_sessions "
@@ -920,23 +1239,8 @@ def generate_knowledge_map_artifact(req: GenerateKnowledgeMapRequest):
         raise HTTPException(status_code=502, detail="知识图解生成失败，请稍后重试") from exc
 
 
-@router.post("/generate-dynamic-explanation")
-def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest):
+def _generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest, report_progress=None):
     """Create a scene-based explanation that the browser can play without video generation."""
-    if req.async_mode:
-        sync_req = GenerateDynamicExplanationRequest(
-            user_id=req.user_id,
-            session_id=req.session_id,
-            qa_id=req.qa_id,
-        )
-        return {
-            "job": submit_generation_job(
-                "interactive",
-                req.user_id,
-                lambda: generate_dynamic_explanation_artifact(sync_req),
-            )
-        }
-
     request_started = time.perf_counter()
     rows = query(
         "SELECT messages, learning_state FROM chat_sessions "
@@ -970,6 +1274,7 @@ def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest
             answer=str(assistant_message.get("content", "")),
             recent_context=messages[max(0, assistant_index - 4):assistant_index + 1],
             learning_state=learning_state,
+            progress_callback=report_progress,
         )
         logger.info(
             "[artifact-timing] kind=interactive sid=%s stage=generation seconds=%.3f",
@@ -985,6 +1290,13 @@ def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest
             source_prompt=str(user_message.get("content", "")),
             highlights=generated["highlights"],
         )
+        if report_progress:
+            report_progress({
+                "phase": "persisting",
+                "label": "正在保存动态讲解",
+                "message": "内容质量检查已完成，正在写入资料库。",
+                "percent": 97,
+            })
         logger.info(
             "[artifact-timing] kind=interactive sid=%s stage=classification seconds=%.3f",
             req.session_id,
@@ -1028,6 +1340,32 @@ def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest
         raise HTTPException(status_code=502, detail="动态讲解生成失败，请稍后重试") from exc
 
 
+@router.post("/generate-dynamic-explanation")
+def generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationRequest):
+    if not req.async_mode:
+        return _generate_dynamic_explanation_artifact(req)
+    sync_req = GenerateDynamicExplanationRequest(
+        user_id=req.user_id,
+        session_id=req.session_id,
+        qa_id=req.qa_id,
+    )
+    return {
+        "job": submit_generation_job(
+            "interactive",
+            req.user_id,
+            lambda report_progress: _generate_dynamic_explanation_artifact(sync_req, report_progress),
+            dedupe_key=f"interactive:{req.user_id}:{req.session_id}:{req.qa_id}",
+            progress_initial={
+                "phase": "queued",
+                "label": "等待智能导演开始",
+                "message": "任务已经转入后台队列。",
+                "percent": 2,
+            },
+            with_progress=True,
+        )
+    }
+
+
 @router.post("/generate-practice")
 def generate_practice(req: GeneratePracticeRequest):
     if req.async_mode:
@@ -1039,6 +1377,8 @@ def generate_practice(req: GeneratePracticeRequest):
             practice_mode=req.practice_mode,
             focus_points=req.focus_points,
             source_map_artifact_id=req.source_map_artifact_id,
+            practice_pack_id=req.practice_pack_id,
+            practice_pack_mode=req.practice_pack_mode,
         )
         return {"job": submit_generation_job("practice", req.user_id, lambda: generate_practice(sync_req))}
     request_started = time.perf_counter()
@@ -1127,6 +1467,8 @@ def generate_practice(req: GeneratePracticeRequest):
             "classification_keywords": recommendation["keywords"],
             "keywords": recommendation["keywords"],
             "source_map_artifact_id": req.source_map_artifact_id,
+            "practice_pack_id": req.practice_pack_id,
+            "practice_pack_mode": req.practice_pack_mode or (req.practice_mode if req.practice_pack_id else ""),
             "status": "draft",
         })
         practice = create_practice_set(

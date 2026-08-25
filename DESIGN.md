@@ -158,6 +158,22 @@ Forms are gently squared rather than pill-like. Small controls use compact corne
 - **Explanation card:** A quiet tonal container for sequenced explanations; numbered circles provide the only local emphasis.
 - **Mastery check:** Neutral outlined answer rows; correct selection turns sage, incorrect selection turns muted red.
 
+### Knowledge Map — Timeline Chronicle
+
+- **Purpose:** Use the timeline chronicle for historical development, conceptual evolution, or staged formation. It must not reuse the ordinary process-route composition.
+- **Hierarchy:** One active chapter dominates the reading field. The previous and next stages remain visible as quiet spatial context on desktop; mobile keeps the active chapter first and places compact playback controls immediately after it.
+- **Stage grammar:** Seven roles organize the story: origin, early formation, turning point, evolution, milestone, current state, and retrospect. When explicit years, decades, or centuries exist, markers show them; otherwise the interface clearly labels the sequence as conceptual.
+- **Visual world:** Mist-white and graphite remain the base. Mineral blue identifies chronology, progress, and controls; muted ochre is reserved for a single annotation or example. Archival hairlines and one oversized translucent stage numeral provide depth without neon, glass, or decorative dashboards.
+- **Interaction:** Previous/next, direct marker selection, autoplay/restart, left/right keyboard navigation, evidence opening, and reduced-motion behavior are required states. Controls use a visible mineral-blue focus ring.
+- **Motion:** The active chapter enters once with a short vertical and clipped reveal. Autoplay advances at a readable pace and stops at the final retrospective stage.
+
+### Knowledge Map — Resumable Package
+
+- **Package model:** A saved knowledge map includes the overview graph, generated deep maps, manual edits, node mastery, explored atoms, and the learner's last open deep map. Reopening from the library restores the same learning position.
+- **Progress strip:** The studio header shows compact explored and cached counts plus one restrained linear indicator. It remains secondary to the map title and collapses to the explored count on narrow screens.
+- **Optimistic behavior:** Opening or leaving a deep map updates the visible exploration count immediately. Failed synchronization rolls back only the navigation record; generated map content remains available and the recovery message names the required action.
+- **Cache language:** “Explored” means the learner opened the atom; “cached” means its deep map exists and can reopen without generation wait. Never merge the two numbers into a misleading completion score.
+
 ### Buttons
 
 - **Primary:** A compact filled sage action for starting or advancing learning.

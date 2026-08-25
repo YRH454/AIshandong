@@ -140,19 +140,20 @@ export function LearningDocumentBooklet({
         </aside>
 
         <main className={`study-booklet-page template-${activeTemplate}`}>
-          <header className="study-booklet-page-head">
-            <div>
-              <span>{language === 'en' ? activeMeta.labelEn : activeMeta.label}</span>
-              <h1>{activeDocument.title}</h1>
-              <p>{activeDocument.summary}</p>
-            </div>
-            <span className={isReady(activeDocument) ? 'study-booklet-state ready' : activeDocument.status === 'error' ? 'study-booklet-state failed' : 'study-booklet-state'}>
-              {isReady(activeDocument) ? copy('已就绪', 'Ready') : activeDocument.status === 'error' ? copy('未完成', 'Not completed') : copy('正在生成', 'Preparing')}
-            </span>
-          </header>
+          <div className="study-booklet-page-scroll">
+            <header className="study-booklet-page-head">
+              <div>
+                <span>{language === 'en' ? activeMeta.labelEn : activeMeta.label}</span>
+                <h1>{activeDocument.title}</h1>
+                <p>{activeDocument.summary}</p>
+              </div>
+              <span className={isReady(activeDocument) ? 'study-booklet-state ready' : activeDocument.status === 'error' ? 'study-booklet-state failed' : 'study-booklet-state'}>
+                {isReady(activeDocument) ? copy('已就绪', 'Ready') : activeDocument.status === 'error' ? copy('未完成', 'Not completed') : copy('正在生成', 'Preparing')}
+              </span>
+            </header>
 
-          {isReady(activeDocument) ? (
-            <div className="study-booklet-page-scroll">
+            {isReady(activeDocument) ? (
+              <div className="study-booklet-page-body">
               <section className="study-booklet-intro">
                 <p>{language === 'en' ? activeMeta.hintEn : activeMeta.hint}</p>
                 {activeDocument.details.length > 0 && (
@@ -164,18 +165,21 @@ export function LearningDocumentBooklet({
               <article className="study-booklet-content">
                 <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{activeDocument.content || ''}</ReactMarkdown>
               </article>
-            </div>
-          ) : (
-            <div className="study-booklet-preparing" role="status" aria-live="polite">
-              <span><Sparkles size={21} /></span>
-              <div>
-                <h2>{activeDocument.status === 'error' ? copy('这一章没有完成', 'This chapter did not finish') : copy('正在整理这一章', 'Preparing this chapter')}</h2>
-                <p>{activeDocument.status === 'error'
-                  ? copy('其他已完成的章节仍然可以阅读。', 'Other completed chapters are still available to read.')
-                  : copy('资料册会随着生成进度自动补全这一章。', 'This chapter will appear here as soon as it is ready.')}</p>
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="study-booklet-page-body">
+                <div className="study-booklet-preparing" role="status" aria-live="polite">
+                  <span><Sparkles size={21} /></span>
+                  <div>
+                    <h2>{activeDocument.status === 'error' ? copy('这一章没有完成', 'This chapter did not finish') : copy('正在整理这一章', 'Preparing this chapter')}</h2>
+                    <p>{activeDocument.status === 'error'
+                      ? copy('其他已完成的章节仍然可以阅读。', 'Other completed chapters are still available to read.')
+                      : copy('资料册会随着生成进度自动补全这一章。', 'This chapter will appear here as soon as it is ready.')}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </main>
       </div>
 

@@ -191,10 +191,12 @@ def create_artifact(data: dict) -> dict:
 
 
 _ARTIFACT_SELECT = (
-    "SELECT a.*, c.name AS course_name, t.name AS topic_name, t.mastery AS topic_mastery "
+    "SELECT a.*, c.name AS course_name, t.name AS topic_name, t.mastery AS topic_mastery, "
+    "p.practice_mode AS generated_practice_mode "
     "FROM learning_artifacts a "
     "LEFT JOIN library_courses c ON c.id = a.course_id "
     "LEFT JOIN library_topics t ON t.id = a.topic_id "
+    "LEFT JOIN practice_sets p ON p.artifact_id = a.id "
 )
 
 
@@ -858,7 +860,11 @@ def _row(row: dict) -> dict:
         "document_pack_id": row.get("document_pack_id") or "",
         "document_pack_template": row.get("document_pack_template") or "",
         "practice_pack_id": row.get("practice_pack_id") or "",
-        "practice_pack_mode": row.get("practice_pack_mode") or "",
+        "practice_pack_mode": row.get("practice_pack_mode") or (
+            row.get("generated_practice_mode")
+            if row.get("generated_practice_mode") not in {None, "", "standard"}
+            else ""
+        ),
         "status": row.get("status", "draft"),
         "course_id": row.get("course_id"),
         "topic_id": row.get("topic_id"),

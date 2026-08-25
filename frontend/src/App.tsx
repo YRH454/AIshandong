@@ -3,7 +3,7 @@ import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
   Code2, FileDown, FileQuestion, FileText, FolderOpen, History, House, Image, LayoutTemplate, Library, Map as MapIcon,
-  Languages, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
+  Languages, ListChecks, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
   Ellipsis, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -13,7 +13,12 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import mascot from './assets/xuejing-slime-logo.png'
-import { EditableKnowledgeMap } from './components/EditableKnowledgeMap'
+import { EditableKnowledgeMap, type KnowledgeMapVisualScene, type KnowledgeMapVisualSceneKind } from './components/EditableKnowledgeMap'
+import type { KnowledgeMapSemanticRole } from './components/knowledgeMapSemantic'
+
+type KnowledgeMapSceneDirection = NonNullable<KnowledgeMapVisualScene['design']>
+type KnowledgeMapSceneComposition = NonNullable<KnowledgeMapSceneDirection['composition']>
+type KnowledgeMapSceneVisualLanguage = NonNullable<KnowledgeMapSceneDirection['visual_language']>
 import { DynamicExplanationPlayer, type DynamicExplanationProgress } from './components/DynamicExplanationPlayer'
 import { LearningDocumentBooklet, type StudyBookletDocument } from './components/LearningDocumentBooklet'
 import { PracticePackBooklet, type PracticePackEntry } from './components/PracticePackBooklet'
@@ -27,8 +32,11 @@ import {
   generateLearningDocument,
   generateStudyPackBlueprint,
   generateKnowledgeMap,
+  generateKnowledgeMapDeepDive,
+  generateKnowledgeMapPack,
   generatePracticeSet,
   getKnowledgeMapProgress,
+  getGenerationJob,
   getInteractivePresentationProgress,
   getLearningArtifacts,
   getLearningArtifactVersions,
@@ -58,6 +66,7 @@ import {
   trashLearningArtifact,
   updateKnowledgeMap,
   updateKnowledgeMapNodeProgress,
+  updateKnowledgeMapWorkspaceProgress,
   updateInteractivePresentation,
   updateInteractivePresentationProgress,
   updateLearningArtifact,
@@ -67,10 +76,12 @@ import {
   regenerateInteractivePresentationScene,
 } from './services/api'
 import type {
-  ExternalVideoResource, ImageStudyAnalysis, InteractivePresentationProgress, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
+  DynamicExplanationJobProgress, ExternalVideoResource, GenerationJob, ImageStudyAnalysis, InteractivePresentationProgress, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapPackProgress, KnowledgeMapPackResult, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
   PracticeMode, PracticeSetRecord, StudyPackBlueprint, TopicStudyPlan, TopicStudyPlanTask, TutorMessage, TutorSessionSummary,
 } from './services/api'
 import './App.css'
+import './theme-worlds.css'
+import './knowledge-map-worlds.css'
 
 const LearningHouse = lazy(() => import('./components/LearningHouse'))
 
@@ -132,6 +143,7 @@ type ArtifactKind =
 type InterfaceStyleId =
   | 'minimal' | 'study' | 'night' | 'editorial' | 'brutalist' | 'glass' | 'terminal'
   | 'swiss' | 'notebook' | 'pixel' | 'gallery' | 'ink' | 'candy' | 'blueprint'
+  | 'newsroom' | 'os95' | 'stationery' | 'architecture' | 'naturalist' | 'manga'
 type InterfaceLanguage = 'zh-CN' | 'en'
 type InterfaceScale = 90 | 100 | 110 | 120 | 130
 type SettingsView = 'menu' | 'language' | 'theme' | 'scale'
@@ -202,6 +214,7 @@ type Artifact = {
   documentPackTemplate?: DocumentTemplateId
   practicePackId?: string
   practicePackMode?: Exclude<PracticeMode, 'standard'>
+  generationProgress?: DynamicExplanationJobProgress
 }
 
 type ChatTurn = {
@@ -225,6 +238,8 @@ type KnowledgeMapNode = {
   kind?: 'core' | 'foundation' | 'principle' | 'process' | 'example' | 'pitfall'
   group?: string
   order?: number
+  parent_id?: string
+  semantic_role?: KnowledgeMapSemanticRole
   detail: string
   example?: string
   mistake?: string
@@ -245,14 +260,49 @@ type KnowledgeMapNode = {
 type KnowledgeMapData = {
   schema_version: number
   layout: 'mindmap' | 'flow'
-  map_type?: 'concept_tree' | 'process_flow'
+  map_type?: 'concept_tree' | 'process_flow' | 'comparison_map' | 'system_map' | 'timeline_map' | 'causal_map' | 'relationship_map' | 'decision_map' | 'lab_map'
   groups?: string[]
   nodes: KnowledgeMapNode[]
   edges: Array<{ from: string; to: string; label?: string }>
   learning_path: string[]
+  visual_scenes?: KnowledgeMapVisualScene[]
+  deep_maps?: Record<string, KnowledgeMapDeepDive>
 }
 
-type KnowledgeMapProgressState = Pick<KnowledgeMapProgress, 'progress' | 'summary'>
+type KnowledgeMapDeepDive = Omit<KnowledgeMapData, 'deep_maps'> & {
+  source_node_id: string
+  title: string
+  summary: string
+  generated_at?: string
+  generation_source?: 'agent' | 'fallback' | 'local'
+  source_fingerprint?: string
+}
+
+type KnowledgeMapProgressState = Pick<KnowledgeMapProgress, 'progress' | 'summary' | 'exploration'>
+
+type KnowledgeMapPackJobState = KnowledgeMapPackProgress & {
+  jobId: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  error?: string
+}
+
+const MAP_PACK_JOBS_STORAGE_KEY = 'rhyme-map-pack-jobs'
+
+function readStoredMapPackJobs(): Record<string, string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(MAP_PACK_JOBS_STORAGE_KEY) || '{}')
+    return value && typeof value === 'object' ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredMapPackJob(artifactId: number, jobId?: string) {
+  const stored = readStoredMapPackJobs()
+  if (jobId) stored[String(artifactId)] = jobId
+  else delete stored[String(artifactId)]
+  localStorage.setItem(MAP_PACK_JOBS_STORAGE_KEY, JSON.stringify(stored))
+}
 
 type DocumentPurpose = 'review' | 'preview' | 'exam'
 type DocumentDepth = 'concise' | 'standard' | 'deep'
@@ -289,6 +339,8 @@ type DocumentPackSaveTarget = {
 type DocumentPackBookletTarget = {
   packId: string
   turnId?: string
+  artifactIds: string[]
+  artifacts: Artifact[]
   course: string
   topic: string
   persisted: boolean
@@ -365,6 +417,8 @@ type PracticePackSaveTarget = {
 type PracticePackBookletTarget = {
   packId: string
   turnId?: string
+  artifactIds: string[]
+  artifacts: Artifact[]
   course: string
   topic: string
   persisted: boolean
@@ -586,6 +640,12 @@ const interfaceStyles: Array<{ id: InterfaceStyleId; label: string; labelEn: str
   { id: 'ink', label: '墨韵', labelEn: 'Ink', description: '宣纸、宋体和克制墨色', descriptionEn: 'Rice paper, Song type, and restrained ink', icon: 'book' },
   { id: 'candy', label: '千禧糖果', labelEn: 'Y2K candy', description: '圆润、明快的塑料质感', descriptionEn: 'Rounded, bright plastic material', icon: 'spark' },
   { id: 'blueprint', label: '学习蓝图', labelEn: 'Learning blueprint', description: '工程网格与翻转侧栏', descriptionEn: 'Engineering grid and inverted sidebar', icon: 'map' },
+  { id: 'newsroom', label: '报刊编辑部', labelEn: 'Newsroom', description: '紧凑栏线、报头与新闻纸', descriptionEn: 'Dense rules, mastheads, and newsprint', icon: 'file' },
+  { id: 'os95', label: '复古操作系统', labelEn: 'Retro OS', description: '桌面窗口、浮雕按钮与标题栏', descriptionEn: 'Desktop windows, bevels, and title bars', icon: 'code' },
+  { id: 'stationery', label: '日系文具', labelEn: 'Japanese stationery', description: '便签、点阵纸与轻盈标签', descriptionEn: 'Sticky notes, dot paper, and light tabs', icon: 'notebook' },
+  { id: 'architecture', label: '现代建筑', labelEn: 'Modern architecture', description: '混凝土、模数网格与大尺度留白', descriptionEn: 'Concrete, modular grids, and spatial calm', icon: 'layout' },
+  { id: 'naturalist', label: '自然博物志', labelEn: 'Naturalist', description: '标本册、植物墨色与档案标签', descriptionEn: 'Specimen pages, botanical ink, and archive labels', icon: 'trees' },
+  { id: 'manga', label: '黑白漫画', labelEn: 'Monochrome manga', description: '网点、对白框与强烈分镜', descriptionEn: 'Halftone, speech panels, and bold framing', icon: 'image' },
 ]
 
 const interfaceScales: Array<{ value: InterfaceScale; label: string; description: string }> = [
@@ -672,14 +732,100 @@ function formatFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function expandLegacyKnowledgeMap(nodes: KnowledgeMapNode[], edges: KnowledgeMapData['edges']) {
+  const core = nodes.find(node => node.role === 'core') || nodes[0]
+  const alreadyCompactOverview = Boolean(core) && nodes.length <= 10 && nodes
+    .filter(node => node.id !== core.id)
+    .every(node => node.parent_id === core.id)
+  if (!core || alreadyCompactOverview) return { nodes, edges, expanded: false }
+
+  // Older maps may be six broad cards or a dense multi-level tree.  Preserve
+  // their strongest first-level facts in a nine-atom overview so learners do
+  // not need to regenerate saved material to get the new reading layout.
+  const branches = nodes.filter(node => node.id !== core.id).slice(0, 5)
+  const normalizedBranches = branches.map((node, index) => ({
+    ...node,
+    role: 'branch' as const,
+    parent_id: core.id,
+    order: index + 2,
+    position: undefined,
+  }))
+  const atomTemplates = (node: KnowledgeMapNode) => {
+    const visual = node.visual || {}
+    const detail = node.detail || node.example || `${node.label}与当前主题的关系。`
+    const example = node.example || detail
+    const common = { detail, example, mistake: node.mistake || '回到前提和当前步骤，再确认一次。' }
+    switch (node.kind) {
+      case 'principle': return [
+        { label: '必要条件', ...common, visual: { kind: 'formula' as const, headline: visual.headline || '条件成立，规则才可使用', formula: visual.formula || '条件 → 规则 → 结果' } },
+        { label: '关系变化', ...common, visual: { kind: 'comparison' as const, headline: '看清因果关系', before: visual.before || '输入与前提', after: visual.after || '规则与结论' } },
+      ]
+      case 'process': return [
+        { label: '起始判断', ...common, visual: { kind: 'sequence' as const, headline: '先确定从哪里开始', items: visual.items?.length ? visual.items : ['读取输入', '核对条件', '确定起点'] } },
+        { label: '状态变化', ...common, visual: { kind: 'stack' as const, headline: '每一步只改变一个状态', items: visual.items?.length ? visual.items : ['当前状态', '执行规则', '下一状态'] } },
+        { label: '结果校验', ...common, visual: { kind: 'input_output' as const, headline: '输出要回到题目要求', input: visual.input || '执行后的状态', output: visual.output || '满足条件的结果' } },
+      ]
+      case 'example': return [
+        { label: '最小案例', ...common, visual: { kind: 'input_output' as const, headline: visual.headline || '用最小输入验证', input: visual.input || '一个具体输入', output: visual.output || example.slice(0, 56) } },
+        { label: '变式验证', ...common, visual: { kind: 'comparison' as const, headline: '改变条件，再验证规则', before: visual.before || '原情境', after: visual.after || '变式情境' } },
+      ]
+      case 'pitfall': return [
+        { label: '错误路径', ...common, visual: { kind: 'warning' as const, headline: visual.headline || node.mistake || '先检查遗漏的前提' } },
+        { label: '纠正动作', ...common, visual: { kind: 'sequence' as const, headline: '定位 → 回退 → 验证', items: ['定位遗漏', '回到前一步', '重新验证'] } },
+      ]
+      default: return [
+        { label: '关键词', ...common, visual: { kind: 'definition' as const, headline: visual.headline || detail.slice(0, 66), items: visual.items?.length ? visual.items : ['名称', '含义', '边界'] } },
+        { label: '概念辨析', ...common, visual: { kind: 'comparison' as const, headline: '先分清它和相近概念', before: visual.before || '相似说法', after: visual.after || '适用边界' } },
+      ]
+    }
+  }
+  // The first generation is deliberately an overview, not a second hidden
+  // map squeezed inside the first.  Keep it at nine visible atoms; deeper
+  // expansion belongs to the next interaction the learner explicitly asks for.
+  const atomNodes: KnowledgeMapNode[] = normalizedBranches
+    .filter(branch => ['foundation', 'principle', 'process'].includes(branch.kind || 'foundation'))
+    .slice(0, 3)
+    .map((branch, index) => {
+      const template = atomTemplates(branch)[0]
+      return {
+        id: `legacy-${branch.id}-overview`,
+        parent_id: core.id,
+        role: 'branch' as const,
+        kind: branch.kind || 'foundation',
+        group: branch.group,
+        order: 7 + index,
+        label: `${branch.label}·${template.label}`.slice(0, 24),
+        detail: template.detail,
+        example: template.example,
+        mistake: template.mistake,
+        visual: template.visual,
+      }
+    })
+  const edgeKeys = new Set<string>()
+  const expandedEdges: KnowledgeMapData['edges'] = []
+  const addEdge = (from: string, to: string, label = '') => {
+    const key = `${from}|${to}`
+    if (!edgeKeys.has(key) && from !== to) { edgeKeys.add(key); expandedEdges.push({ from, to, label }) }
+  }
+  edges.forEach(edge => addEdge(edge.from, edge.to, edge.label || ''))
+  normalizedBranches.forEach(branch => addEdge(core.id, branch.id, ''))
+  atomNodes.forEach(atom => addEdge(core.id, atom.id, ''))
+  const overviewIds = new Set([core.id, ...normalizedBranches.map(node => node.id), ...atomNodes.map(node => node.id)])
+  return {
+    nodes: [{ ...core, role: 'core' as const, position: undefined }, ...normalizedBranches, ...atomNodes],
+    edges: expandedEdges.filter(edge => overviewIds.has(edge.from) && overviewIds.has(edge.to)),
+    expanded: true,
+  }
+}
+
 function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
   if (!content) return null
   try {
     const raw = JSON.parse(content) as Partial<KnowledgeMapData>
     if (!Array.isArray(raw.nodes) || raw.nodes.length < 3) return null
-    const nodes = raw.nodes
+    const parsedNodes = raw.nodes
       .filter((node): node is KnowledgeMapNode => Boolean(node?.id && node?.label))
-      .slice(0, 10)
+      .slice(0, 24)
       .map((node, index) => ({
         id: String(node.id),
         label: String(node.label).slice(0, 24),
@@ -688,7 +834,9 @@ function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
           ? String(node.kind) as NonNullable<KnowledgeMapNode['kind']>
           : undefined,
         group: node.group ? String(node.group).slice(0, 20) : undefined,
-        order: Number.isFinite(Number(node.order)) ? Math.max(1, Math.min(18, Number(node.order))) : undefined,
+        order: Number.isFinite(Number(node.order)) ? Math.max(1, Math.min(24, Number(node.order))) : undefined,
+        parent_id: node.parent_id ? String(node.parent_id).slice(0, 48) : undefined,
+        semantic_role: node.semantic_role ? String(node.semantic_role).slice(0, 32) as KnowledgeMapSemanticRole : undefined,
         detail: String(node.detail || ''),
         example: node.example ? String(node.example) : '',
         mistake: node.mistake ? String(node.mistake) : '',
@@ -711,22 +859,97 @@ function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
           ? { x: node.position.x, y: node.position.y }
           : undefined,
       }))
-    const nodeIds = new Set(nodes.map(node => node.id))
-    const edges = Array.isArray(raw.edges) ? raw.edges
-      .filter(edge => edge && nodeIds.has(String(edge.from)) && nodeIds.has(String(edge.to)) && edge.from !== edge.to)
-      .slice(0, 14)
+    const parsedNodeIds = new Set(parsedNodes.map(node => node.id))
+    const baseNodes = parsedNodes.map(node => ({
+      ...node,
+      parent_id: node.parent_id && node.parent_id !== node.id && parsedNodeIds.has(node.parent_id)
+        ? node.parent_id
+        : undefined,
+    }))
+    const baseEdges = Array.isArray(raw.edges) ? raw.edges
+      .filter(edge => edge && parsedNodeIds.has(String(edge.from)) && parsedNodeIds.has(String(edge.to)) && edge.from !== edge.to)
+      .slice(0, 48)
       .map(edge => ({ from: String(edge.from), to: String(edge.to), label: edge.label ? String(edge.label).slice(0, 24) : '' })) : []
+    const declaredMapType = String(raw.map_type || '')
+    const keepsOwnVisualGrammar = ['process_flow', 'comparison_map', 'system_map', 'timeline_map', 'causal_map', 'relationship_map', 'decision_map', 'lab_map'].includes(declaredMapType)
+    const expandedMap = keepsOwnVisualGrammar
+      ? { nodes: baseNodes, edges: baseEdges, expanded: false }
+      : expandLegacyKnowledgeMap(baseNodes, baseEdges)
+    const nodes = expandedMap.nodes
+    const nodeIds = new Set(nodes.map(node => node.id))
+    const edges = expandedMap.edges
     const learningPath = Array.isArray(raw.learning_path)
-      ? raw.learning_path.map(String).filter(id => nodeIds.has(id)).slice(0, 6)
+      ? raw.learning_path.map(String).filter(id => nodeIds.has(id)).slice(0, 10)
       : []
+    const validMapTypes: NonNullable<KnowledgeMapData['map_type']>[] = ['concept_tree', 'process_flow', 'comparison_map', 'system_map', 'timeline_map', 'causal_map', 'relationship_map', 'decision_map', 'lab_map']
+    const validSceneKinds: KnowledgeMapVisualSceneKind[] = ['flow_route', 'stack_tower', 'input_output_lab', 'compare_split', 'formula_board', 'code_trace', 'cause_chain', 'pitfall_fork']
+    const validSceneThemes: NonNullable<KnowledgeMapVisualScene['theme']>[] = ['coral', 'violet', 'cobalt', 'amber', 'teal', 'rose', 'ink', 'lime']
+    const validCompositions: KnowledgeMapSceneComposition[] = ['editorial_path', 'layered_atlas', 'experiment_stage', 'split_argument', 'formula_poster', 'code_observatory', 'causal_landscape', 'decision_desk']
+    const validVisualLanguages: KnowledgeMapSceneVisualLanguage[] = ['quiet_editorial', 'technical_blueprint', 'paper_collage', 'museum_label', 'studio_notebook', 'cinematic_console']
+    const visualScenes = Array.isArray(raw.visual_scenes) ? raw.visual_scenes
+      .filter(scene => scene && validSceneKinds.includes(scene.kind as KnowledgeMapVisualSceneKind))
+      .slice(0, 5)
+      .map((scene, index) => {
+        const rawDesign = scene.design && typeof scene.design === 'object' ? scene.design : {}
+        const annotations = Array.isArray(rawDesign.annotations) ? rawDesign.annotations
+          .filter((annotation: unknown) => annotation && typeof annotation === 'object')
+          .slice(0, 5)
+          .map((annotation: { label?: unknown; title?: unknown; body?: unknown }) => ({
+            label: String(annotation.label || '').slice(0, 24),
+            title: String(annotation.title || '').slice(0, 48),
+            body: String(annotation.body || '').slice(0, 180),
+          })).filter((annotation: { title: string; body: string }) => annotation.title && annotation.body) : []
+        const compositionCandidate = typeof rawDesign.composition === 'string' ? rawDesign.composition : ''
+        const visualLanguageCandidate = typeof rawDesign.visual_language === 'string' ? rawDesign.visual_language : ''
+        const composition = validCompositions.includes(compositionCandidate as KnowledgeMapSceneComposition)
+          ? compositionCandidate as KnowledgeMapSceneComposition : undefined
+        const visualLanguage = validVisualLanguages.includes(visualLanguageCandidate as KnowledgeMapSceneVisualLanguage)
+          ? visualLanguageCandidate as KnowledgeMapSceneVisualLanguage : undefined
+        return {
+          id: String(scene.id || `scene-${index + 1}`).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 48) || `scene-${index + 1}`,
+          kind: scene.kind as KnowledgeMapVisualSceneKind,
+          theme: validSceneThemes.includes(scene.theme as NonNullable<KnowledgeMapVisualScene['theme']>) ? scene.theme as NonNullable<KnowledgeMapVisualScene['theme']> : undefined,
+          title: String(scene.title || '').slice(0, 80),
+          statement: String(scene.statement || '').slice(0, 240),
+          takeaway: scene.takeaway ? String(scene.takeaway).slice(0, 180) : '',
+          node_ids: Array.isArray(scene.node_ids) ? scene.node_ids.map(String).filter(id => nodeIds.has(id)).slice(0, 5) : [],
+          steps: Array.isArray(scene.steps) ? scene.steps.map(String).filter(Boolean).slice(0, 5) : [],
+          left: scene.left ? String(scene.left).slice(0, 180) : '', right: scene.right ? String(scene.right).slice(0, 180) : '',
+          input: scene.input ? String(scene.input).slice(0, 120) : '', output: scene.output ? String(scene.output).slice(0, 120) : '',
+          formula: scene.formula ? String(scene.formula).slice(0, 160) : '', code: scene.code ? String(scene.code).slice(0, 260) : '',
+          design: composition || visualLanguage || annotations.length || rawDesign.review_prompt
+            ? { composition, visual_language: visualLanguage, annotations, review_prompt: String(rawDesign.review_prompt || '').slice(0, 160) } : undefined,
+        }
+      }).filter(scene => scene.title && scene.statement && scene.node_ids.length > 0) : []
+    const deepMaps = Object.fromEntries(Object.entries(raw.deep_maps || {})
+      .filter(([sourceNodeId, candidate]) => nodeIds.has(sourceNodeId) && candidate && typeof candidate === 'object')
+      .slice(0, 10)
+      .flatMap(([sourceNodeId, candidate]) => {
+        const parsedDeepMap = parseKnowledgeMap(JSON.stringify(candidate))
+        if (!parsedDeepMap) return []
+        const value = candidate as Partial<KnowledgeMapDeepDive>
+        return [[sourceNodeId, {
+          ...parsedDeepMap,
+          source_node_id: sourceNodeId,
+          title: String(value.title || `${nodes.find(node => node.id === sourceNodeId)?.label || '知识节点'} · 深读图`).slice(0, 96),
+          summary: String(value.summary || '').slice(0, 240),
+          generated_at: value.generated_at ? String(value.generated_at).slice(0, 48) : undefined,
+          generation_source: ['agent', 'fallback', 'local'].includes(String(value.generation_source || ''))
+            ? value.generation_source as KnowledgeMapDeepDive['generation_source'] : undefined,
+          source_fingerprint: value.source_fingerprint ? String(value.source_fingerprint).slice(0, 40) : undefined,
+        }] as [string, KnowledgeMapDeepDive]]
+      })) as Record<string, KnowledgeMapDeepDive>
     return {
-      schema_version: Number(raw.schema_version) || 1,
-      layout: raw.layout === 'flow' ? 'flow' : 'mindmap',
-      map_type: raw.map_type === 'process_flow' ? 'process_flow' : 'concept_tree',
+      schema_version: expandedMap.expanded ? 5 : Number(raw.schema_version) || 1,
+      layout: expandedMap.expanded ? 'mindmap' : raw.layout === 'flow' ? 'flow' : 'mindmap',
+      map_type: expandedMap.expanded ? 'concept_tree' : validMapTypes.includes(String(raw.map_type) as NonNullable<KnowledgeMapData['map_type']>)
+        ? raw.map_type as KnowledgeMapData['map_type'] : 'concept_tree',
       groups: Array.isArray(raw.groups) ? raw.groups.map(String).slice(0, 6) : undefined,
       nodes,
       edges: edges.length ? edges : nodes.slice(1).map(node => ({ from: nodes[0].id, to: node.id, label: '' })),
-      learning_path: learningPath.length ? learningPath : nodes.map(node => node.id),
+      learning_path: learningPath.length >= Math.min(8, nodes.length) ? learningPath : nodes.slice(0, 10).map(node => node.id),
+      visual_scenes: visualScenes,
+      deep_maps: Object.keys(deepMaps).length ? deepMaps : undefined,
     }
   } catch {
     return null
@@ -770,11 +993,13 @@ function summarizeMapProgress(
 }
 
 function mapProgressLabel(data: KnowledgeMapData, progress?: KnowledgeMapProgressState, language: InterfaceLanguage = 'zh-CN'): string {
-  const summary = progress?.summary || summarizeMapProgress(data, {})
+  const summary = progress?.summary?.total === data.nodes.length ? progress.summary : summarizeMapProgress(data, progress?.progress || {})
   if (!summary.total) return ''
+  const totalDeepDives = progress?.exploration?.total_deep_dives || data.nodes.filter(node => node.role !== 'core').length
+  const explored = new Set(progress?.exploration?.explored_node_ids || []).size
   return language === 'en'
-    ? `Understood ${summary.mastered}/${summary.total}${summary.review ? ` · Review ${summary.review}` : ''}`
-    : `已理解 ${summary.mastered}/${summary.total}${summary.review ? ` · 待复习 ${summary.review}` : ''}`
+    ? `Understood ${summary.mastered}/${summary.total}${summary.review ? ` · Review ${summary.review}` : ''}${totalDeepDives ? ` · Explored ${explored}/${totalDeepDives}` : ''}`
+    : `已理解 ${summary.mastered}/${summary.total}${summary.review ? ` · 待复习 ${summary.review}` : ''}${totalDeepDives ? ` · 已探索 ${explored}/${totalDeepDives}` : ''}`
 }
 
 function splitMapLabel(label: string) {
@@ -1030,6 +1255,65 @@ function artifactFromRecord(record: LearningArtifactRecord): Artifact {
   }
 }
 
+function legacyPracticeMode(artifact: Artifact): Exclude<PracticeMode, 'standard'> | undefined {
+  if (artifact.practicePackMode) return artifact.practicePackMode
+  const text = `${artifact.title} ${artifact.summary}`
+  if (/口述测验|口述检验|口头测验|oral/i.test(text)) return 'oral'
+  if (/编程实验|代码任务|coding|code lab/i.test(text)) return 'coding'
+  if (/模拟试卷|模拟考试|mock/i.test(text)) return 'mock'
+  if (/同类题|相似题|保留结构|不同情境和表述|similar/i.test(text)) return 'similar'
+  if (/变式|迁移测验|条件变化|边界情况|variant/i.test(text)) return 'variants'
+  if (/专项训练|薄弱点|核心概念|实际应用场景|targeted/i.test(text)) return 'special'
+  return undefined
+}
+
+function resolvedPackArtifacts(turn: ChatTurn): Artifact[] {
+  let artifacts = turn.artifacts
+  const newestFirst = (left: Artifact, right: Artifact) => {
+    const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime() || 0
+    const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime() || 0
+    return rightTime - leftTime
+  }
+
+  const looseDocuments = artifacts
+    .filter(artifact => artifact.kind === 'notes' && !artifact.documentPackId && !artifact.learningLoopId && artifact.documentTemplate)
+    .sort(newestFirst)
+  const documentByTemplate = new Map<NonNullable<Artifact['documentTemplate']>, Artifact>()
+  looseDocuments.forEach(artifact => {
+    if (artifact.documentTemplate && !documentByTemplate.has(artifact.documentTemplate)) {
+      documentByTemplate.set(artifact.documentTemplate, artifact)
+    }
+  })
+  if (documentByTemplate.size >= 3) {
+    const legacyPackId = `legacy-document-pack-${turn.id}`
+    const groupedIds = new Set([...documentByTemplate.values()].map(artifact => artifact.id))
+    artifacts = artifacts.map(artifact => groupedIds.has(artifact.id) ? {
+      ...artifact,
+      documentPackId: legacyPackId,
+      documentPackTemplate: artifact.documentTemplate,
+    } : artifact)
+  }
+
+  const loosePractice = artifacts
+    .filter(artifact => artifact.kind === 'practice' && !artifact.practicePackId && !artifact.learningLoopId)
+    .sort(newestFirst)
+  const practiceByMode = new Map<Exclude<PracticeMode, 'standard'>, Artifact>()
+  loosePractice.forEach(artifact => {
+    const mode = legacyPracticeMode(artifact)
+    if (mode && !practiceByMode.has(mode)) practiceByMode.set(mode, artifact)
+  })
+  if (practiceByMode.size >= 4) {
+    const legacyPackId = `legacy-practice-pack-${turn.id}`
+    const grouped = new Map([...practiceByMode.entries()].map(([mode, artifact]) => [artifact.id, mode]))
+    artifacts = artifacts.map(artifact => {
+      const mode = grouped.get(artifact.id)
+      return mode ? { ...artifact, practicePackId: legacyPackId, practicePackMode: mode } : artifact
+    })
+  }
+
+  return artifacts
+}
+
 function attachArtifacts(turns: ChatTurn[], records: LearningArtifactRecord[]) {
   const byQa = records.reduce<Record<string, Artifact[]>>((groups, record) => {
     groups[record.qa_id] = [...(groups[record.qa_id] || []), artifactFromRecord(record)]
@@ -1094,6 +1378,7 @@ function App() {
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
+  const [backgroundTasksOpen, setBackgroundTasksOpen] = useState(false)
   const [documentSetup, setDocumentSetup] = useState<DocumentSetup | null>(null)
   const [documentGenerating, setDocumentGenerating] = useState(false)
   const [documentPackSetup, setDocumentPackSetup] = useState<DocumentPackSetup | null>(null)
@@ -1102,18 +1387,24 @@ function App() {
   const documentPackGenerationLocked = useRef(false)
   const [knowledgeMapGeneratingTurnId, setKnowledgeMapGeneratingTurnId] = useState<string | null>(null)
   const [pendingMapGenerationTurnId, setPendingMapGenerationTurnId] = useState<string | null>(null)
-  const knowledgeMapGenerationLocked = useRef(false)
+  const knowledgeMapGenerationLock = useRef<{ turnId: string; loadingId: string; startedAt: number } | null>(null)
   const knowledgeMapRunnerRef = useRef<(turnId: string) => void>(() => {})
   const [dynamicExplanationGeneratingTurnId, setDynamicExplanationGeneratingTurnId] = useState<string | null>(null)
   const [pendingDynamicExplanationTurnId, setPendingDynamicExplanationTurnId] = useState<string | null>(null)
   const dynamicExplanationGenerationLocked = useRef(false)
   const dynamicExplanationRunnerRef = useRef<(turnId: string) => void>(() => {})
+  const [recentDynamicExplanationArtifactId, setRecentDynamicExplanationArtifactId] = useState<string | null>(null)
+  const [dismissedDynamicTaskIds, setDismissedDynamicTaskIds] = useState<Set<string>>(() => new Set())
   const [learningLoopGeneratingTurnId, setLearningLoopGeneratingTurnId] = useState<string | null>(null)
   const learningLoopGenerationLocked = useRef(false)
   const [learningLoopActiveStepByTurn, setLearningLoopActiveStepByTurn] = useState<Record<string, LearningLoopStep>>({})
   const [immersiveOpenRequest, setImmersiveOpenRequest] = useState<{ artifactId: string; revision: number } | null>(null)
   const [mapProgressByArtifactId, setMapProgressByArtifactId] = useState<Record<string, KnowledgeMapProgressState>>({})
   const mapProgressFetches = useRef(new Set<string>())
+  const mapExplorationSaveTokens = useRef<Record<string, number>>({})
+  const [mapPackJobs, setMapPackJobs] = useState<Record<string, KnowledgeMapPackJobState>>({})
+  const mapPackMonitors = useRef(new Set<number>())
+  const mapPackMonitorRef = useRef<(artifact: Artifact, job: GenerationJob<KnowledgeMapPackResult>) => void>(() => {})
   const [presentationProgressByArtifactId, setPresentationProgressByArtifactId] = useState<Record<string, InteractivePresentationProgress>>({})
   const presentationProgressFetches = useRef(new Set<string>())
   const presentationProgressSaveTokens = useRef<Record<string, number>>({})
@@ -1132,6 +1423,8 @@ function App() {
   const [practiceLoadingArtifactId, setPracticeLoadingArtifactId] = useState<string | null>(null)
   const [practiceSubmitting, setPracticeSubmitting] = useState(false)
   const [practiceRun, setPracticeRun] = useState<PracticeRun | null>(null)
+  const [practiceReturnBooklet, setPracticeReturnBooklet] = useState<PracticePackBookletTarget | null>(null)
+  const [practiceIndexCollapsed, setPracticeIndexCollapsed] = useState(false)
   const [practiceAttemptCounts, setPracticeAttemptCounts] = useState<Record<string, number>>({})
   const oralMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const oralMediaStreamRef = useRef<MediaStream | null>(null)
@@ -1196,6 +1489,18 @@ function App() {
     return interfaceScales.some(item => item.value === saved) ? saved as InterfaceScale : 100
   })
 
+  const exitPracticeWorkspace = useCallback(() => {
+    const returnTarget = practiceReturnBooklet
+    const activeArtifactId = practiceRun?.artifact.id || null
+    setPracticeRun(null)
+    setPracticeReturnBooklet(null)
+    if (!returnTarget) return
+    setPracticePackBooklet(returnTarget)
+    setPracticePackBookletActiveId(activeArtifactId && returnTarget.artifactIds.includes(activeArtifactId)
+      ? activeArtifactId
+      : returnTarget.artifactIds[0] || null)
+  }, [practiceReturnBooklet, practiceRun?.artifact.id])
+
   useEffect(() => {
     localStorage.setItem('rhyme-interface-style', interfaceStyle)
   }, [interfaceStyle])
@@ -1216,6 +1521,17 @@ function App() {
   useEffect(() => {
     localStorage.setItem('rhyme-learning-guide-open', String(learningGuideOpen))
   }, [learningGuideOpen])
+
+  useEffect(() => {
+    if (!practiceRun) return
+    const exitOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      exitPracticeWorkspace()
+    }
+    document.addEventListener('keydown', exitOnEscape)
+    return () => document.removeEventListener('keydown', exitOnEscape)
+  }, [exitPracticeWorkspace, practiceRun])
 
   useEffect(() => {
     if (sessionMenuId === null) return
@@ -1438,6 +1754,71 @@ function App() {
     : null
   const mapWorkspaceData = mapWorkspaceArtifact ? parseKnowledgeMap(mapWorkspaceArtifact.content) : null
   const mapWorkspaceProgress = mapWorkspaceArtifact ? mapProgressByArtifactId[mapWorkspaceArtifact.id] : undefined
+  const mapWorkspaceAtomIds = mapWorkspaceData?.nodes.filter(node => node.role !== 'core').map(node => node.id) || []
+  const mapWorkspaceExploredCount = new Set(
+    (mapWorkspaceProgress?.exploration?.explored_node_ids || []).filter(nodeId => mapWorkspaceAtomIds.includes(nodeId)),
+  ).size
+  const mapWorkspaceGeneratedCount = mapWorkspaceData
+    ? mapWorkspaceAtomIds.filter(nodeId => Boolean(mapWorkspaceData.deep_maps?.[nodeId])).length
+    : 0
+  const mapWorkspacePackJob = mapWorkspaceArtifact ? mapPackJobs[mapWorkspaceArtifact.id] : undefined
+  const mapWorkspaceReadyCount = Math.max(mapWorkspaceGeneratedCount, mapWorkspacePackJob?.ready || 0)
+  const mapWorkspacePackTotal = Math.max(mapWorkspaceAtomIds.length, mapWorkspacePackJob?.total || 0)
+  const mapWorkspacePackRunning = mapWorkspacePackJob?.status === 'queued' || mapWorkspacePackJob?.status === 'running'
+  const mapWorkspacePackComplete = mapWorkspacePackTotal > 0 && mapWorkspaceReadyCount >= mapWorkspacePackTotal
+  const mapWorkspacePackRemainingCount = Math.max(
+    mapWorkspacePackJob?.failed || 0,
+    mapWorkspacePackTotal - mapWorkspaceReadyCount,
+  )
+  const backgroundMapTasks = mapArtifacts
+    .map(artifact => {
+      const job = mapPackJobs[artifact.id]
+      if (!job) return null
+      const mapData = parseKnowledgeMap(artifact.content)
+      const atomIds = mapData?.nodes.filter(node => node.role !== 'core').map(node => node.id) || []
+      const generatedCount = mapData
+        ? atomIds.filter(nodeId => Boolean(mapData.deep_maps?.[nodeId])).length
+        : 0
+      const total = Math.max(atomIds.length, job.total || 0)
+      const ready = Math.max(generatedCount, job.ready || 0)
+      const running = job.status === 'queued' || job.status === 'running'
+      const complete = total > 0 && ready >= total
+      const remaining = Math.max(job.failed || 0, total - ready)
+      return { artifact, job, total, ready, running, complete, remaining }
+    })
+    .filter((task): task is NonNullable<typeof task> => Boolean(task))
+    .sort((a, b) => {
+      const rank = (task: typeof a) => task.running ? 0 : !task.complete ? 1 : 2
+      return rank(a) - rank(b)
+    })
+  const backgroundDynamicTasks = turns
+    .flatMap(turn => turn.artifacts
+      .filter(artifact => (
+        artifact.kind === 'interactive'
+        && !dismissedDynamicTaskIds.has(artifact.id)
+        && (
+          artifact.status === 'generating'
+          || artifact.status === 'error'
+          || artifact.id === recentDynamicExplanationArtifactId
+        )
+      ))
+      .map(artifact => ({
+        artifact,
+        turnId: turn.id,
+        running: artifact.status === 'generating',
+        failed: artifact.status === 'error',
+        complete: artifact.status !== 'generating' && artifact.status !== 'error',
+      })))
+    .sort((a, b) => {
+      const rank = (task: typeof a) => task.running ? 0 : task.failed ? 1 : 2
+      return rank(a) - rank(b)
+    })
+  const backgroundRunningTaskCount = backgroundMapTasks.filter(task => task.running).length
+    + backgroundDynamicTasks.filter(task => task.running).length
+  const backgroundAttentionTaskCount = backgroundMapTasks.filter(task => !task.running && !task.complete).length
+    + backgroundDynamicTasks.filter(task => task.failed).length
+  const backgroundCompletedTaskCount = backgroundDynamicTasks.filter(task => task.complete).length
+  const foregroundDynamicTask = backgroundDynamicTasks[0]
   const mapWorkspaceSavingNodeId = mapWorkspaceArtifact && mapProgressSavingKey?.startsWith(`${mapWorkspaceArtifact.id}:`)
     ? mapProgressSavingKey.slice(mapWorkspaceArtifact.id.length + 1)
     : null
@@ -1460,6 +1841,35 @@ function App() {
     })
     return () => { cancelled = true }
   }, [mapArtifacts, mapProgressByArtifactId])
+  useEffect(() => {
+    const stored = readStoredMapPackJobs()
+    mapArtifacts.forEach(artifact => {
+      if (!artifact.backendId || mapPackMonitors.current.has(artifact.backendId)) return
+      const backendId = artifact.backendId
+      const jobId = stored[String(backendId)]
+      if (!jobId) return
+      void getGenerationJob<KnowledgeMapPackResult>(LOCAL_USER_ID, jobId)
+        .then(job => mapPackMonitorRef.current(artifact, job))
+        .catch(() => {
+          writeStoredMapPackJob(backendId)
+          setMapPackJobs(current => ({
+            ...current,
+            [artifact.id]: {
+              jobId,
+              status: 'failed',
+              total: parseKnowledgeMap(artifact.content)?.nodes.filter(node => node.role !== 'core').length || 0,
+              ready: 0,
+              completed: 0,
+              failed: 0,
+              pending: 0,
+              error: interfaceLanguage === 'en'
+                ? 'The previous background task expired. Retry the remaining maps.'
+                : '上一次后台任务已经失效，可以重新补全剩余图解。',
+            },
+          }))
+        })
+    })
+  }, [interfaceLanguage, mapArtifacts])
   useEffect(() => {
     let cancelled = false
     interactivePresentationArtifacts.forEach(artifact => {
@@ -1529,7 +1939,8 @@ function App() {
           ...turns.flatMap(turn => turn.artifacts),
           ...libraryItems,
           ...trashedItems,
-        ].filter(artifact => artifact.documentPackId === documentPackBooklet.packId)
+          ...documentPackBooklet.artifacts,
+        ].filter(artifact => artifact.documentPackId === documentPackBooklet.packId || documentPackBooklet.artifactIds.includes(artifact.id))
         return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
           .map((artifact): StudyBookletDocument => ({
             id: artifact.id,
@@ -1548,7 +1959,8 @@ function App() {
           ...turns.flatMap(turn => turn.artifacts),
           ...libraryItems,
           ...trashedItems,
-        ].filter(artifact => artifact.practicePackId === practicePackBooklet.packId)
+          ...practicePackBooklet.artifacts,
+        ].filter(artifact => artifact.practicePackId === practicePackBooklet.packId || practicePackBooklet.artifactIds.includes(artifact.id))
         return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
           .filter((artifact): artifact is Artifact & { practicePackMode: Exclude<PracticeMode, 'standard'> } => Boolean(artifact.practicePackMode))
           .map((artifact): PracticePackEntry => {
@@ -1669,6 +2081,7 @@ function App() {
     return {
       activeSceneId: stored.active_scene_id,
       completedSceneIds: stored.completed_scene_ids,
+      visitedSceneIds: stored.visited_scene_ids,
       isCompleted: stored.is_completed,
       checkpoints: stored.checkpoints || {},
     }
@@ -1684,6 +2097,7 @@ function App() {
       artifact_id: artifact.backendId,
       active_scene_id: progress.activeSceneId,
       completed_scene_ids: progress.completedSceneIds,
+      visited_scene_ids: progress.visitedSceneIds || [progress.activeSceneId],
       is_completed: progress.isCompleted,
       updated_at: previous?.updated_at || '',
       checkpoints: previous?.checkpoints || {},
@@ -1693,6 +2107,7 @@ function App() {
     void updateInteractivePresentationProgress(artifact.backendId, LOCAL_USER_ID, {
       active_scene_id: progress.activeSceneId,
       completed_scene_ids: progress.completedSceneIds,
+      visited_scene_ids: progress.visitedSceneIds || [progress.activeSceneId],
       is_completed: progress.isCompleted,
     })
       .then(saved => {
@@ -1759,7 +2174,7 @@ function App() {
     const topic = first.topic && first.topic !== '未分类主题' && first.topic !== '本次学习'
       ? first.topic
       : first.recommendedTopic || '未分类主题'
-    setDocumentPackBooklet({ packId, turnId, course, topic, persisted })
+    setDocumentPackBooklet({ packId, turnId, artifactIds: artifacts.map(artifact => artifact.id), artifacts, course, topic, persisted })
     setDocumentPackBookletActiveId(current => artifacts.some(artifact => artifact.id === current) ? current : artifacts[0].id)
     setExpandedArtifactId(null)
   }
@@ -1788,7 +2203,7 @@ function App() {
     const topic = first.topic && first.topic !== '未分类主题' && first.topic !== '本次学习'
       ? first.topic
       : first.recommendedTopic || '未分类主题'
-    setPracticePackBooklet({ packId, turnId, course, topic, persisted })
+    setPracticePackBooklet({ packId, turnId, artifactIds: artifacts.map(artifact => artifact.id), artifacts, course, topic, persisted })
     setPracticePackBookletActiveId(current => artifacts.some(artifact => artifact.id === current) ? current : artifacts[0].id)
     setExpandedArtifactId(null)
   }
@@ -1799,6 +2214,7 @@ function App() {
   }
 
   function openMapWorkspace(artifact: Artifact, returnView: MapWorkspaceReturnView) {
+    setBackgroundTasksOpen(false)
     setMapWorkspaceArtifactId(artifact.id)
     setMapWorkspaceReturnView(returnView)
     setExpandedArtifactId(null)
@@ -1811,6 +2227,7 @@ function App() {
   }
 
   function openSettings() {
+    setBackgroundTasksOpen(false)
     setSettingsView('menu')
     setSettingsOpen(true)
   }
@@ -2697,6 +3114,8 @@ function App() {
             document_template: template,
             study_pack_blueprint: blueprint,
             study_pack_templates: templates,
+            document_pack_id: packId,
+            document_pack_template: template,
           })
           const record = (await waitForGenerationJob(LOCAL_USER_ID, queued.job)).artifact
           const generated: Artifact = {
@@ -2800,19 +3219,38 @@ function App() {
   }
 
   async function runKnowledgeMapGeneration(turnId: string) {
-    if (!sessionId || knowledgeMapGeneratingTurnId || knowledgeMapGenerationLocked.current) return
+    if (!sessionId) {
+      setNotice('学习对话还在恢复，请稍等一秒后再试。')
+      return
+    }
     const turn = turns.find(item => item.id === turnId)
     if (!turn || turn.id.startsWith('pending-')) {
       setNotice('这条回答还没有保存完成，请稍后重试。')
       return
     }
+    const existingGeneratingMap = turn.artifacts.find(artifact => artifact.kind === 'map' && artifact.status === 'generating')
+    if (knowledgeMapGeneratingTurnId) {
+      if (existingGeneratingMap) openMapWorkspace(existingGeneratingMap, 'chat')
+      setNotice('已有一张知识图解正在后台生成，完成后会自动更新。')
+      return
+    }
+    const activeLock = knowledgeMapGenerationLock.current
+    if (activeLock && Date.now() - activeLock.startedAt < 1500) {
+      if (existingGeneratingMap) openMapWorkspace(existingGeneratingMap, 'chat')
+      setNotice('知识图解任务已经开始，正在打开生成画面…')
+      return
+    }
+    // A hot reload, interrupted request, or restored conversation can leave the
+    // synchronous click guard behind after React state has already recovered.
+    // Treat an old guard without an active generating state as stale.
+    if (activeLock) knowledgeMapGenerationLock.current = null
     const loadingId = `map-generating-${Date.now()}`
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'map',
       title: '正在梳理知识图解…',
-      summary: '正在提取概念关系、学习顺序和容易混淆的环节。',
-      details: ['根据当前问答识别核心概念与关联分支', '自动选择概念关系图或解题流程图'],
+      summary: '图解正在后台准备。你可以继续提问或去资料库，完成后这里会自动更新为可打开状态。',
+      details: ['根据当前问答识别核心概念与关联分支', '无需停留等待，任务会在后台继续完成'],
       source: turn.prompt,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
@@ -2831,11 +3269,11 @@ function App() {
       depth: 'standard',
       style: 'plain',
     }
-    knowledgeMapGenerationLocked.current = true
+    knowledgeMapGenerationLock.current = { turnId: turn.id, loadingId, startedAt: Date.now() }
     setKnowledgeMapGeneratingTurnId(turn.id)
     setNotice('正在把这条内容整理成可点击的知识图解…')
     setTurns(current => current.map(item => item.id === turn.id
-      ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
+      ? { ...item, artifacts: [...item.artifacts.filter(artifact => !(artifact.kind === 'map' && artifact.status === 'generating')), loadingArtifact] }
       : item))
     openMapWorkspace(loadingArtifact, 'chat')
     try {
@@ -2859,31 +3297,42 @@ function App() {
         : item))
       setNotice(message)
     } finally {
-      knowledgeMapGenerationLocked.current = false
+      if (knowledgeMapGenerationLock.current?.loadingId === loadingId) knowledgeMapGenerationLock.current = null
       setKnowledgeMapGeneratingTurnId(null)
     }
   }
 
-  async function runDynamicExplanationGeneration(turnId: string) {
-    if (!sessionId || dynamicExplanationGeneratingTurnId || dynamicExplanationGenerationLocked.current) return
+  async function runDynamicExplanationGeneration(turnId: string, replaceArtifactId?: string) {
+    if (!sessionId) {
+      setNotice('当前对话还没有准备完成，请稍后再试。')
+      return
+    }
+    if (dynamicExplanationGeneratingTurnId || dynamicExplanationGenerationLocked.current) {
+      setNotice('已有一份动态讲解正在后台生成，完成后会自动更新。')
+      return
+    }
     const turn = turns.find(item => item.id === turnId)
     if (!turn || turn.id.startsWith('pending-')) {
       setNotice('这条回答还没有保存完成，请稍后重试。')
       return
     }
-    const loadingId = `dynamic-explanation-generating-${Date.now()}`
+    const replacedArtifact = replaceArtifactId
+      ? turn.artifacts.find(artifact => artifact.id === replaceArtifactId)
+      : undefined
+    const loadingId = replaceArtifactId || `dynamic-explanation-generating-${Date.now()}`
     const loadingArtifact: Artifact = {
+      ...replacedArtifact,
       id: loadingId,
       kind: 'interactive',
       title: '正在编排动态讲解…',
       summary: '正在把核心过程拆成可播放的场景，并加入关键的理解检查。',
       details: ['提炼从“为什么”到“怎么做”的讲解顺序', '为每一幕匹配概念、步骤、对比或示例图示'],
-      source: turn.prompt,
-      course: learningState.subject || '未分类课程',
-      topic: learningState.current_topic || '本次学习',
+      source: replacedArtifact?.source || turn.prompt,
+      course: replacedArtifact?.course || learningState.subject || '未分类课程',
+      topic: replacedArtifact?.topic || learningState.current_topic || '本次学习',
       topicMastery: 0,
-      recommendedCourse: learningState.subject || '未分类课程',
-      recommendedTopic: learningState.current_topic || '本次学习',
+      recommendedCourse: replacedArtifact?.recommendedCourse || learningState.subject || '未分类课程',
+      recommendedTopic: replacedArtifact?.recommendedTopic || learningState.current_topic || '本次学习',
       classificationSource: 'learning_state',
       classificationConfidence: 0.9,
       classificationOverridden: false,
@@ -2898,26 +3347,65 @@ function App() {
     }
     dynamicExplanationGenerationLocked.current = true
     setDynamicExplanationGeneratingTurnId(turn.id)
-    setNotice('正在生成动态讲解：先组织讲解场景，再准备可互动的理解检查。')
+    setRecentDynamicExplanationArtifactId(loadingId)
+    setDismissedDynamicTaskIds(current => {
+      const next = new Set(current)
+      next.delete(loadingId)
+      return next
+    })
+    setNotice('动态讲解已经开始在后台生成。页面已定位到生成进度，也可以随时从左下角“后台任务”查看。')
     setTurns(current => current.map(item => item.id === turn.id
-      ? { ...item, artifacts: [...item.artifacts, loadingArtifact] }
+      ? {
+          ...item,
+          artifacts: replaceArtifactId
+            ? item.artifacts.map(artifact => artifact.id === replaceArtifactId ? loadingArtifact : artifact)
+            : [...item.artifacts.filter(artifact => !(artifact.kind === 'interactive' && artifact.status === 'generating')), loadingArtifact],
+        }
       : item))
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      document.getElementById(`artifact-${loadingId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }))
     try {
       const queued = await generateDynamicExplanation(LOCAL_USER_ID, sessionId, turn.id)
-      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
+      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job, job => {
+        const progress = job.progress as DynamicExplanationJobProgress | undefined
+        if (!progress?.label) return
+        const details = [
+          progress.label,
+          progress.current_scene_title ? `正在单独优化“${progress.current_scene_title}”` : '',
+          typeof progress.quality_score === 'number' ? `当前内容质量 ${progress.quality_score} 分` : '',
+        ].filter(Boolean)
+        setTurns(current => current.map(item => item.id === turn.id
+          ? {
+              ...item,
+              artifacts: item.artifacts.map(artifact => artifact.id === loadingId
+                ? {
+                    ...artifact,
+                    summary: progress.message || artifact.summary,
+                    details: details.length ? details : artifact.details,
+                    generationProgress: progress,
+                  }
+                : artifact),
+            }
+          : item))
+      })
       const artifact = artifactFromRecord(data.artifact)
       setTurns(current => current.map(item => item.id === turn.id
         ? { ...item, artifacts: item.artifacts.map(item => item.id === loadingId ? artifact : item) }
         : item))
       setExpandedArtifactId(artifact.id)
-      setNotice('动态讲解已生成。可直接播放，也可以保存到资料库后继续学习。')
+      setRecentDynamicExplanationArtifactId(artifact.id)
+      setNotice('动态讲解已生成。结果已保留在“后台任务”中，点击即可返回并打开。')
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }))
     } catch (error) {
       const message = error instanceof Error ? error.message : '动态讲解生成失败'
       setTurns(current => current.map(item => item.id === turn.id
         ? {
             ...item,
             artifacts: item.artifacts.map(item => item.id === loadingId
-              ? { ...item, title: '动态讲解生成失败', summary: message, details: ['可以重新生成，或先换一种资料形式。'], status: 'error' }
+              ? { ...item, title: '动态讲解生成失败', summary: message, details: ['点击下方“立即重试”，这张卡片会原位重新生成。'], status: 'error' }
               : item),
           }
         : item))
@@ -3334,6 +3822,7 @@ function App() {
     const optimistic: KnowledgeMapProgressState = {
       progress: nextProgress,
       summary: summarizeMapProgress(mapData, nextProgress),
+      exploration: previous?.exploration,
     }
     const savingKey = `${artifact.id}:${nodeId}`
     setMapProgressByArtifactId(current => ({ ...current, [artifact.id]: optimistic }))
@@ -3637,6 +4126,206 @@ function App() {
     openLibraryArtifact(artifact)
   }
 
+  function toggleBackgroundTasks() {
+    setSettingsOpen(false)
+    setSettingsView('menu')
+    setBackgroundTasksOpen(current => !current)
+  }
+
+  function openBackgroundTask(artifact: Artifact) {
+    const returnView = view === 'map-workspace' ? mapWorkspaceReturnView : view
+    setSidebarOpen(false)
+    openMapWorkspace(artifact, returnView)
+  }
+
+  function openBackgroundDynamicTask(artifact: Artifact) {
+    setBackgroundTasksOpen(false)
+    setSidebarOpen(false)
+    setView('chat')
+    if (artifact.status !== 'generating' && artifact.status !== 'error') {
+      setExpandedArtifactId(artifact.id)
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        setImmersiveOpenRequest({ artifactId: artifact.id, revision: Date.now() })
+      }))
+      return
+    }
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }))
+  }
+
+  function dismissBackgroundDynamicTask(artifact: Artifact) {
+    if (artifact.status === 'generating') return
+    setDismissedDynamicTaskIds(current => new Set([...current, artifact.id]))
+    if (recentDynamicExplanationArtifactId === artifact.id) setRecentDynamicExplanationArtifactId(null)
+  }
+
+  function dismissBackgroundTask(artifact: Artifact) {
+    const task = mapPackJobs[artifact.id]
+    if (!task || task.status === 'queued' || task.status === 'running') return
+    if (artifact.backendId) writeStoredMapPackJob(artifact.backendId)
+    setMapPackJobs(current => {
+      const next = { ...current }
+      delete next[artifact.id]
+      return next
+    })
+  }
+
+  function updateMapExploration(
+    artifact: Artifact,
+    state: { active_node_id: string; explored_node_ids: string[] },
+  ) {
+    if (!artifact.backendId) return
+    const mapData = parseKnowledgeMap(artifact.content)
+    if (!mapData) return
+    const previous = mapProgressByArtifactId[artifact.id]
+    const validIds = new Set(mapData.nodes.filter(node => node.role !== 'core').map(node => node.id))
+    const exploredIds = [...new Set(state.explored_node_ids.filter(nodeId => validIds.has(nodeId)))].slice(0, 24)
+    const activeNodeId = validIds.has(state.active_node_id) ? state.active_node_id : ''
+    const generatedIds = [...validIds].filter(nodeId => Boolean(mapData.deep_maps?.[nodeId]))
+    const optimistic: KnowledgeMapProgressState = {
+      progress: previous?.progress || {},
+      summary: previous?.summary || summarizeMapProgress(mapData, previous?.progress || {}),
+      exploration: {
+        active_node_id: activeNodeId,
+        explored_node_ids: exploredIds,
+        generated_deep_dive_ids: generatedIds,
+        total_deep_dives: validIds.size,
+        updated_at: new Date().toISOString(),
+      },
+    }
+    const token = (mapExplorationSaveTokens.current[artifact.id] || 0) + 1
+    mapExplorationSaveTokens.current[artifact.id] = token
+    setMapProgressByArtifactId(current => ({ ...current, [artifact.id]: optimistic }))
+    void updateKnowledgeMapWorkspaceProgress(artifact.backendId, LOCAL_USER_ID, {
+      active_node_id: activeNodeId,
+      explored_node_ids: exploredIds,
+    })
+      .then(saved => {
+        if (mapExplorationSaveTokens.current[artifact.id] !== token) return
+        setMapProgressByArtifactId(current => ({ ...current, [artifact.id]: saved }))
+      })
+      .catch(error => {
+        if (mapExplorationSaveTokens.current[artifact.id] !== token) return
+        setMapProgressByArtifactId(current => {
+          const next = { ...current }
+          if (previous) next[artifact.id] = previous
+          else delete next[artifact.id]
+          return next
+        })
+        setNotice(error instanceof Error ? error.message : t('浏览位置暂时没有同步，图解内容仍然保留。', 'Your position was not synced, but the map content is still safe.'))
+      })
+  }
+
+  function mapPackProgressFromJob(
+    artifact: Artifact,
+    job: GenerationJob<KnowledgeMapPackResult>,
+  ): KnowledgeMapPackJobState {
+    const mapData = parseKnowledgeMap(artifact.content)
+    const fallbackTotal = mapData?.nodes.filter(node => node.role !== 'core').length || 0
+    const fallbackReady = mapData
+      ? mapData.nodes.filter(node => node.role !== 'core' && Boolean(mapData.deep_maps?.[node.id])).length
+      : 0
+    const raw = (job.progress || {}) as Partial<KnowledgeMapPackProgress>
+    const number = (value: unknown, fallback: number) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : fallback
+    return {
+      jobId: job.job_id,
+      status: job.status,
+      total: number(raw.total, fallbackTotal),
+      ready: number(raw.ready, fallbackReady),
+      completed: number(raw.completed, 0),
+      failed: number(raw.failed, 0),
+      pending: number(raw.pending, Math.max(0, fallbackTotal - fallbackReady)),
+      current_labels: Array.isArray(raw.current_labels)
+        ? raw.current_labels.filter((label): label is string => typeof label === 'string').slice(0, 2)
+        : [],
+      error: job.error,
+    }
+  }
+
+  async function monitorMapPackJob(artifact: Artifact, initialJob: GenerationJob<KnowledgeMapPackResult>) {
+    if (!artifact.backendId || mapPackMonitors.current.has(artifact.backendId)) return
+    mapPackMonitors.current.add(artifact.backendId)
+    let current = initialJob
+    const deadline = Date.now() + 20 * 60 * 1000
+    try {
+      while (current.status === 'queued' || current.status === 'running') {
+        setMapPackJobs(state => ({ ...state, [artifact.id]: mapPackProgressFromJob(artifact, current) }))
+        writeStoredMapPackJob(artifact.backendId, current.job_id)
+        if (Date.now() > deadline) throw new Error(t('后台任务仍在运行，可以稍后从资料库继续查看。', 'The background task is still running. Check it later from the library.'))
+        await new Promise<void>(resolve => window.setTimeout(resolve, 900))
+        current = await getGenerationJob<KnowledgeMapPackResult>(LOCAL_USER_ID, current.job_id)
+      }
+
+      if (current.status === 'failed' || !current.result) {
+        writeStoredMapPackJob(artifact.backendId)
+        setMapPackJobs(state => ({
+          ...state,
+          [artifact.id]: {
+            ...mapPackProgressFromJob(artifact, current),
+            status: 'failed',
+            error: current.error || t('整套图解没有生成完成，请重试剩余部分。', 'The map package did not finish. Retry the remaining maps.'),
+          },
+        }))
+        return
+      }
+
+      const result = current.result
+      replaceArtifactFromRecord(result.artifact, artifact.backendId)
+      writeStoredMapPackJob(artifact.backendId)
+      const failedCount = result.failed_nodes.length
+      setMapPackJobs(state => ({
+        ...state,
+        [artifact.id]: {
+          ...mapPackProgressFromJob(artifact, current),
+          status: 'completed',
+          total: result.total,
+          ready: result.ready,
+          failed: failedCount,
+          pending: 0,
+          error: failedCount
+            ? t(`${failedCount} 张专题图暂时没有完成，可以重试剩余部分。`, `${failedCount} deep maps did not finish. Retry the remaining maps.`)
+            : undefined,
+        },
+      }))
+      setNotice(failedCount
+        ? t(`整套图解已补全 ${result.ready}/${result.total}，剩余 ${failedCount} 张可以重试。`, `Completed ${result.ready}/${result.total}; ${failedCount} can be retried.`)
+        : t('整套知识图解已在后台补全并自动保存。', 'The complete knowledge map package is ready and saved.'))
+    } catch (error) {
+      setMapPackJobs(state => ({
+        ...state,
+        [artifact.id]: {
+          ...mapPackProgressFromJob(artifact, current),
+          status: 'failed',
+          error: error instanceof Error ? error.message : t('暂时无法读取后台任务，可以稍后重试。', 'The background task is temporarily unavailable. Retry later.'),
+        },
+      }))
+    } finally {
+      mapPackMonitors.current.delete(artifact.backendId)
+    }
+  }
+  mapPackMonitorRef.current = monitorMapPackJob
+
+  async function startMapPackGeneration(artifact: Artifact) {
+    if (!artifact.backendId || mapPackMonitors.current.has(artifact.backendId)) return
+    try {
+      const queued = await generateKnowledgeMapPack(artifact.backendId, LOCAL_USER_ID)
+      writeStoredMapPackJob(artifact.backendId, queued.job.job_id)
+      setMapPackJobs(state => ({ ...state, [artifact.id]: mapPackProgressFromJob(artifact, queued.job) }))
+      void monitorMapPackJob(artifact, queued.job)
+      setNotice(t('整套图解已转入后台补全，你可以离开当前页面。', 'The map package is being completed in the background. You can leave this page.'))
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t('整套知识图解任务启动失败。', 'Could not start the map package task.'))
+    }
+  }
+
+  async function requestKnowledgeMapDeepDive(artifact: Artifact, nodeId: string, force = false) {
+    if (!artifact.backendId) throw new Error(t('这份图解尚未完成保存，暂时无法生成专题深读。', 'This map is not ready for a deep dive yet.'))
+    const result = await generateKnowledgeMapDeepDive(artifact.backendId, LOCAL_USER_ID, nodeId, force)
+    if ('artifact' in result && result.artifact) replaceArtifactFromRecord(result.artifact, artifact.backendId)
+    return result.deep_dive
+  }
+
   async function startTopicReviewPlan() {
     if (!libraryTopic || topicStudyPlanLoading || topicStudyPlanBusyTaskId) return
     setTopicStudyPlanLoading(true)
@@ -3692,9 +4381,11 @@ function App() {
     openLibraryArtifact(artifact)
   }
 
-  async function openPractice(artifact: Artifact) {
+  async function openPractice(artifact: Artifact, returnBooklet: PracticePackBookletTarget | null = null) {
     if (!artifact.backendId || practiceLoadingArtifactId) return
+    setPracticeReturnBooklet(returnBooklet)
     setPracticeLoadingArtifactId(artifact.id)
+    setPracticeIndexCollapsed(false)
     recordSavedArtifactActivity(artifact, 'opened', { surface: 'practice' })
     try {
       const data = await getPracticeForArtifact(artifact.backendId, LOCAL_USER_ID)
@@ -3702,6 +4393,8 @@ function App() {
       setPracticeAttemptCounts(current => ({ ...current, [artifact.id]: data.attempts.length }))
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '获取练习集失败')
+      if (returnBooklet) setPracticePackBooklet(returnBooklet)
+      setPracticeReturnBooklet(null)
     } finally {
       setPracticeLoadingArtifactId(null)
     }
@@ -3715,6 +4408,7 @@ function App() {
   }
 
   function restartPractice() {
+    setPracticeIndexCollapsed(false)
     setPracticeRun(current => current ? {
       ...current,
       answers: {},
@@ -3828,7 +4522,7 @@ function App() {
       const results = await Promise.all(practiceSetupModes.map(async (mode, index) => {
         const placeholder = placeholders[index]
         try {
-          const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], undefined, mode)
+          const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], undefined, mode, packId)
           const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
           const generated: Artifact = {
             ...artifactFromRecord(data.artifact),
@@ -3885,7 +4579,7 @@ function App() {
     replaceEntry(loadingArtifact)
     setNotice(`正在重试${profile.label}，已经完成的训练会保留。`)
     try {
-      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], undefined, mode)
+      const queued = await generatePracticeSet(LOCAL_USER_ID, sessionId, turn.id, [], undefined, mode, packId)
       const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job)
       replaceEntry({
         ...artifactFromRecord(data.artifact),
@@ -4724,6 +5418,26 @@ function App() {
         </div>
 
         <div className="sidebar-footer">
+          <button
+            className={`background-task-trigger${backgroundRunningTaskCount ? ' is-running' : ''}${backgroundAttentionTaskCount ? ' needs-attention' : ''}${backgroundCompletedTaskCount ? ' has-complete' : ''}`}
+            type="button"
+            title={t('后台任务', 'Background tasks')}
+            aria-label={backgroundRunningTaskCount
+              ? t(`${backgroundRunningTaskCount} 个后台任务正在运行`, `${backgroundRunningTaskCount} background tasks running`)
+              : backgroundAttentionTaskCount
+                ? t(`${backgroundAttentionTaskCount} 个后台任务需要处理`, `${backgroundAttentionTaskCount} background tasks need attention`)
+                : backgroundCompletedTaskCount
+                  ? t(`${backgroundCompletedTaskCount} 个后台任务已完成`, `${backgroundCompletedTaskCount} background tasks complete`)
+                  : t('后台任务', 'Background tasks')}
+            aria-expanded={backgroundTasksOpen}
+            aria-haspopup="dialog"
+            onClick={toggleBackgroundTasks}
+          >
+            <ListChecks size={18} strokeWidth={1.9} />
+            {(backgroundRunningTaskCount > 0 || backgroundAttentionTaskCount > 0 || backgroundCompletedTaskCount > 0) && (
+              <span>{backgroundRunningTaskCount || backgroundAttentionTaskCount || backgroundCompletedTaskCount}</span>
+            )}
+          </button>
           <button className="profile-button" type="button">
             <span className="profile-avatar">姚</span>
             <span><b>姚瑞辉</b><small>{t('本地学习空间', 'Local learning space')}</small></span>
@@ -4748,6 +5462,16 @@ function App() {
           <strong className="conversation-heading">
             {view === 'library' ? t('资料库', 'Library') : view === 'map-workspace' ? t('知识图解', 'Knowledge map') : view === 'chat' ? conversationTitle : ''}
           </strong>
+          <button
+            className={`mobile-background-task-trigger icon-button${backgroundRunningTaskCount ? ' is-running' : ''}${backgroundAttentionTaskCount ? ' needs-attention' : ''}${backgroundCompletedTaskCount ? ' has-complete' : ''}`}
+            type="button"
+            aria-label={t('后台任务', 'Background tasks')}
+            aria-expanded={backgroundTasksOpen}
+            onClick={toggleBackgroundTasks}
+          >
+            <ListChecks size={17} strokeWidth={1.9} />
+            {(backgroundRunningTaskCount > 0 || backgroundAttentionTaskCount > 0 || backgroundCompletedTaskCount > 0) && <span>{backgroundRunningTaskCount || backgroundAttentionTaskCount || backgroundCompletedTaskCount}</span>}
+          </button>
           <button
             className="learning-guide-toggle icon-button"
             type="button"
@@ -4893,10 +5617,10 @@ function App() {
                       })()}
 
                       {renderLearningLoop(turn)}
-                      {renderDocumentPack(turn)}
-                      {renderPracticePack(turn)}
+                      {renderDocumentPack({ ...turn, artifacts: resolvedPackArtifacts(turn) })}
+                      {renderPracticePack({ ...turn, artifacts: resolvedPackArtifacts(turn) })}
 
-                      {turn.artifacts.filter(artifact => !artifact.documentPackId && !artifact.practicePackId).map(artifact => {
+                      {resolvedPackArtifacts(turn).filter(artifact => !artifact.documentPackId && !artifact.practicePackId).map(artifact => {
                         const option = artifactOptions.find(item => item.kind === artifact.kind)
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
                         const dynamicExplanation = artifact.kind === 'interactive' ? parseDynamicExplanation(artifact.content) : null
@@ -4937,6 +5661,7 @@ function App() {
                                 saving={presentationEditingArtifactId === artifact.id}
                                 saveAsVersion={artifact.saved}
                                 openImmersiveRequest={immersiveOpenRequest?.artifactId === artifact.id ? immersiveOpenRequest.revision : undefined}
+                                compact
                               />
                             )}
                             {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.kind !== 'interactive' && artifact.content && expandedArtifactId === artifact.id && (
@@ -4980,12 +5705,17 @@ function App() {
                                     }
                                     void runKnowledgeMapGeneration(turn.id)
                                   }
-                                  else if (artifact.kind === 'interactive') void runDynamicExplanationGeneration(turn.id)
+                                  else if (artifact.kind === 'interactive') void runDynamicExplanationGeneration(
+                                    turn.id,
+                                    artifact.status === 'error' ? artifact.id : undefined,
+                                  )
                                   else setDocumentSetup({
                                     turnId: turn.id,
                                     template: artifact.documentTemplate || recommendDocumentTemplate(turn.prompt, turn.response),
                                   })
-                                }}>{artifact.status === 'error' ? '重新设置' : '重新生成'}</button>
+                                }}>{artifact.status === 'error'
+                                  ? artifact.kind === 'notes' ? '重新设置' : '立即重试'
+                                  : '重新生成'}</button>
                                 {artifact.status !== 'error' && (
                                   <button className="artifact-save" type="button" onClick={() => {
                                     if (artifact.saved) {
@@ -5156,9 +5886,16 @@ function App() {
                     <Icon name="arrow-left" size={16} />{mapWorkspaceReturnView === 'library' ? t('返回资料库', 'Back to library') : t('返回对话', 'Back to chat')}
                   </button>
                   <span className="map-workspace-generating-mark"><Sparkles size={21} /></span>
-                  <div>
+                  <div className="map-workspace-generating-copy">
                     <h1>{t('正在搭建这张知识图解', 'Building this knowledge map')}</h1>
                     <p>{t('先整理核心概念与关系，再补上例子和易错点。完成后会直接出现在这个画布中。', 'Organising core concepts and relationships, then adding examples and misconceptions. The finished map will appear here.')}</p>
+                  </div>
+                  <div className="map-workspace-background-note">
+                    <div>
+                      <span aria-hidden="true"><Icon name="check" size={15} /></span>
+                      <p><b>{t('已转入后台生成', 'Generating in the background')}</b><small>{t('不需要停在这里等待。可以先返回对话继续学习，完成后资料卡会自动变为可打开状态。', 'You do not need to wait here. Continue learning in chat and this card will become available automatically.')}</small></p>
+                    </div>
+                    <button type="button" onClick={closeMapWorkspace}><Icon name="arrow-left" size={15} />{mapWorkspaceReturnView === 'library' ? t('继续浏览资料库', 'Continue browsing library') : t('返回对话继续学习', 'Continue learning in chat')}</button>
                   </div>
                 </div>
               ) : mapWorkspaceArtifact && mapWorkspaceData ? (
@@ -5171,8 +5908,43 @@ function App() {
                       <span>{mapWorkspaceArtifact.course} / {mapWorkspaceArtifact.topic}</span>
                       <h1>{mapWorkspaceArtifact.title}</h1>
                       <p>{mapWorkspaceArtifact.summary}</p>
+                      <div className="map-workspace-package-progress" aria-label={t('知识图解包进度', 'Knowledge map package progress')}>
+                        <span><b>{t(`已探索 ${mapWorkspaceExploredCount}/${mapWorkspaceAtomIds.length}`, `Explored ${mapWorkspaceExploredCount}/${mapWorkspaceAtomIds.length}`)}</b><small>{t('重新打开会回到上次位置', 'Reopens at your last position')}</small></span>
+                        <span aria-live="polite">
+                          <b>{mapWorkspacePackRunning
+                            ? t(`补全中 ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`, `Completing ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`)
+                            : t(`已缓存 ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`, `Cached ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`)}</b>
+                          <small>{mapWorkspacePackRunning && mapWorkspacePackJob?.current_labels?.length
+                            ? t(`正在生成：${mapWorkspacePackJob.current_labels.join('、')}`, `Generating: ${mapWorkspacePackJob.current_labels.join(', ')}`)
+                            : mapWorkspacePackJob?.error
+                              ? mapWorkspacePackJob.error
+                              : t('每完成一张就会自动保存，可以离开此页面', 'Each finished map is saved automatically; you can leave this page')}</small>
+                        </span>
+                        <i aria-hidden="true"><em style={{ width: `${mapWorkspaceAtomIds.length ? mapWorkspaceExploredCount / mapWorkspaceAtomIds.length * 100 : 0}%` }} /></i>
+                      </div>
                     </div>
                     <div className="map-workspace-actions">
+                      <button
+                        className={`map-workspace-package-action${mapWorkspacePackRunning ? ' is-running' : ''}${mapWorkspacePackComplete ? ' map-workspace-package-ready' : ''}`}
+                        type="button"
+                        onClick={() => void startMapPackGeneration(mapWorkspaceArtifact)}
+                        disabled={!mapWorkspaceArtifact.backendId || mapWorkspacePackRunning || mapWorkspacePackComplete}
+                        aria-describedby="map-workspace-package-action-note"
+                      >
+                        <Icon name={mapWorkspacePackComplete ? 'check' : mapWorkspacePackRunning ? 'rotate' : 'spark'} size={15} />
+                        {mapWorkspacePackComplete
+                          ? t('整套图解已就绪', 'Complete map package ready')
+                          : mapWorkspacePackRunning
+                            ? t(`后台补全中 ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`, `Completing in background ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`)
+                            : mapWorkspacePackJob && mapWorkspacePackRemainingCount > 0
+                              ? t(`重试剩余 ${mapWorkspacePackRemainingCount} 张`, `Retry ${mapWorkspacePackRemainingCount} remaining`)
+                              : t('后台补全整套图解', 'Complete all maps in background')}
+                      </button>
+                      <span id="map-workspace-package-action-note" className="map-workspace-package-action-note">
+                        {mapWorkspacePackRunning
+                          ? t('任务在后台继续运行', 'The task continues in the background')
+                          : t('同时生成两张，不必停留等待', 'Generates two at a time; no need to wait here')}
+                      </span>
                       {mapWorkspaceArtifact.saved ? (
                         <button type="button" onClick={() => { setLibraryPreviewId(null); setView('library') }}><Icon name="library" size={15} />{t('查看资料库', 'View library')}</button>
                       ) : mapWorkspaceArtifact.status !== 'error' ? (
@@ -5198,6 +5970,10 @@ function App() {
                       collaborationLoading={mapCollaborationLoadingArtifactId === mapWorkspaceArtifact.id}
                       onCollaboration={() => void runMapCollaboration(mapWorkspaceArtifact)}
                       onDismissSuggestion={suggestion => dismissMapSuggestion(mapWorkspaceArtifact.id, suggestion)}
+                      onGenerateDeepDive={(nodeId, force) => requestKnowledgeMapDeepDive(mapWorkspaceArtifact, nodeId, force)}
+                      exploration={mapWorkspaceProgress?.exploration}
+                      explorationKey={mapWorkspaceArtifact.id}
+                      onExplorationChange={state => updateMapExploration(mapWorkspaceArtifact, state)}
                     />
                   </div>
                 </>
@@ -5208,6 +5984,13 @@ function App() {
                   </button>
                   <h1>{t('这份图解暂时无法打开', 'This map is not available')}</h1>
                   <p>{t('请返回对话后重新生成，或从资料库中重新打开。', 'Return to the conversation to generate it again, or reopen it from the library.')}</p>
+                  {mapWorkspaceArtifact?.status === 'error' && (() => {
+                    const parentTurn = turns.find(turn => turn.artifacts.some(artifact => artifact.id === mapWorkspaceArtifact.id))
+                    return parentTurn ? <button className="primary map-workspace-retry" type="button" onClick={() => {
+                      closeMapWorkspace()
+                      void runKnowledgeMapGeneration(parentTurn.id)
+                    }}><Sparkles size={16} />{t('立即重新生成图解', 'Generate the map again')}</button> : null
+                  })()}
                 </div>
               )}
             </section>
@@ -5285,6 +6068,7 @@ function App() {
                             collaborationLoading={mapCollaborationLoadingArtifactId === readerArtifact.id}
                             onCollaboration={versionPreview ? undefined : () => void runMapCollaboration(readerArtifact)}
                             onDismissSuggestion={suggestion => dismissMapSuggestion(readerArtifact.id, suggestion)}
+                            onGenerateDeepDive={versionPreview ? undefined : (nodeId, force) => requestKnowledgeMapDeepDive(readerArtifact, nodeId, force)}
                           />
                         : <p>这份图解内容无法读取，请回到来源对话重新生成。</p>
                       : readerArtifact?.kind === 'interactive'
@@ -5865,18 +6649,25 @@ function App() {
       </aside>
 
       {practiceRun && activePracticeQuestion && (
-        <div className="practice-layer" role="presentation">
-          <button className="practice-backdrop" aria-label="关闭练习测验" onClick={() => setPracticeRun(null)} />
-          <section className="practice-sheet" role="dialog" aria-modal="true" aria-labelledby="practice-title">
+        <section className="practice-workspace" role="dialog" aria-modal="true" aria-labelledby="practice-title">
             <header className="practice-head">
-              <div>
+              <button className="practice-exit" type="button" title="返回上一级（Esc）" onClick={exitPracticeWorkspace}>
+                <ArrowLeft size={16} />退出练习
+              </button>
+              <div className="practice-head-copy">
                 <span>{practiceRun.artifact.course} / {practiceRun.artifact.topic}</span>
                 <h2 id="practice-title">{practiceRun.result ? '练习结果' : practiceRun.artifact.title}</h2>
                 <small>{practiceRun.attempts.length > 0
                   ? `已完成 ${practiceRun.attempts.length} 次训练`
                   : `${practiceProfiles[practiceRun.practice.practice_mode].label} · ${practiceRun.practice.question_count} 项 · 约 ${practiceRun.practice.estimated_minutes} 分钟${practiceRun.practice.practice_mode === 'mock' ? ' · 限时作答' : ''}`}</small>
               </div>
-              <button className="icon-button" type="button" aria-label="关闭练习测验" onClick={() => setPracticeRun(null)}><Icon name="x" size={18} /></button>
+              {!practiceRun.result && (
+                <div className="practice-head-progress" aria-label={`当前第 ${practiceRun.activeIndex + 1} 题，共 ${practiceRun.practice.questions.length} 题`}>
+                  <span>第 {practiceRun.activeIndex + 1} / {practiceRun.practice.questions.length} 题</span>
+                  <i><b style={{ transform: `scaleX(${(practiceRun.activeIndex + 1) / practiceRun.practice.questions.length})` }} /></i>
+                </div>
+              )}
+              <button className="icon-button" type="button" aria-label="返回上一级" onClick={exitPracticeWorkspace}><Icon name="x" size={18} /></button>
             </header>
 
             {practiceRun.result ? (
@@ -5970,23 +6761,38 @@ function App() {
                 </footer>
               </div>
             ) : (
-              <div className="practice-body">
-                <div className="practice-navigation" aria-label="题目导航">
-                  <span>已作答 {practiceAnsweredCount} / {practiceRun.practice.questions.length}</span>
-                  {practiceRun.practice.practice_mode === 'mock' && <b className={`practice-timer ${(practiceRun.remainingSeconds || 0) <= 60 ? 'urgent' : ''}`}>剩余 {Math.floor((practiceRun.remainingSeconds || 0) / 60)}:{String((practiceRun.remainingSeconds || 0) % 60).padStart(2, '0')}</b>}
-                  <div>{practiceRun.practice.questions.map((question, index) => (
+              <>
+                <div className={`practice-workspace-shell${practiceIndexCollapsed ? ' index-collapsed' : ''}`}>
+                  <aside className="practice-workspace-index" aria-label="题目导航">
                     <button
-                      key={question.id}
+                      className="practice-index-toggle"
                       type="button"
-                      aria-label={`第 ${index + 1} 题`}
-                      aria-current={index === practiceRun.activeIndex ? 'step' : undefined}
-                      className={`${index === practiceRun.activeIndex ? 'active' : ''} ${practiceRun.answers[question.id]?.trim() ? 'answered' : ''}`}
-                      onClick={() => setPracticeRun(current => current ? { ...current, activeIndex: index } : current)}
-                    >{index + 1}</button>
-                  ))}</div>
-                </div>
+                      aria-label={practiceIndexCollapsed ? '展开题目导航' : '收起题目导航'}
+                      aria-expanded={!practiceIndexCollapsed}
+                      title={practiceIndexCollapsed ? '展开题目导航' : '收起题目导航'}
+                      onClick={() => setPracticeIndexCollapsed(current => !current)}
+                    >
+                      <Icon name="menu" size={16} /><span>{practiceIndexCollapsed ? '展开题目' : '收起题目'}</span>
+                    </button>
+                    <div className="practice-index-summary">
+                      <span>完成进度</span>
+                      <b>{practiceAnsweredCount}<small> / {practiceRun.practice.questions.length}</small></b>
+                    </div>
+                    {practiceRun.practice.practice_mode === 'mock' && <b className={`practice-timer ${(practiceRun.remainingSeconds || 0) <= 60 ? 'urgent' : ''}`}>剩余 {Math.floor((practiceRun.remainingSeconds || 0) / 60)}:{String((practiceRun.remainingSeconds || 0) % 60).padStart(2, '0')}</b>}
+                    <nav>{practiceRun.practice.questions.map((question, index) => (
+                      <button
+                        key={question.id}
+                        type="button"
+                        aria-label={`第 ${index + 1} 题${practiceRun.answers[question.id]?.trim() ? '，已作答' : ''}`}
+                        aria-current={index === practiceRun.activeIndex ? 'step' : undefined}
+                        className={`${index === practiceRun.activeIndex ? 'active' : ''} ${practiceRun.answers[question.id]?.trim() ? 'answered' : ''}`}
+                        onClick={() => setPracticeRun(current => current ? { ...current, activeIndex: index } : current)}
+                      ><span>{index + 1}</span><b>第 {index + 1} 题</b>{practiceRun.answers[question.id]?.trim() && <Icon name="check" size={13} />}</button>
+                    ))}</nav>
+                  </aside>
 
-                <article className="practice-question">
+                  <main className="practice-workspace-main">
+                    <article className="practice-question">
                   <div className="practice-question-meta"><span>{activePracticeQuestion.type === 'fill_blank' ? '短填空' : activePracticeQuestion.type === 'true_false' ? '判断题' : activePracticeQuestion.type === 'code_task' ? '编程实验' : activePracticeQuestion.type === 'oral_response' ? '口述回答' : '单选题'}</span><b>{activePracticeQuestion.knowledge_point}</b></div>
                   <h3>{activePracticeQuestion.prompt}</h3>
                   {activePracticeQuestion.type === 'code_task' ? (
@@ -6053,9 +6859,24 @@ function App() {
                       })}
                     </div>
                   )}
-                </article>
+                    </article>
+                  </main>
+
+                  <aside className="practice-workspace-context" aria-label="本题信息">
+                    <span>本题目标</span>
+                    <h3>{activePracticeQuestion.knowledge_point}</h3>
+                    <p>{activePracticeQuestion.type === 'code_task'
+                      ? '完成代码并确认测试结果，重点检查边界条件。'
+                      : activePracticeQuestion.type === 'oral_response'
+                        ? '用自己的语言说清原因、条件与过程。'
+                        : '先独立判断，再选择最符合题意的答案。'}</p>
+                    <div><span>训练模式</span><b>{practiceProfiles[practiceRun.practice.practice_mode].label}</b></div>
+                    <small>切换题目不会丢失已经填写的答案。</small>
+                  </aside>
+                </div>
 
                 <footer className="practice-actions">
+                  <span className="practice-actions-status">已作答 {practiceAnsweredCount} / {practiceRun.practice.questions.length}</span>
                   <button type="button" disabled={practiceRun.activeIndex === 0} onClick={() => setPracticeRun(current => current ? { ...current, activeIndex: current.activeIndex - 1 } : current)}>上一题</button>
                   {practiceRun.activeIndex < practiceRun.practice.questions.length - 1 ? (
                     <button className="primary" type="button" onClick={() => setPracticeRun(current => current ? { ...current, activeIndex: current.activeIndex + 1 } : current)}>下一题<Icon name="chevron" size={15} /></button>
@@ -6063,10 +6884,9 @@ function App() {
                     <button className="primary" type="button" disabled={practiceSubmitting} onClick={() => void submitPractice()}><Icon name="check" size={15} />{practiceSubmitting ? '批改中…' : practiceRun.practice.practice_mode === 'mock' ? '交卷并批改' : '提交练习'}</button>
                   )}
                 </footer>
-              </div>
+              </>
             )}
-          </section>
-        </div>
+        </section>
       )}
 
       {generatorCatalogOpen && (
@@ -6267,10 +7087,113 @@ function App() {
         </div>
       )}
 
+      {backgroundTasksOpen && (
+        <div className="background-task-popover-layer">
+          <button className="background-task-popover-backdrop" type="button" aria-label={t('关闭后台任务', 'Close background tasks')} onClick={() => setBackgroundTasksOpen(false)} />
+          <aside className="background-task-popover" role="dialog" aria-label={t('后台任务', 'Background tasks')}>
+            <header>
+              <div>
+                <h2>{t('后台任务', 'Background tasks')}</h2>
+                <p>{backgroundRunningTaskCount
+                  ? t('任务会继续运行，你可以正常使用其他功能。', 'Tasks keep running while you use the rest of RHYME.')
+                  : backgroundAttentionTaskCount
+                    ? t('部分任务需要重试，已经完成的内容不会丢失。', 'Some tasks need a retry. Finished work is preserved.')
+                    : t('耗时较长的生成任务会集中显示在这里。', 'Long-running generation tasks appear here.')}</p>
+              </div>
+              <button type="button" aria-label={t('关闭后台任务', 'Close background tasks')} onClick={() => setBackgroundTasksOpen(false)}><Icon name="x" size={16} /></button>
+            </header>
+
+            {backgroundMapTasks.length === 0 && backgroundDynamicTasks.length === 0 ? (
+              <div className="background-task-empty">
+                <ListChecks size={20} strokeWidth={1.7} />
+                <b>{t('暂无后台任务', 'No background tasks')}</b>
+                <span>{t('动态讲解和整套知识图解等耗时任务会集中显示在这里。', 'Long-running dynamic lessons and knowledge-map packages appear here.')}</span>
+              </div>
+            ) : (
+              <div className="background-task-list">
+                {backgroundDynamicTasks.map(task => (
+                  <article className={`background-task-item dynamic ${task.running ? 'running' : task.failed ? 'failed' : 'complete'}`} key={task.artifact.id}>
+                    <div className="background-task-item-status" aria-hidden="true">
+                      {task.running ? <RotateCcw size={15} /> : task.failed ? <X size={15} /> : <Check size={15} />}
+                    </div>
+                    <button className="background-task-item-main" type="button" onClick={() => openBackgroundDynamicTask(task.artifact)}>
+                      <span>
+                        <b>{task.artifact.title}</b>
+                        <small>{t('动态讲解', 'Dynamic lesson')} · {task.artifact.course} / {task.artifact.topic}</small>
+                      </span>
+                      <em>{task.running
+                        ? task.artifact.generationProgress?.label || t('后台生成中', 'Generating')
+                        : task.failed
+                          ? t('需要重试', 'Retry needed')
+                          : t('已完成', 'Complete')}</em>
+                    </button>
+                    <div className={`background-task-progress${task.running && typeof task.artifact.generationProgress?.percent !== 'number' ? ' indeterminate' : ''}`} aria-label={task.running ? task.artifact.generationProgress?.label || t('动态讲解正在生成', 'Dynamic lesson is generating') : task.complete ? t('动态讲解已生成', 'Dynamic lesson is ready') : t('动态讲解生成失败', 'Dynamic lesson generation failed')}>
+                      <span style={{ width: task.failed ? '0%' : task.running ? `${task.artifact.generationProgress?.percent || 6}%` : '100%' }} />
+                    </div>
+                    <p>{task.running
+                      ? task.artifact.generationProgress?.message || t('正在编排场景、动画和理解检查。你可以关闭面板继续使用其他功能。', 'Building scenes, motion, and understanding checks. You may close this panel and keep working.')
+                      : task.failed
+                        ? task.artifact.summary
+                        : t('动态讲解已经回到原对话，点击下方按钮即可定位并开始学习。', 'The dynamic lesson is ready in its original conversation. Open it to begin.')}</p>
+                    <div className="background-task-item-actions">
+                      <button type="button" onClick={() => openBackgroundDynamicTask(task.artifact)}>{task.running ? t('查看生成位置', 'View position') : task.failed ? t('查看并重试', 'View and retry') : t('打开动态讲解', 'Open lesson')}</button>
+                      {!task.running && (
+                        <button className="dismiss" type="button" aria-label={t('从任务列表移除', 'Remove from task list')} onClick={() => dismissBackgroundDynamicTask(task.artifact)}><Icon name="x" size={13} /></button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+                {backgroundMapTasks.map(task => {
+                  const state = task.running ? 'running' : task.complete ? 'complete' : 'failed'
+                  const currentLabels = task.job.current_labels?.filter(Boolean).slice(0, 2) || []
+                  return (
+                    <article className={`background-task-item ${state}`} key={task.artifact.id}>
+                      <div className="background-task-item-status" aria-hidden="true">
+                        {task.running ? <RotateCcw size={15} /> : task.complete ? <Check size={15} /> : <X size={15} />}
+                      </div>
+                      <button className="background-task-item-main" type="button" onClick={() => openBackgroundTask(task.artifact)}>
+                        <span>
+                          <b>{task.artifact.title}</b>
+                          <small>{t('知识图解补全', 'Knowledge map package')} · {task.artifact.course} / {task.artifact.topic}</small>
+                        </span>
+                        <em>{task.running
+                          ? t(`${task.ready}/${task.total} 生成中`, `${task.ready}/${task.total} generating`)
+                          : task.complete
+                            ? t(`${task.total}/${task.total} 已完成`, `${task.total}/${task.total} complete`)
+                            : t(`剩余 ${task.remaining} 张`, `${task.remaining} remaining`)}</em>
+                      </button>
+                      <div className="background-task-progress" aria-label={t(`完成 ${task.ready}/${task.total}`, `${task.ready}/${task.total} complete`)}>
+                        <span style={{ width: `${task.total ? Math.min(100, task.ready / task.total * 100) : 0}%` }} />
+                      </div>
+                      <p>{task.running
+                        ? currentLabels.length
+                          ? t(`正在生成：${currentLabels.join('、')}`, `Generating: ${currentLabels.join(', ')}`)
+                          : t('正在安排下一张专题图…', 'Preparing the next deep map…')
+                        : task.complete
+                          ? t('整套专题图已经保存，可以继续从任意节点展开学习。', 'The complete package is saved and ready to explore.')
+                          : task.job.error || t('部分专题图暂时没有完成，可以只重试剩余内容。', 'Some deep maps did not finish. Retry only the remaining work.')}</p>
+                      <div className="background-task-item-actions">
+                        <button type="button" onClick={() => openBackgroundTask(task.artifact)}>{t('打开图解', 'Open map')}</button>
+                        {!task.running && !task.complete && (
+                          <button className="primary" type="button" onClick={() => void startMapPackGeneration(task.artifact)}>{t('重试剩余', 'Retry remaining')}</button>
+                        )}
+                        {!task.running && (
+                          <button className="dismiss" type="button" aria-label={t('从任务列表移除', 'Remove from task list')} onClick={() => dismissBackgroundTask(task.artifact)}><Icon name="x" size={13} /></button>
+                        )}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+
       {settingsOpen && (
         <div className="settings-popover-layer">
           <button className="settings-popover-backdrop" aria-label={t('关闭界面设置', 'Close interface settings')} onClick={closeSettings} />
-          <aside className="settings-popover" role="dialog" aria-modal="true" aria-label={t('界面设置', 'Interface settings')}>
+          <aside className={`settings-popover${settingsView === 'theme' ? ' settings-popover-theme' : ''}`} role="dialog" aria-modal="true" aria-label={t('界面设置', 'Interface settings')}>
             {settingsView === 'menu' ? (
               <div className="settings-menu">
                 <button type="button" onClick={() => setSettingsView('language')}>
@@ -6298,7 +7221,7 @@ function App() {
                     <p>{settingsView === 'language'
                       ? t('只切换产品操作界面，学习内容保持原语言。', 'Only app controls change. Learning content stays in its original language.')
                       : settingsView === 'theme'
-                        ? t('14 套完整界面风格，默认是白底黑字。', '14 complete interface styles. Minimal is white with black type.')
+                        ? t('20 套结构、字体与材质都不同的界面，默认是白底黑字。', '20 interface worlds with distinct structure, type, and material. Minimal stays the default.')
                         : t('同时调整字体和操作控件的阅读尺寸。', 'Scales text and controls together for easier reading.')}</p>
                   </div>
                   <button type="button" className="settings-close" aria-label={t('关闭界面设置', 'Close interface settings')} onClick={closeSettings}><Icon name="x" size={17} /></button>
@@ -6361,7 +7284,7 @@ function App() {
               : undefined
             if (!turn) return
             closeDocumentPackBooklet()
-            openDocumentPackSave(turn, documentPackBooklet.packId)
+            openDocumentPackSave({ ...turn, artifacts: resolvedPackArtifacts(turn) }, documentPackBooklet.packId)
           }}
           onOpenLibrary={documentPackBooklet.persisted ? () => {
             closeDocumentPackBooklet()
@@ -6383,10 +7306,15 @@ function App() {
           onClose={closePracticePackBooklet}
           onSelect={setPracticePackBookletActiveId}
           onStart={(artifactId) => {
-            const artifact = [...turns.flatMap(turn => turn.artifacts), ...libraryItems].find(item => item.id === artifactId)
+            const returnBooklet = practicePackBooklet
+            const artifact = [
+              ...returnBooklet.artifacts,
+              ...turns.flatMap(turn => turn.artifacts),
+              ...libraryItems,
+            ].find(item => item.id === artifactId)
             if (artifact) {
               closePracticePackBooklet()
-              void openPractice(artifact)
+              void openPractice(artifact, returnBooklet)
             }
           }}
           onRetry={practicePackBooklet.persisted ? undefined : (artifactId) => {
@@ -6396,7 +7324,7 @@ function App() {
             const turn = practicePackBooklet.turnId ? turns.find(item => item.id === practicePackBooklet.turnId) : undefined
             if (!turn) return
             closePracticePackBooklet()
-            openPracticePackSave(turn, practicePackBooklet.packId)
+            openPracticePackSave({ ...turn, artifacts: resolvedPackArtifacts(turn) }, practicePackBooklet.packId)
           }}
           onOpenLibrary={practicePackBooklet.persisted ? () => {
             closePracticePackBooklet()
@@ -6413,10 +7341,40 @@ function App() {
         </Suspense>
       )}
 
+      {foregroundDynamicTask && !backgroundTasksOpen && (
+        <aside
+          className={`dynamic-task-dock${foregroundDynamicTask.running ? ' running' : foregroundDynamicTask.failed ? ' failed' : ' complete'}${foregroundDynamicTask.running && typeof foregroundDynamicTask.artifact.generationProgress?.percent === 'number' ? ' has-progress' : ''}`}
+          aria-label={t('动态讲解任务', 'Dynamic lesson task')}
+          style={{ '--task-progress': Math.max(0, Math.min(1, (foregroundDynamicTask.artifact.generationProgress?.percent || 0) / 100)) } as CSSProperties}
+        >
+          <span className="dynamic-task-dock-icon" aria-hidden="true">
+            {foregroundDynamicTask.running ? <RotateCcw size={16} /> : foregroundDynamicTask.failed ? <X size={16} /> : <Check size={16} />}
+          </span>
+          <div>
+            <b>{foregroundDynamicTask.running
+              ? foregroundDynamicTask.artifact.generationProgress?.label || t('动态讲解正在后台生成', 'Dynamic lesson is generating')
+              : foregroundDynamicTask.failed
+                ? t('动态讲解生成失败', 'Dynamic lesson failed')
+                : t('动态讲解已经完成', 'Dynamic lesson is ready')}</b>
+            <span>{foregroundDynamicTask.running ? foregroundDynamicTask.artifact.generationProgress?.message || foregroundDynamicTask.artifact.title : foregroundDynamicTask.artifact.title}</span>
+          </div>
+          <button className="dynamic-task-dock-action" type="button" onClick={() => openBackgroundDynamicTask(foregroundDynamicTask.artifact)}>
+            {foregroundDynamicTask.running ? t('查看进度', 'View progress') : foregroundDynamicTask.failed ? t('查看并重试', 'View and retry') : t('立即进入', 'Open now')}
+          </button>
+          {!foregroundDynamicTask.running && (
+            <button className="dynamic-task-dock-dismiss" type="button" aria-label={t('关闭任务提醒', 'Dismiss task reminder')} onClick={() => dismissBackgroundDynamicTask(foregroundDynamicTask.artifact)}><Icon name="x" size={13} /></button>
+          )}
+          {foregroundDynamicTask.running && <i aria-hidden="true"><span /></i>}
+        </aside>
+      )}
+
       {notice && (
         <div className="feedback-toast" role="status" aria-live="polite">
           <Icon name="check" size={15} />
           <span>{notice}</span>
+          {notice.startsWith('动态讲解已生成') && foregroundDynamicTask?.complete && (
+            <button className="toast-action" type="button" onClick={() => openBackgroundDynamicTask(foregroundDynamicTask.artifact)}>立即打开</button>
+          )}
           {notice === '已移到回收站，可撤销' && undoTrashId && (
             <button className="toast-action" type="button" onClick={() => void undoLastTrash()}>撤销</button>
           )}

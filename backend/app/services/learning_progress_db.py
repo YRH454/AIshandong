@@ -4,7 +4,7 @@ import json
 import re
 
 from app.config import DB_BACKEND
-from app.database import execute, insert, query
+from app.database import _ensure_column, execute, insert, query
 
 
 def _json(value, default):
@@ -52,6 +52,7 @@ def init_tables():
             UNIQUE(user_id, artifact_id)
         )
     """)
+    _ensure_column("interactive_presentation_progress", "visited_scene_ids", "JSON")
     execute("""
         CREATE TABLE IF NOT EXISTS topic_study_plans (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -177,6 +178,24 @@ def _interactive_scene_ids(content: object) -> list[str]:
     ]
 
 
+def _interactive_terminal_scene_id(content: object) -> str:
+    presentation = _json(content, {})
+    scenes = presentation.get("scenes", []) if isinstance(presentation, dict) else []
+    if not isinstance(scenes, list):
+        return ""
+    main_ids = [
+        str(scene.get("id") or "").strip()[:80]
+        for scene in scenes
+        if isinstance(scene, dict)
+        and str(scene.get("id") or "").strip()
+        and str(scene.get("path_role") or "main") == "main"
+    ]
+    if main_ids:
+        return main_ids[-1]
+    scene_ids = _interactive_scene_ids(content)
+    return scene_ids[-1] if scene_ids else ""
+
+
 def _interactive_check_scene_ids(content: object) -> set[str]:
     presentation = _json(content, {})
     scenes = presentation.get("scenes", []) if isinstance(presentation, dict) else []
@@ -232,7 +251,7 @@ def get_interactive_presentation_progress(artifact_id: int, user_id: int) -> dic
     scene_ids = _interactive_scene_ids(artifact.get("content"))
     check_scene_ids = _interactive_check_scene_ids(artifact.get("content"))
     rows = query(
-        "SELECT active_scene_id, completed_scene_ids, is_completed, updated_at "
+        "SELECT active_scene_id, completed_scene_ids, visited_scene_ids, is_completed, updated_at "
         "FROM interactive_presentation_progress WHERE user_id = %s AND artifact_id = %s",
         (user_id, artifact_id),
     )
@@ -244,11 +263,19 @@ def get_interactive_presentation_progress(artifact_id: int, user_id: int) -> dic
     active_scene_id = str(row.get("active_scene_id") or "")
     if active_scene_id not in scene_ids:
         active_scene_id = scene_ids[0] if scene_ids else ""
+    visited_ids = [
+        scene_id for scene_id in _json(row.get("visited_scene_ids"), [])
+        if isinstance(scene_id, str) and scene_id in scene_ids
+    ]
+    if active_scene_id and (not visited_ids or visited_ids[-1] != active_scene_id):
+        visited_ids.append(active_scene_id)
+    terminal_scene_id = _interactive_terminal_scene_id(artifact.get("content"))
     return {
         "artifact_id": int(artifact_id),
         "active_scene_id": active_scene_id,
         "completed_scene_ids": list(dict.fromkeys(completed_ids)),
-        "is_completed": bool(row.get("is_completed")) and bool(scene_ids) and len(set(completed_ids)) == len(scene_ids),
+        "visited_scene_ids": visited_ids[-80:],
+        "is_completed": bool(row.get("is_completed")) and bool(terminal_scene_id) and terminal_scene_id in completed_ids,
         "checkpoints": _interactive_checkpoints(artifact_id, user_id, check_scene_ids),
         "updated_at": str(row.get("updated_at") or ""),
     }
@@ -259,6 +286,7 @@ def update_interactive_presentation_progress(
     user_id: int,
     active_scene_id: str,
     completed_scene_ids: list[str],
+    visited_scene_ids: list[str],
     is_completed: bool,
 ) -> dict | None:
     artifact = _interactive_artifact(artifact_id, user_id)
@@ -275,7 +303,14 @@ def update_interactive_presentation_progress(
         if isinstance(scene_id, str) and scene_id in scene_ids
     ]
     completed = list(dict.fromkeys(completed))
-    completed_all = bool(is_completed) and len(completed) == len(scene_ids)
+    visited = [
+        scene_id for scene_id in visited_scene_ids
+        if isinstance(scene_id, str) and scene_id in scene_ids
+    ][-80:]
+    if not visited or visited[-1] != active:
+        visited.append(active)
+    terminal_scene_id = _interactive_terminal_scene_id(artifact.get("content"))
+    completed_all = bool(is_completed) and bool(terminal_scene_id) and terminal_scene_id in completed
     rows = query(
         "SELECT id FROM interactive_presentation_progress WHERE user_id = %s AND artifact_id = %s",
         (user_id, artifact_id),
@@ -283,8 +318,8 @@ def update_interactive_presentation_progress(
     if rows:
         execute(
             "UPDATE interactive_presentation_progress SET active_scene_id = %s, completed_scene_ids = %s, "
-            "is_completed = %s, updated_at = NOW() WHERE id = %s",
-            (active, json.dumps(completed, ensure_ascii=False), completed_all, rows[0]["id"]),
+            "visited_scene_ids = %s, is_completed = %s, updated_at = NOW() WHERE id = %s",
+            (active, json.dumps(completed, ensure_ascii=False), json.dumps(visited, ensure_ascii=False), completed_all, rows[0]["id"]),
         )
     else:
         insert("interactive_presentation_progress", {
@@ -292,13 +327,14 @@ def update_interactive_presentation_progress(
             "artifact_id": artifact_id,
             "active_scene_id": active,
             "completed_scene_ids": json.dumps(completed, ensure_ascii=False),
+            "visited_scene_ids": json.dumps(visited, ensure_ascii=False),
             "is_completed": completed_all,
         })
     record_learning_activity(
         user_id,
         artifact_id,
         "scene_progressed",
-        {"scene_id": active, "completed_scene_count": len(completed), "is_completed": completed_all},
+        {"scene_id": active, "completed_scene_count": len(completed), "visited_scene_ids": visited, "is_completed": completed_all},
     )
     return get_interactive_presentation_progress(artifact_id, user_id)
 
@@ -350,7 +386,7 @@ def _interactive_progress(user_id: int, dynamic_explanations: list[dict]) -> tup
         scene_ids = _interactive_scene_ids(artifact.get("content"))
         check_scene_ids = _interactive_check_scene_ids(artifact.get("content"))
         rows = query(
-            "SELECT active_scene_id, completed_scene_ids, is_completed FROM interactive_presentation_progress "
+            "SELECT active_scene_id, completed_scene_ids, visited_scene_ids, is_completed FROM interactive_presentation_progress "
             "WHERE user_id = %s AND artifact_id = %s",
             (user_id, artifact_id),
         )
@@ -360,7 +396,8 @@ def _interactive_progress(user_id: int, dynamic_explanations: list[dict]) -> tup
             if isinstance(scene_id, str) and scene_id in scene_ids
         ]
         completed_ids = list(dict.fromkeys(completed_ids))
-        is_completed = bool(row.get("is_completed")) and bool(scene_ids) and len(completed_ids) == len(scene_ids)
+        terminal_scene_id = _interactive_terminal_scene_id(artifact.get("content"))
+        is_completed = bool(row.get("is_completed")) and bool(terminal_scene_id) and terminal_scene_id in completed_ids
         checkpoints = _interactive_checkpoints(artifact_id, user_id, check_scene_ids)
         active_scene_id = str(row.get("active_scene_id") or "")
         if active_scene_id not in scene_ids:

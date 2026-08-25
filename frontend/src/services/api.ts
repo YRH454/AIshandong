@@ -1,4 +1,5 @@
 import type { DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationScene } from '../components/dynamicExplanation'
+import type { KnowledgeMapDeepDive } from '../components/EditableKnowledgeMap'
 
 // RHYME — API 封装（后端精简版）
 export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api/v1'
@@ -36,13 +37,26 @@ export type GenerationJobStatus = 'queued' | 'running' | 'completed' | 'failed'
 
 export interface GenerationJob<T = Record<string, never>> {
   job_id: string
-  kind: 'notes' | 'map' | 'practice' | 'interactive' | 'document_pack_plan'
+  kind: 'notes' | 'map' | 'map_deep_dive' | 'map_deep_dive_pack' | 'practice' | 'interactive' | 'document_pack_plan'
   status: GenerationJobStatus
   created_at: string
   started_at?: string
   finished_at?: string
   result?: T
   error?: string
+  progress?: Record<string, unknown>
+}
+
+export interface DynamicExplanationJobProgress {
+  phase: 'queued' | 'drafting' | 'auditing' | 'repairing' | 'finalizing' | 'persisting'
+  label: string
+  message: string
+  percent: number
+  total_scenes?: number
+  current_scene?: number
+  current_scene_title?: string
+  quality_score?: number
+  repaired_scenes?: number
 }
 
 export interface TutorMessage {
@@ -160,6 +174,61 @@ export async function generateKnowledgeMap(userId: number, sessionId: number, qa
   return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> }>
 }
 
+export async function generateKnowledgeMapDeepDive(
+  artifactId: number,
+  userId: number,
+  nodeId: string,
+  force = false,
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/deep-dives/${encodeURIComponent(nodeId)}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, force }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '专题深读图生成失败')
+  }
+  const response = await res.json() as
+    | { status: 'ready'; deep_dive: KnowledgeMapDeepDive; cached: true }
+    | { status: 'generating'; job: GenerationJob<{ deep_dive: KnowledgeMapDeepDive; artifact: LearningArtifactRecord; cached: false }> }
+  if (response.status === 'ready') return { deep_dive: response.deep_dive, cached: true }
+  return waitForGenerationJob(userId, response.job)
+}
+
+export interface KnowledgeMapPackProgress {
+  total: number
+  ready: number
+  completed: number
+  failed: number
+  pending: number
+  current_labels?: string[]
+}
+
+export interface KnowledgeMapPackResult {
+  artifact: LearningArtifactRecord
+  total: number
+  ready: number
+  completed_node_ids: string[]
+  failed_nodes: Array<{ node_id: string; label: string }>
+}
+
+export async function generateKnowledgeMapPack(artifactId: number, userId: number) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/deep-dives/generate-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || '整套知识图解生成任务无法启动')
+  }
+  return res.json() as Promise<{
+    status: 'generating'
+    job: GenerationJob<KnowledgeMapPackResult> & { progress?: KnowledgeMapPackProgress }
+  }>
+}
+
 export async function generateDynamicExplanation(userId: number, sessionId: number, qaId: string) {
   const res = await fetch(`${API_BASE}/artifacts/generate-dynamic-explanation`, {
     method: 'POST',
@@ -170,7 +239,7 @@ export async function generateDynamicExplanation(userId: number, sessionId: numb
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '动态讲解生成失败')
   }
-  return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> }>
+  return res.json() as Promise<{ job: GenerationJob<{ artifact: LearningArtifactRecord }> & { progress?: DynamicExplanationJobProgress } }>
 }
 
 export async function getGenerationJob<T>(userId: number, jobId: string) {
@@ -182,13 +251,19 @@ export async function getGenerationJob<T>(userId: number, jobId: string) {
   return res.json() as Promise<GenerationJob<T>>
 }
 
-export async function waitForGenerationJob<T>(userId: number, job: GenerationJob<T>) {
+export async function waitForGenerationJob<T>(
+  userId: number,
+  job: GenerationJob<T>,
+  onProgress?: (job: GenerationJob<T>) => void,
+) {
   let current = job
   const deadline = Date.now() + 10 * 60 * 1000
+  onProgress?.(current)
   while (current.status === 'queued' || current.status === 'running') {
     if (Date.now() > deadline) throw new Error('生成时间过长，请稍后在资料库中查看结果')
     await new Promise<void>(resolve => window.setTimeout(resolve, 850))
     current = await getGenerationJob<T>(userId, current.job_id)
+    onProgress?.(current)
   }
   if (current.status === 'failed' || !current.result) throw new Error(current.error || '生成没有完成，请稍后重试')
   return current.result
@@ -364,12 +439,20 @@ export interface KnowledgeMapProgress {
     review: number
     untouched: number
   }
+  exploration?: {
+    active_node_id: string
+    explored_node_ids: string[]
+    generated_deep_dive_ids: string[]
+    total_deep_dives: number
+    updated_at: string
+  }
 }
 
 export interface InteractivePresentationProgress {
   artifact_id: number
   active_scene_id: string
   completed_scene_ids: string[]
+  visited_scene_ids: string[]
   is_completed: boolean
   checkpoints?: Record<string, DynamicExplanationCheckpoint>
   updated_at: string
@@ -639,6 +722,8 @@ export async function generateLearningDocument(
     document_template: LearningArtifactRecord['document_template']
     study_pack_blueprint?: StudyPackBlueprint
     study_pack_templates?: LearningArtifactRecord['document_template'][]
+    document_pack_id?: string
+    document_pack_template?: LearningArtifactRecord['document_template']
   },
 ) {
   const res = await fetch(`${API_BASE}/artifacts/generate-document`, {
@@ -689,6 +774,7 @@ export async function generatePracticeSet(
   focusPoints: string[] = [],
   sourceMapArtifactId?: number,
   practiceMode: PracticeMode = 'standard',
+  practicePackId?: string,
 ) {
   const questionCount: Record<PracticeMode, number> = {
     standard: 5,
@@ -708,6 +794,8 @@ export async function generatePracticeSet(
       qa_id: qaId,
       question_count: questionCount[practiceMode],
       practice_mode: practiceMode,
+      practice_pack_id: practicePackId,
+      practice_pack_mode: practicePackId ? practiceMode : undefined,
       focus_points: focusPoints,
       source_map_artifact_id: sourceMapArtifactId,
       async_mode: true,
@@ -766,7 +854,7 @@ export async function getInteractivePresentationProgress(artifactId: number, use
 export async function updateInteractivePresentationProgress(
   artifactId: number,
   userId: number,
-  progress: Pick<InteractivePresentationProgress, 'active_scene_id' | 'completed_scene_ids' | 'is_completed'>,
+  progress: Pick<InteractivePresentationProgress, 'active_scene_id' | 'completed_scene_ids' | 'visited_scene_ids' | 'is_completed'>,
 ) {
   const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/progress`, {
     method: 'PATCH',
@@ -811,6 +899,25 @@ export async function updateKnowledgeMapNodeProgress(
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '更新知识图解进度失败')
+  }
+  return res.json() as Promise<KnowledgeMapProgress>
+}
+
+export async function updateKnowledgeMapWorkspaceProgress(
+  artifactId: number,
+  userId: number,
+  state: { active_node_id: string; explored_node_ids: string[] },
+) {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/map-workspace`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, ...state }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail && body.detail !== 'Not Found'
+      ? body.detail
+      : '浏览位置同步功能需要重启后端后启用')
   }
   return res.json() as Promise<KnowledgeMapProgress>
 }

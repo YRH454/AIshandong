@@ -42,6 +42,8 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
         response["result"] = job.get("result", {})
     if job["status"] == "failed":
         response["error"] = job.get("error", "生成没有完成，请稍后重试")
+    if job.get("progress"):
+        response["progress"] = dict(job["progress"])
     return response
 
 
@@ -55,7 +57,15 @@ def _prune_locked() -> None:
         _jobs.pop(job_id, None)
 
 
-def submit_generation_job(kind: str, user_id: int, work: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+def submit_generation_job(
+    kind: str,
+    user_id: int,
+    work: Callable[[], dict[str, Any]],
+    *,
+    dedupe_key: str | None = None,
+    progress_initial: dict[str, Any] | None = None,
+    with_progress: bool = False,
+) -> dict[str, Any]:
     """Queue work and return a safe public snapshot immediately."""
     job_id = uuid4().hex
     job = {
@@ -68,9 +78,20 @@ def submit_generation_job(kind: str, user_id: int, work: Callable[[], dict[str, 
         "finished_at": None,
         "result": None,
         "error": None,
+        "dedupe_key": dedupe_key,
+        "progress": dict(progress_initial or {}),
     }
     with _lock:
         _prune_locked()
+        if dedupe_key:
+            existing = next((
+                item for item in _jobs.values()
+                if item.get("user_id") == user_id
+                and item.get("dedupe_key") == dedupe_key
+                and item.get("status") in {"queued", "running"}
+            ), None)
+            if existing:
+                return _public(existing)
         _jobs[job_id] = job
 
     def run() -> None:
@@ -78,7 +99,15 @@ def submit_generation_job(kind: str, user_id: int, work: Callable[[], dict[str, 
             job["status"] = "running"
             job["started_at"] = _now()
         try:
-            result = work()
+            def report_progress(update: dict[str, Any]) -> None:
+                if not isinstance(update, dict):
+                    return
+                with _lock:
+                    if job["status"] not in {"queued", "running"}:
+                        return
+                    job["progress"] = {**job.get("progress", {}), **update}
+
+            result = work(report_progress) if with_progress else work()
         except Exception as exc:  # The API returns a safe failure through polling.
             logger.exception("generation job failed: kind=%s job=%s", kind, job_id)
             with _lock:

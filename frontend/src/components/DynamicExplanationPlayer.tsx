@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, ArrowUp, Check, ChevronLeft, ChevronRight, CirclePause, CirclePlay, Eye, FastForward, Gauge, GripVertical, Lightbulb, Maximize2, PenLine, RotateCcw, Save, Sparkles, Target, X } from 'lucide-react'
-import type { DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
+import { ArrowDown, ArrowUp, CirclePause, CirclePlay, FastForward, Gauge, GripVertical, Maximize2, Save, Sparkles, Target, X } from 'lucide-react'
+import type { DynamicExplanationBranchCondition, DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationInteractionOutcome, DynamicExplanationScene } from './dynamicExplanation'
+import { ContinuousKnowledgeTheater } from './ContinuousKnowledgeTheater'
 
 export type { DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
 
 export type DynamicExplanationProgress = {
   activeSceneId: string
   completedSceneIds: string[]
+  visitedSceneIds?: string[]
   isCompleted: boolean
   checkpoints?: Record<string, DynamicExplanationCheckpoint>
 }
@@ -26,6 +28,7 @@ type DynamicExplanationPlayerProps = {
   saving?: boolean
   saveAsVersion?: boolean
   openImmersiveRequest?: number
+  compact?: boolean
 }
 
 type SceneVisualProps = {
@@ -55,6 +58,13 @@ const visualTypeOptions: Array<{ id: DynamicExplanationScene['visual_type']; zh:
 ]
 
 type LearningMode = 'quick' | 'guided' | 'challenge'
+
+type ActiveBranchDecision = {
+  condition: DynamicExplanationBranchCondition
+  label: string
+  reason: string
+  targetSceneId: string
+}
 
 const learningModes: Array<{ id: LearningMode; zh: string; en: string; descriptionZh: string; descriptionEn: string }> = [
   { id: 'quick', zh: '快速看懂', en: 'Quick view', descriptionZh: '只走关键场景，先建立整体理解。', descriptionEn: 'Take the essential scenes first.' },
@@ -282,7 +292,7 @@ function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisua
   )
 }
 
-export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, progress, onProgressChange, onCheckpoint, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true, openImmersiveRequest }: DynamicExplanationPlayerProps) {
+export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, progress, onProgressChange, onCheckpoint, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true, openImmersiveRequest, compact = false }: DynamicExplanationPlayerProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [answers, setAnswers] = useState<Record<string, string>>({})
@@ -296,7 +306,10 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   const [completionNotice, setCompletionNotice] = useState<'earlier' | 'overview' | null>(null)
   const [learningMode, setLearningMode] = useState<LearningMode>('guided')
   const [revealedSceneIds, setRevealedSceneIds] = useState<Record<string, boolean>>({})
-  const [remedialBySceneId, setRemedialBySceneId] = useState<Record<string, string>>({})
+  const [interactionOutcomes, setInteractionOutcomes] = useState<Record<string, DynamicExplanationInteractionOutcome>>({})
+  const [visitHistory, setVisitHistory] = useState<string[]>([])
+  const [activeBranchDecision, setActiveBranchDecision] = useState<ActiveBranchDecision | undefined>()
+  const [, setRemedialBySceneId] = useState<Record<string, string>>({})
   const [, setProgressRevision] = useState(0)
   const startedScenes = useRef(new Set<string>())
   const completedScenes = useRef(new Set<string>())
@@ -309,8 +322,8 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   const visibleSceneIndexes = useMemo(() => {
     const all = presentation.scenes.map((_, index) => index)
     if (learningMode !== 'quick' || all.length <= 3) return all
-    return [...new Set([0, Math.round((all.length - 1) / 2), all.length - 1])]
-  }, [learningMode, presentation.scenes])
+    return [...new Set([0, Math.round((all.length - 1) / 2), all.length - 1, activeIndex])].sort((left, right) => left - right)
+  }, [activeIndex, learningMode, presentation.scenes])
   const activeVisibleIndex = Math.max(0, visibleSceneIndexes.indexOf(activeIndex))
   const scene = presentation.scenes[activeIndex]
   const totalSeconds = useMemo(
@@ -326,6 +339,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
 
   const progressActiveSceneId = progress?.activeSceneId || ''
   const progressCompletedSceneIds = progress?.completedSceneIds || emptyProgressSceneIds
+  const progressVisitedSceneIds = progress?.visitedSceneIds || emptyProgressSceneIds
   const progressIsCompleted = Boolean(progress?.isCompleted)
 
   useEffect(() => {
@@ -341,6 +355,9 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     setCompletionNotice(null)
     setLearningMode('guided')
     setRevealedSceneIds({})
+    setInteractionOutcomes({})
+    setVisitHistory([])
+    setActiveBranchDecision(undefined)
     setRemedialBySceneId({})
     startedScenes.current.clear()
     completedScenes.current.clear()
@@ -360,10 +377,16 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     const restoredCompleted = new Set(progressCompletedSceneIds.filter(id => validSceneIds.has(id)))
     const restoredIndex = data.scenes.findIndex(item => item.id === progressActiveSceneId)
     completedScenes.current = restoredCompleted
-    completedExplanation.current = Boolean(progressIsCompleted && restoredCompleted.size === data.scenes.length)
+    completedExplanation.current = progressIsCompleted
+    const restoredHistory = progressVisitedSceneIds.filter(id => validSceneIds.has(id))
+    const activeId = restoredIndex >= 0 ? data.scenes[restoredIndex].id : data.scenes[0]?.id
+    const normalizedHistory = activeId
+      ? restoredHistory[restoredHistory.length - 1] === activeId ? restoredHistory : [...restoredHistory, activeId]
+      : []
+    setVisitHistory(normalizedHistory)
     if (restoredIndex >= 0) setActiveIndex(restoredIndex)
     setProgressRevision(current => current + 1)
-  }, [data, presentationDraft, progressActiveSceneId, progressCompletedSceneIds, progressIsCompleted])
+  }, [data, presentationDraft, progressActiveSceneId, progressCompletedSceneIds, progressIsCompleted, progressVisitedSceneIds])
 
   useEffect(() => {
     if (!scene || startedScenes.current.has(scene.id)) return
@@ -373,10 +396,11 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       onProgressChange?.({
         activeSceneId: scene.id,
         completedSceneIds: [...completedScenes.current],
+        visitedSceneIds: visitHistory.length ? visitHistory : [scene.id],
         isCompleted: completedExplanation.current,
       })
     }
-  }, [activeIndex, onProgressChange, onSceneStarted, progressActiveSceneId, scene])
+  }, [activeIndex, onProgressChange, onSceneStarted, progressActiveSceneId, scene, visitHistory])
 
   const completeScene = useCallback((index: number) => {
     const current = presentation.scenes[index]
@@ -386,62 +410,117 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     onSceneCompleted?.(current, index)
   }, [onSceneCompleted, presentation.scenes])
 
-  const reportProgress = useCallback((index: number) => {
+  const reportProgress = useCallback((index: number, history = visitHistory, isCompleted = completedExplanation.current) => {
     const current = presentation.scenes[index]
     if (!current) return
     onProgressChange?.({
       activeSceneId: current.id,
       completedSceneIds: [...completedScenes.current],
-      isCompleted: presentation.scenes.length > 0 && completedScenes.current.size === presentation.scenes.length,
+      visitedSceneIds: history,
+      isCompleted,
     })
-  }, [onProgressChange, presentation.scenes])
+  }, [onProgressChange, presentation.scenes, visitHistory])
 
   const completeExplanation = useCallback(() => {
     completeScene(activeIndex)
     reportProgress(activeIndex)
     setPlaying(false)
-    const completedRoute = visibleSceneIndexes.every(index => completedScenes.current.has(presentation.scenes[index]?.id))
-    if (!completedRoute) {
-      setCompletionNotice('earlier')
-      return
-    }
-    if (completedScenes.current.size !== presentation.scenes.length) {
-      setCompletionNotice('overview')
-      return
-    }
     if (completedExplanation.current) return
     completedExplanation.current = true
     setCompletionNotice(null)
+    reportProgress(activeIndex, visitHistory, true)
     onCompleted?.()
-  }, [activeIndex, completeScene, onCompleted, presentation.scenes, reportProgress, visibleSceneIndexes])
+  }, [activeIndex, completeScene, onCompleted, reportProgress, visitHistory])
 
-  const moveTo = useCallback((nextIndex: number) => {
+  const jumpTo = useCallback((nextIndex: number) => {
     if (!scene) return
-    completeScene(activeIndex)
     setCompletionNotice(null)
-    if (nextIndex >= presentation.scenes.length) {
+    if (nextIndex >= presentation.scenes.length) return
+    const normalizedIndex = Math.max(0, nextIndex)
+    const nextScene = presentation.scenes[normalizedIndex]
+    const nextHistory = nextScene && visitHistory[visitHistory.length - 1] !== nextScene.id
+      ? [...visitHistory, nextScene.id]
+      : visitHistory
+    setVisitHistory(nextHistory)
+    setActiveBranchDecision(undefined)
+    setActiveIndex(normalizedIndex)
+    setSelectedVisualItem(0)
+    reportProgress(normalizedIndex, nextHistory)
+  }, [presentation.scenes, reportProgress, scene, visitHistory])
+
+  const resolveNextIndex = useCallback((currentScene: DynamicExplanationScene) => {
+    let condition: DynamicExplanationBranchCondition | undefined
+    const selected = answers[currentScene.id]
+    if (currentScene.check && selected) condition = selected === currentScene.check.answer ? 'correct' : 'incorrect'
+    else condition = interactionOutcomes[currentScene.id]?.signal
+
+    const routes = currentScene.branching?.routes || []
+    const route = (condition ? routes.find(item => item.condition === condition) : undefined)
+      || routes.find(item => item.condition === 'default')
+    const targetId = route?.target_scene_id || currentScene.branching?.default_next_scene_id
+    const targetIndex = targetId ? presentation.scenes.findIndex(item => item.id === targetId) : -1
+    if (targetIndex >= 0 && targetIndex !== activeIndex) {
+      return {
+        index: targetIndex,
+        decision: route ? {
+          condition: route.condition,
+          label: route.label,
+          reason: route.reason,
+          targetSceneId: route.target_scene_id,
+        } satisfies ActiveBranchDecision : undefined,
+      }
+    }
+    const linearIndex = visibleSceneIndexes[activeVisibleIndex + 1]
+    return { index: linearIndex ?? null, decision: undefined }
+  }, [activeIndex, activeVisibleIndex, answers, interactionOutcomes, presentation.scenes, visibleSceneIndexes])
+
+  const advanceTo = useCallback((nextIndex?: number | null, decision?: ActiveBranchDecision) => {
+    if (!scene) return
+    const resolved = nextIndex === undefined ? resolveNextIndex(scene) : { index: nextIndex, decision }
+    if (resolved.index === null || resolved.index >= presentation.scenes.length) {
       completeExplanation()
       return
     }
-    setActiveIndex(Math.max(0, nextIndex))
+    completeScene(activeIndex)
+    setCompletionNotice(null)
+    const normalizedIndex = Math.max(0, resolved.index)
+    const target = presentation.scenes[normalizedIndex]
+    const nextHistory = target ? [...visitHistory, target.id] : visitHistory
+    setVisitHistory(nextHistory)
+    setActiveBranchDecision(resolved.decision)
+    setActiveIndex(normalizedIndex)
     setSelectedVisualItem(0)
-    reportProgress(Math.max(0, nextIndex))
-  }, [activeIndex, completeExplanation, completeScene, presentation.scenes.length, reportProgress, scene])
+    reportProgress(normalizedIndex, nextHistory)
+  }, [activeIndex, completeExplanation, completeScene, presentation.scenes, reportProgress, resolveNextIndex, scene, visitHistory])
+
+  const returnToPreviousScene = useCallback(() => {
+    if (visitHistory.length <= 1) return
+    const nextHistory = visitHistory.slice(0, -1)
+    const previousId = nextHistory[nextHistory.length - 1]
+    const previousIndex = presentation.scenes.findIndex(item => item.id === previousId)
+    if (previousIndex < 0) return
+    setPlaying(false)
+    setCompletionNotice(null)
+    setActiveBranchDecision(undefined)
+    setVisitHistory(nextHistory)
+    setActiveIndex(previousIndex)
+    setSelectedVisualItem(0)
+    reportProgress(previousIndex, nextHistory)
+  }, [presentation.scenes, reportProgress, visitHistory])
 
   useEffect(() => {
-    if (!playing || !scene) return undefined
-    const nextIndex = visibleSceneIndexes[activeVisibleIndex + 1] ?? presentation.scenes.length
-    const timeout = window.setTimeout(() => moveTo(nextIndex), Math.max(9000, (scene.suggested_seconds || 42) * 1000))
+    if (!playing || !scene || immersive) return undefined
+    const timeout = window.setTimeout(() => advanceTo(), Math.max(9000, (scene.suggested_seconds || 42) * 1000))
     return () => window.clearTimeout(timeout)
-  }, [activeVisibleIndex, moveTo, playing, presentation.scenes.length, scene, visibleSceneIndexes])
+  }, [activeVisibleIndex, advanceTo, immersive, playing, presentation.scenes.length, scene, visibleSceneIndexes])
 
   useEffect(() => {
     if (!immersive) return undefined
     document.body.classList.add('interactive-presentation-open')
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setImmersive(false)
-      if (event.key === 'ArrowRight') moveTo(visibleSceneIndexes[activeVisibleIndex + 1] ?? presentation.scenes.length)
-      if (event.key === 'ArrowLeft') moveTo(visibleSceneIndexes[Math.max(0, activeVisibleIndex - 1)] ?? 0)
+      if (event.key === 'ArrowRight') advanceTo()
+      if (event.key === 'ArrowLeft') returnToPreviousScene()
       if (event.key === ' ' && event.target === document.body) {
         event.preventDefault()
         setPlaying(value => !value)
@@ -452,7 +531,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       document.body.classList.remove('interactive-presentation-open')
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [activeVisibleIndex, immersive, moveTo, presentation.scenes.length, visibleSceneIndexes])
+  }, [advanceTo, immersive, returnToPreviousScene])
 
   useEffect(() => {
     if (openImmersiveRequest) setImmersive(true)
@@ -511,13 +590,12 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
 
   const selectedAnswer = answers[scene.id]
   const checked = Boolean(selectedAnswer)
-  const isLastScene = activeVisibleIndex === visibleSceneIndexes.length - 1
   const completedSceneCount = presentation.scenes.filter(item => completedScenes.current.has(item.id)).length
   const palette = presentation.palette || 'sage'
   const selectedMode = learningModes.find(item => item.id === learningMode) || learningModes[1]
   const showNarration = learningMode !== 'challenge' || Boolean(revealedSceneIds[scene.id])
-  const currentRemedialAnswer = remedialBySceneId[scene.id]
   const persistedCheckpoint = progress?.checkpoints?.[scene.id]
+  const resolvedNext = resolveNextIndex(scene)
 
   const chooseLearningMode = (mode: LearningMode) => {
     setLearningMode(mode)
@@ -560,92 +638,33 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     </div>
   )
 
-  const controls = (mode: 'preview' | 'immersive') => (
-    <div className={`presentation-controls ${mode}`}>
-      <button type="button" onClick={() => moveTo(visibleSceneIndexes[Math.max(0, activeVisibleIndex - 1)] ?? 0)} disabled={activeVisibleIndex === 0}><ChevronLeft size={16} />{tr('上一页', 'Previous')}</button>
-      <span>{activeVisibleIndex + 1} / {visibleSceneIndexes.length}{learningMode === 'quick' ? tr(' · 快速路径', ' · quick path') : ''}</span>
-      {isLastScene ? (
-        <button className="presentation-finish" type="button" onClick={completeExplanation}><Check size={16} />{tr('完成讲解', 'Complete')}</button>
-      ) : (
-        <button className="presentation-next" type="button" onClick={() => moveTo(visibleSceneIndexes[activeVisibleIndex + 1] ?? presentation.scenes.length)}>{tr('下一页', 'Next')}<ChevronRight size={16} /></button>
-      )}
-      <button className="presentation-restart" type="button" onClick={() => { setPlaying(false); setActiveIndex(visibleSceneIndexes[0] || 0); setSelectedVisualItem(0); setCompletionNotice(null) }} aria-label={tr('从头播放', 'Restart')}><RotateCcw size={15} /></button>
-      {completionNotice && !completedExplanation.current && <p className="presentation-completion-reminder" role="status">{completionNotice === 'overview'
-        ? tr('快速路径已经走完。切换到“跟着推演”后，完成剩余场景即可结束整段讲解。', 'Quick view is complete. Switch to guided walkthrough to finish the remaining scenes.')
-        : tr('先完成当前学习路径中的前面场景，再结束本次讲解。', 'Complete the earlier scenes in this learning path before finishing.')}</p>}
-    </div>
-  )
-
-  const understandingCheck = scene.check && (
-    <section className="presentation-check" aria-label={tr('理解检查', 'Understanding check')}>
-      <div><span>{tr('停一下，先判断', 'Pause and predict')}</span><p>{scene.check.prompt}</p>{persistedCheckpoint && <small>{persistedCheckpoint.correct ? tr('此前已答对，可再做一次确认理解。', 'Previously confirmed. Try it once more to verify.') : tr(`此前已尝试 ${persistedCheckpoint.attempts} 次，这次换一种思路。`, `Tried ${persistedCheckpoint.attempts} time(s) before. Try a different line of thought.`)}</small>}</div>
-      <div className="presentation-check-options">
-        {scene.check.options.map(option => {
-          const correct = checked && option === scene.check?.answer
-          const incorrect = checked && option === selectedAnswer && option !== scene.check?.answer
-          return (
-            <button
-              key={option}
-              type="button"
-              disabled={checked}
-              className={correct ? 'correct' : incorrect ? 'incorrect' : ''}
-              onClick={() => answerCheckpoint(option)}
-            >
-              {correct && <Check size={14} />}{option}
-            </button>
-          )
-        })}
-      </div>
-      {checked && <p className="presentation-check-feedback">{scene.check.explanation}</p>}
-      {currentRemedialAnswer && selectedAnswer && scene.check && (
-        <aside className="presentation-adaptive-coach" aria-label={tr('自动补讲', 'Adaptive follow-up')}>
-          <div><span><Lightbulb size={14} />{tr('自动补讲', 'Adaptive follow-up')}</span><strong>{tr('先把错因看清，再带着这一点继续推演。', 'See why this went wrong, then continue with the corrected idea.')}</strong></div>
-          <p>{tr(`你选择了“${currentRemedialAnswer}”。正确判断是“${scene.check.answer}”。`, `You chose “${currentRemedialAnswer}”. The correct choice is “${scene.check.answer}”.`)}</p>
-          <button type="button" onClick={() => { setSelectedVisualItem(0); setAnswers(current => { const next = { ...current }; delete next[scene.id]; return next }); setRemedialBySceneId(current => { const next = { ...current }; delete next[scene.id]; return next }) }}><Eye size={14} />{tr('带着提示再答一次', 'Try again with this hint')}</button>
-        </aside>
-      )}
-    </section>
-  )
-
   const immersiveStage = (
-    <section className={`interactive-presentation palette-${palette}`} aria-label={tr('互动学习演示', 'Interactive learning presentation')}>
-      <header className="presentation-topbar">
-        <button className="presentation-exit" type="button" onClick={() => setImmersive(false)}><X size={17} />{tr('退出演示', 'Exit')}</button>
-        <div><span>{tr('互动学习演示', 'Interactive learning presentation')}</span><strong>{presentation.title}</strong></div>
-        <div className="presentation-top-actions">
-          {onSavePresentation && <button className={editorOpen ? 'presentation-edit active' : 'presentation-edit'} type="button" aria-pressed={editorOpen} onClick={() => { setEditorOpen(value => !value); setEditorError(null) }}><PenLine size={15} />{editorOpen ? tr('继续播放', 'Resume') : tr('编辑演示', 'Edit')}</button>}
-          <button className={playing ? 'presentation-autoplay active' : 'presentation-autoplay'} type="button" aria-pressed={playing} onClick={() => setPlaying(value => !value)}>
-            {playing ? <CirclePause size={16} /> : <CirclePlay size={16} />}{playing ? tr('暂停', 'Pause') : tr('自动播放', 'Autoplay')}
-          </button>
-        </div>
-      </header>
-
-      {learningModeControl('immersive')}
-      <nav className="presentation-scene-nav" aria-label={tr('演示目录', 'Presentation outline')}>
-        {visibleSceneIndexes.map((index, visibleIndex) => {
-          const item = presentation.scenes[index]
-          return (
-          <button className={index === activeIndex ? 'active' : completedScenes.current.has(item.id) ? 'completed' : index < activeIndex ? 'visited' : ''} type="button" key={item.id} aria-current={index === activeIndex ? 'step' : undefined} onClick={() => moveTo(index)}>
-            <i>{visibleIndex + 1}</i><span>{item.title}</span>
-          </button>
-          )
-        })}
-      </nav>
-
-      <main className={`presentation-main visual-${scene.visual_type} learning-mode-${learningMode}`} key={scene.id}>
-        <div className="presentation-story">
-          <span>{learningMode === 'challenge' && !showNarration ? tr('先预测，再验证', 'Predict, then verify') : tr('此刻要看懂', 'What to understand now')}</span>
-          <h1>{scene.title}</h1>
-          {showNarration
-            ? <p>{scene.narration}</p>
-            : <div className="presentation-prediction">
-                <p>{scene.check?.prompt || tr('先暂停十秒，用自己的话预测：这一幕接下来要证明、变化或避免的是什么？', 'Pause for ten seconds and predict what this scene will prove, change, or prevent.')}</p>
-                <button type="button" onClick={() => setRevealedSceneIds(current => ({ ...current, [scene.id]: true }))}><Eye size={14} />{tr('展开讲解验证想法', 'Reveal the explanation')}</button>
-              </div>}
-          <strong><Sparkles size={15} />{scene.key_point}</strong>
-        </div>
-        <SceneVisual scene={scene} language={language} selectedItem={selectedVisualItem} onSelectItem={setSelectedVisualItem} />
-      </main>
+    <section className="interactive-presentation continuous-presentation palette-sage" aria-label={tr('互动学习演示', 'Interactive learning presentation')}>
+      <ContinuousKnowledgeTheater
+        data={presentation}
+        language={language}
+        activeIndex={activeIndex}
+        learningMode={learningMode}
+        completedSceneIds={[...completedScenes.current]}
+        visitedSceneIds={visitHistory}
+        interactionOutcomes={interactionOutcomes}
+        nextSceneIndex={resolvedNext.index}
+        activeBranchDecision={activeBranchDecision}
+        selectedAnswer={selectedAnswer}
+        checkpoint={persistedCheckpoint}
+        showNarration={showNarration}
+        editing={editorOpen}
+        completionNotice={completionNotice}
+        onExit={() => setImmersive(false)}
+        onSelectScene={jumpTo}
+        onBack={returnToPreviousScene}
+        onAdvance={() => advanceTo(resolvedNext.index, resolvedNext.decision)}
+        onInteractionOutcome={(outcomeScene, outcome) => setInteractionOutcomes(current => ({ ...current, [outcomeScene.id]: outcome }))}
+        onModeChange={chooseLearningMode}
+        onAnswer={answerCheckpoint}
+        onRevealNarration={() => setRevealedSceneIds(current => ({ ...current, [scene.id]: true }))}
+        onEdit={onSavePresentation ? () => { setEditorOpen(value => !value); setEditorError(null); setPlaying(false) } : undefined}
+      />
 
       {editorOpen && onSavePresentation && (
         <aside className="presentation-editor-panel" aria-label={tr('编辑互动演示', 'Edit interactive presentation')}>
@@ -696,11 +715,30 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
           </footer>
         </aside>
       )}
-
-      {understandingCheck}
-      {controls('immersive')}
     </section>
   )
+
+  if (compact) {
+    const compactSceneIndexes = visibleSceneIndexes.slice(0, 4)
+    return (
+      <section className={`dynamic-explanation-player dynamic-explanation-compact palette-${palette}`} aria-label={tr('互动学习演示', 'Interactive learning presentation')}>
+        <div className="dynamic-compact-copy">
+          <div className="dynamic-compact-meta">
+            <Sparkles size={15} aria-hidden="true" />
+            <span>{tr(`${presentation.scenes.length} 个场景，${formatDuration(totalSeconds, language)}`, `${presentation.scenes.length} scenes, ${formatDuration(totalSeconds, language)}`)}</span>
+          </div>
+          <strong>{tr('讲解已经编排完成', 'Your lesson is ready')}</strong>
+          <p>{tr(`从“${scene.title}”开始，进入后可切换学习节奏、播放推演并完成理解检查。`, `Begin with “${scene.title}”, then change pace, play the walkthrough, and complete understanding checks.`)}</p>
+          <div className="dynamic-compact-scenes" aria-label={tr('讲解场景预览', 'Lesson scene preview')}>
+            {compactSceneIndexes.map(index => <span key={presentation.scenes[index].id}>{presentation.scenes[index].title}</span>)}
+            {visibleSceneIndexes.length > compactSceneIndexes.length && <span>{tr(`还有 ${visibleSceneIndexes.length - compactSceneIndexes.length} 个场景`, `${visibleSceneIndexes.length - compactSceneIndexes.length} more scenes`)}</span>}
+          </div>
+        </div>
+        <button className="presentation-open dynamic-compact-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr(activeIndex > 0 && !completedExplanation.current ? '继续动态讲解' : '进入动态讲解', activeIndex > 0 && !completedExplanation.current ? 'Continue lesson' : 'Open lesson')}</button>
+        {immersive && createPortal(<div className="interactive-presentation-layer" role="dialog" aria-modal="true">{immersiveStage}</div>, document.body)}
+      </section>
+    )
+  }
 
   return (
     <section className={`dynamic-explanation-player palette-${palette}`} aria-label={tr('互动学习演示', 'Interactive learning presentation')}>
@@ -724,7 +762,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         <div className="presentation-scene-peek" aria-label={tr('场景目录', 'Scene outline')}>
           {visibleSceneIndexes.map((index, visibleIndex) => {
             const item = presentation.scenes[index]
-            return <button type="button" className={index === activeIndex ? 'active' : completedScenes.current.has(item.id) ? 'completed' : ''} key={item.id} onClick={() => moveTo(index)}><i>{visibleIndex + 1}</i><span>{item.title}</span></button>
+            return <button type="button" className={index === activeIndex ? 'active' : completedScenes.current.has(item.id) ? 'completed' : ''} key={item.id} onClick={() => jumpTo(index)}><i>{visibleIndex + 1}</i><span>{item.title}</span></button>
           })}
         </div>
         <button className={playing ? 'dynamic-autoplay active' : 'dynamic-autoplay'} type="button" aria-pressed={playing} onClick={() => setPlaying(value => !value)}>{playing ? <CirclePause size={15} /> : <CirclePlay size={15} />}{playing ? tr('暂停', 'Pause') : tr('自动播放', 'Autoplay')}</button>

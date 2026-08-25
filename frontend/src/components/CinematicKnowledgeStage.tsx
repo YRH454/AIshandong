@@ -249,6 +249,14 @@ function splitLegacyNarration(narration: string) {
     .filter(Boolean)
 }
 
+function stageCue(value: string, limit = 58) {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  const sentence = normalized.split(/(?<=[。！？!?；;])/)[0]?.trim() || normalized
+  if (sentence.length <= limit) return sentence
+  return `${sentence.slice(0, Math.max(1, limit - 1)).replace(/[，、；;：: ]+$/, '')}…`
+}
+
 function ensureBeats(scene: DynamicExplanationScene, actors: StageActor[], kind: DynamicExplanationStageKind): DynamicExplanationBeat[] {
   if (scene.director_beats?.length) return recoverStageMotion(scene.director_beats, kind)
   if (scene.simulation?.beats?.length) return recoverStageMotion(scene.simulation.beats, kind)
@@ -569,9 +577,11 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
     ? `${story.previousOutcome.label} 已成为本幕条件：${baseFocalQuestion}`
     : baseFocalQuestion
   const activeDetail = activeBeat?.narration || cue?.caption || activeBeat?.detail || scene.narration
+  const compactStageCue = stageCue(activeDetail)
   const activeTone = activeBeat?.tone || (scene.path_role === 'remediation' ? 'correction' : scene.path_role === 'advanced' ? 'challenge' : safeStep === beats.length - 1 ? 'conclusion' : 'guide')
   const activeTargetLabel = actors.find(actor => actor.id === activeTarget)?.label || activeBeat?.label || scene.title
   const directorActive = Boolean(director?.active)
+  const stageFirstPresentation = Boolean(director)
   const effectivePlaying = directorActive ? Boolean(director?.playing) : playing
   const explicitInteractionPause = beats.findIndex(beat => beat.pause_for_interaction)
   const interactionPauseStep = directorActive && (scene.stage?.requires_interaction || interactionKinds.has(kind)) && beats.length > 1
@@ -698,8 +708,8 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
   const branchBrief = scene.path_role === 'remediation' || scene.path_role === 'advanced' ? scene.branch_brief : undefined
 
   return (
-    <section className={`cinematic-knowledge-stage cinematic-${kind} path-${scene.path_role || 'main'} tone-${activeTone}${directorActive ? ' is-director' : ''}${effectivePlaying ? ' is-director-playing' : ''}${waitingForInteraction ? ' is-awaiting-interaction' : ''}`} aria-label={tr('导演式动态讲解', 'Directed interactive lesson')}>
-      <header className="cinematic-scene-copy">
+    <section className={`cinematic-knowledge-stage cinematic-${kind} path-${scene.path_role || 'main'} tone-${activeTone}${stageFirstPresentation ? ' is-stage-first' : ''}${directorActive ? ' is-director' : ''}${effectivePlaying ? ' is-director-playing' : ''}${waitingForInteraction ? ' is-awaiting-interaction' : ''}`} aria-label={tr('导演式动态讲解', 'Directed interactive lesson')}>
+      {!stageFirstPresentation && <header className="cinematic-scene-copy">
         <div>
           <h1>{scene.title}</h1>
           <p>{showNarration ? activeDetail : focalQuestion}</p>
@@ -715,12 +725,12 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
           ) : <strong>{scene.key_point}</strong>}
           {!showNarration && onRevealNarration && <button type="button" onClick={onRevealNarration}>{tr('揭晓这一幕', 'Reveal this scene')}</button>}
         </aside>
-      </header>
+      </header>}
 
-      <div className={`cinematic-stage-window${storyIndex >= 0 ? ' has-story-thread' : ''}${story?.previousOutcome ? ' has-carried-result' : ''}`}>
-        {storyIndex >= 0 && <div className="cinematic-story-thread" aria-label={tr('连续讲解主线', 'Continuous lesson thread')}><strong>{story?.threadLabel}</strong><span><b>{storyIndex + 1}/{storyTotal}</b>{story?.phaseLabel ? `${story.phaseLabel} · ` : ''}{story?.chapterLabel}</span><i><em style={{ '--story-progress': (storyIndex + 1) / Math.max(1, storyTotal) } as CSSProperties} /></i></div>}
-        {handoffVisible && story?.previousConclusion && <div className="cinematic-scene-handoff" role="status"><small>{story.previousOutcome ? tr('你的操作成为本幕输入', 'Your action becomes this scene input') : tr('承接上一幕', 'From the previous scene')}</small><strong>{story.previousOutcome?.label || story.previousConclusion}</strong>{story.currentQuestion && <span><ArrowRight size={13} />{story.currentQuestion}</span>}</div>}
-        {story?.previousOutcome && <div className="cinematic-carried-result"><small>{tr('已带入', 'Carried in')}</small><strong>{story.previousOutcome.label}</strong><span>{story.receives || story.previousOutcome.detail}</span></div>}
+      <div className={`cinematic-stage-window${!stageFirstPresentation && storyIndex >= 0 ? ' has-story-thread' : ''}${!stageFirstPresentation && story?.previousOutcome ? ' has-carried-result' : ''}`}>
+        {!stageFirstPresentation && storyIndex >= 0 && <div className="cinematic-story-thread" aria-label={tr('连续讲解主线', 'Continuous lesson thread')}><strong>{story?.threadLabel}</strong><span><b>{storyIndex + 1}/{storyTotal}</b>{story?.phaseLabel ? `${story.phaseLabel} · ` : ''}{story?.chapterLabel}</span><i><em style={{ '--story-progress': (storyIndex + 1) / Math.max(1, storyTotal) } as CSSProperties} /></i></div>}
+        {!stageFirstPresentation && handoffVisible && story?.previousConclusion && <div className="cinematic-scene-handoff" role="status"><small>{story.previousOutcome ? tr('你的操作成为本幕输入', 'Your action becomes this scene input') : tr('承接上一幕', 'From the previous scene')}</small><strong>{story.previousOutcome?.label || story.previousConclusion}</strong>{story.currentQuestion && <span><ArrowRight size={13} />{story.currentQuestion}</span>}</div>}
+        {!stageFirstPresentation && story?.previousOutcome && <div className="cinematic-carried-result"><small>{tr('已带入', 'Carried in')}</small><strong>{story.previousOutcome.label}</strong><span>{story.receives || story.previousOutcome.detail}</span></div>}
         {kind === 'service-flow' ? (
           <ServiceFlowScene {...sceneProps} />
         ) : kind === 'number-transform' ? (
@@ -741,6 +751,12 @@ export function CinematicKnowledgeStage({ scene, language, learningMode, showNar
           <div className="process-lab-stage">
             <div className="process-lab-core"><Workflow size={38} /><strong>{activeBeat?.label}</strong><p>{activeDetail}</p></div>
             {actors.map((actor, index) => <button type="button" className={index === activeActorIndex ? 'active' : ''} key={actor.id} onClick={() => moveTo(Math.min(index, beats.length - 1))}><span>{actor.role}</span><strong>{actor.label}</strong></button>)}
+          </div>
+        )}
+        {stageFirstPresentation && compactStageCue && (
+          <div className={`cinematic-stage-cue tone-${activeTone}`} data-action={activeBeat?.action || 'focus'} aria-live="polite">
+            <span>{activeBeat?.label || scene.title}</span>
+            <strong>{compactStageCue}</strong>
           </div>
         )}
       </div>

@@ -304,6 +304,51 @@ function writeStoredMapPackJob(artifactId: number, jobId?: string) {
   localStorage.setItem(MAP_PACK_JOBS_STORAGE_KEY, JSON.stringify(stored))
 }
 
+type StoredDynamicExplanationJob = {
+  jobId: string
+  turnId: string
+  sessionId: number
+  loadingId: string
+  createdAt: number
+  status?: 'failed'
+  error?: string
+  errorCode?: string
+  retryable?: boolean
+}
+
+const DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY = 'rhyme-dynamic-explanation-jobs'
+
+function readStoredDynamicExplanationJobs(): Record<string, StoredDynamicExplanationJob> {
+  try {
+    const value = JSON.parse(localStorage.getItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY) || '{}')
+    if (!value || typeof value !== 'object') return {}
+    return Object.fromEntries(Object.entries(value).filter(([, item]) => {
+      if (!item || typeof item !== 'object') return false
+      const task = item as Partial<StoredDynamicExplanationJob>
+      return typeof task.jobId === 'string'
+        && typeof task.turnId === 'string'
+        && typeof task.sessionId === 'number'
+        && typeof task.loadingId === 'string'
+        && typeof task.createdAt === 'number'
+    })) as Record<string, StoredDynamicExplanationJob>
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredDynamicExplanationJob(task: StoredDynamicExplanationJob) {
+  const stored = readStoredDynamicExplanationJobs()
+  stored[task.loadingId] = task
+  localStorage.setItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, JSON.stringify(stored))
+}
+
+function removeStoredDynamicExplanationJob(loadingId: string) {
+  const stored = readStoredDynamicExplanationJobs()
+  if (!(loadingId in stored)) return
+  delete stored[loadingId]
+  localStorage.setItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, JSON.stringify(stored))
+}
+
 type DocumentPurpose = 'review' | 'preview' | 'exam'
 type DocumentDepth = 'concise' | 'standard' | 'deep'
 type DocumentStyle = 'plain' | 'notes' | 'exam'
@@ -1393,6 +1438,8 @@ function App() {
   const [pendingDynamicExplanationTurnId, setPendingDynamicExplanationTurnId] = useState<string | null>(null)
   const dynamicExplanationGenerationLocked = useRef(false)
   const dynamicExplanationRunnerRef = useRef<(turnId: string) => void>(() => {})
+  const dynamicExplanationJobMonitors = useRef(new Set<string>())
+  const restoredDynamicExplanationJobs = useRef(new Set<string>())
   const [recentDynamicExplanationArtifactId, setRecentDynamicExplanationArtifactId] = useState<string | null>(null)
   const [dismissedDynamicTaskIds, setDismissedDynamicTaskIds] = useState<Set<string>>(() => new Set())
   const [learningLoopGeneratingTurnId, setLearningLoopGeneratingTurnId] = useState<string | null>(null)
@@ -1501,6 +1548,34 @@ function App() {
       : returnTarget.artifactIds[0] || null)
   }, [practiceReturnBooklet, practiceRun?.artifact.id])
 
+  const createDynamicExplanationPlaceholder = useCallback((turn: ChatTurn, loadingId: string, replacedArtifact?: Artifact): Artifact => {
+    return {
+      ...replacedArtifact,
+      id: loadingId,
+      kind: 'interactive',
+      title: '正在编排动态讲解…',
+      summary: '正在把核心过程拆成可播放的场景，并加入关键的理解检查。',
+      details: ['提炼从“为什么”到“怎么做”的讲解顺序', '为每一幕匹配概念、步骤、对比或示例图示'],
+      source: replacedArtifact?.source || turn.prompt,
+      course: replacedArtifact?.course || learningState.subject || '未分类课程',
+      topic: replacedArtifact?.topic || learningState.current_topic || '本次学习',
+      topicMastery: 0,
+      recommendedCourse: replacedArtifact?.recommendedCourse || learningState.subject || '未分类课程',
+      recommendedTopic: replacedArtifact?.recommendedTopic || learningState.current_topic || '本次学习',
+      classificationSource: 'learning_state',
+      classificationConfidence: 0.9,
+      classificationOverridden: false,
+      saved: false,
+      favorite: false,
+      versionGroupId: 0,
+      version: 1,
+      status: 'generating',
+      purpose: 'review',
+      depth: 'standard',
+      style: 'plain',
+    }
+  }, [learningState.current_topic, learningState.subject])
+
   useEffect(() => {
     localStorage.setItem('rhyme-interface-style', interfaceStyle)
   }, [interfaceStyle])
@@ -1560,6 +1635,65 @@ function App() {
   useEffect(() => {
     dynamicExplanationRunnerRef.current = runDynamicExplanationGeneration
   })
+
+  useEffect(() => {
+    if (!sessionId || turns.length === 0) return
+    const storedTasks = Object.values(readStoredDynamicExplanationJobs())
+      .filter(task => task.sessionId === sessionId)
+      .sort((left, right) => left.createdAt - right.createdAt)
+
+    for (const task of storedTasks) {
+      const restoreKey = `${task.loadingId}:${task.jobId}`
+      if (restoredDynamicExplanationJobs.current.has(restoreKey)) continue
+      const turn = turns.find(item => item.id === task.turnId)
+      if (!turn) continue
+      restoredDynamicExplanationJobs.current.add(restoreKey)
+
+      const existing = turn.artifacts.find(artifact => artifact.id === task.loadingId)
+      const restoredArtifact = task.status === 'failed'
+        ? {
+            ...(existing || createDynamicExplanationPlaceholder(turn, task.loadingId)),
+            title: '动态讲解暂未完成',
+            summary: task.error || '上一次生成没有完成，原始问答仍在这里。',
+            details: [
+              task.retryable === false
+                ? '请先检查来源回答是否仍存在，再重新发起生成。'
+                : '原始问答已保留，点击下方“立即重试”会在这里原位继续。',
+            ],
+            status: 'error' as const,
+            generationProgress: {
+              phase: 'failed' as const,
+              label: '上一次生成未完成',
+              message: task.error || '上一次生成没有完成，原始问答仍在这里。',
+              percent: 0,
+              error_code: task.errorCode,
+            },
+          }
+        : existing || createDynamicExplanationPlaceholder(turn, task.loadingId)
+      setTurns(current => current.map(item => item.id === task.turnId
+        ? {
+            ...item,
+            artifacts: item.artifacts.some(artifact => artifact.id === task.loadingId)
+              ? item.artifacts.map(artifact => artifact.id === task.loadingId ? restoredArtifact : artifact)
+              : [...item.artifacts, restoredArtifact],
+          }
+        : item))
+      setRecentDynamicExplanationArtifactId(task.loadingId)
+
+      if (task.status === 'failed') continue
+      void getGenerationJob<{ artifact: LearningArtifactRecord }>(LOCAL_USER_ID, task.jobId)
+        .then(job => monitorDynamicExplanationJob(task, job, true))
+        .catch(() => monitorDynamicExplanationJob(task, {
+          job_id: task.jobId,
+          kind: 'interactive',
+          status: 'failed',
+          created_at: new Date(task.createdAt).toISOString(),
+          error: '生成任务暂时无法读取',
+          error_code: 'job_expired',
+          retryable: true,
+        }, true))
+    }
+  }, [createDynamicExplanationPlaceholder, sessionId, turns])
 
   useEffect(() => {
     if (!practiceSetupTurnId) return
@@ -3302,6 +3436,113 @@ function App() {
     }
   }
 
+  function updateDynamicExplanationProgress(turnId: string, loadingId: string, progress: DynamicExplanationJobProgress) {
+    const details = [
+      progress.label,
+      progress.current_scene_title ? `正在单独优化“${progress.current_scene_title}”` : '',
+      progress.retry_attempt ? `已自动重试 ${progress.retry_attempt}/${progress.retry_limit || 2} 次` : '',
+      progress.recovery_mode ? '已用当前问答补齐为稳定、可播放的互动讲解' : '',
+      typeof progress.quality_score === 'number' ? `当前内容质量 ${progress.quality_score} 分` : '',
+    ].filter(Boolean)
+    setTurns(current => current.map(item => item.id === turnId
+      ? {
+          ...item,
+          artifacts: item.artifacts.map(artifact => artifact.id === loadingId
+            ? {
+                ...artifact,
+                summary: progress.message || artifact.summary,
+                details: details.length ? details : artifact.details,
+                generationProgress: progress,
+              }
+            : artifact),
+        }
+      : item))
+  }
+
+  async function monitorDynamicExplanationJob(
+    task: StoredDynamicExplanationJob,
+    initialJob: GenerationJob<{ artifact: LearningArtifactRecord }>,
+    resumed = false,
+  ) {
+    if (dynamicExplanationJobMonitors.current.has(task.jobId)) return
+    dynamicExplanationJobMonitors.current.add(task.jobId)
+    dynamicExplanationGenerationLocked.current = true
+    setDynamicExplanationGeneratingTurnId(task.turnId)
+    let latestJob = initialJob
+    try {
+      const data = await waitForGenerationJob(LOCAL_USER_ID, initialJob, job => {
+        latestJob = job
+        const progress = job.progress as DynamicExplanationJobProgress | undefined
+        if (progress?.label) updateDynamicExplanationProgress(task.turnId, task.loadingId, progress)
+      })
+      const artifact = artifactFromRecord(data.artifact)
+      removeStoredDynamicExplanationJob(task.loadingId)
+      setTurns(current => current.map(item => item.id === task.turnId
+        ? { ...item, artifacts: item.artifacts.map(item => item.id === task.loadingId ? artifact : item) }
+        : item))
+      setExpandedArtifactId(artifact.id)
+      setRecentDynamicExplanationArtifactId(artifact.id)
+      setNotice('动态讲解已生成。结果已保留在“后台任务”中，点击即可返回并打开。')
+      if (!resumed) {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }))
+      }
+    } catch (error) {
+      const rawMessage = latestJob.error || (error instanceof Error ? error.message : '动态讲解生成失败')
+      const jobMissing = /任务暂时无法读取|任务不存在|已过期/.test(rawMessage)
+      const message = jobMissing
+        ? '后台服务已重新启动，原生成任务未能继续；原始问答仍在，可立即重试。'
+        : rawMessage
+      const failureTask: StoredDynamicExplanationJob = {
+        ...task,
+        status: 'failed',
+        error: message,
+        errorCode: jobMissing ? 'job_expired' : latestJob.error_code,
+        retryable: jobMissing ? true : latestJob.retryable !== false,
+      }
+      writeStoredDynamicExplanationJob(failureTask)
+      const stoppedAt = (latestJob.progress as DynamicExplanationJobProgress | undefined)?.label || '本次生成未完成'
+      updateDynamicExplanationProgress(task.turnId, task.loadingId, {
+        phase: 'failed',
+        label: stoppedAt,
+        message,
+        percent: 0,
+        error_code: failureTask.errorCode,
+      })
+      setTurns(current => current.map(item => item.id === task.turnId
+        ? {
+            ...item,
+            artifacts: item.artifacts.map(artifact => artifact.id === task.loadingId
+              ? {
+                  ...artifact,
+                  title: '动态讲解暂未完成',
+                  summary: message,
+                  details: [
+                    `停止于：${stoppedAt}`,
+                    failureTask.retryable === false
+                      ? '请先检查来源回答是否仍存在，再重新发起生成。'
+                      : '原始问答已保留，点击下方“立即重试”会在这里原位继续。',
+                  ],
+                  status: 'error',
+                  generationProgress: {
+                    phase: 'failed', label: stoppedAt, message, percent: 0, error_code: failureTask.errorCode,
+                  },
+                }
+              : artifact),
+          }
+        : item))
+      setRecentDynamicExplanationArtifactId(task.loadingId)
+      setNotice(message)
+    } finally {
+      dynamicExplanationJobMonitors.current.delete(task.jobId)
+      if (dynamicExplanationJobMonitors.current.size === 0) {
+        dynamicExplanationGenerationLocked.current = false
+        setDynamicExplanationGeneratingTurnId(null)
+      }
+    }
+  }
+
   async function runDynamicExplanationGeneration(turnId: string, replaceArtifactId?: string) {
     if (!sessionId) {
       setNotice('当前对话还没有准备完成，请稍后再试。')
@@ -3320,31 +3561,8 @@ function App() {
       ? turn.artifacts.find(artifact => artifact.id === replaceArtifactId)
       : undefined
     const loadingId = replaceArtifactId || `dynamic-explanation-generating-${Date.now()}`
-    const loadingArtifact: Artifact = {
-      ...replacedArtifact,
-      id: loadingId,
-      kind: 'interactive',
-      title: '正在编排动态讲解…',
-      summary: '正在把核心过程拆成可播放的场景，并加入关键的理解检查。',
-      details: ['提炼从“为什么”到“怎么做”的讲解顺序', '为每一幕匹配概念、步骤、对比或示例图示'],
-      source: replacedArtifact?.source || turn.prompt,
-      course: replacedArtifact?.course || learningState.subject || '未分类课程',
-      topic: replacedArtifact?.topic || learningState.current_topic || '本次学习',
-      topicMastery: 0,
-      recommendedCourse: replacedArtifact?.recommendedCourse || learningState.subject || '未分类课程',
-      recommendedTopic: replacedArtifact?.recommendedTopic || learningState.current_topic || '本次学习',
-      classificationSource: 'learning_state',
-      classificationConfidence: 0.9,
-      classificationOverridden: false,
-      saved: false,
-      favorite: false,
-      versionGroupId: 0,
-      version: 1,
-      status: 'generating',
-      purpose: 'review',
-      depth: 'standard',
-      style: 'plain',
-    }
+    const loadingArtifact = createDynamicExplanationPlaceholder(turn, loadingId, replacedArtifact)
+    removeStoredDynamicExplanationJob(loadingId)
     dynamicExplanationGenerationLocked.current = true
     setDynamicExplanationGeneratingTurnId(turn.id)
     setRecentDynamicExplanationArtifactId(loadingId)
@@ -3367,52 +3585,45 @@ function App() {
     }))
     try {
       const queued = await generateDynamicExplanation(LOCAL_USER_ID, sessionId, turn.id)
-      const data = await waitForGenerationJob(LOCAL_USER_ID, queued.job, job => {
-        const progress = job.progress as DynamicExplanationJobProgress | undefined
-        if (!progress?.label) return
-        const details = [
-          progress.label,
-          progress.current_scene_title ? `正在单独优化“${progress.current_scene_title}”` : '',
-          typeof progress.quality_score === 'number' ? `当前内容质量 ${progress.quality_score} 分` : '',
-        ].filter(Boolean)
-        setTurns(current => current.map(item => item.id === turn.id
-          ? {
-              ...item,
-              artifacts: item.artifacts.map(artifact => artifact.id === loadingId
-                ? {
-                    ...artifact,
-                    summary: progress.message || artifact.summary,
-                    details: details.length ? details : artifact.details,
-                    generationProgress: progress,
-                  }
-                : artifact),
-            }
-          : item))
-      })
-      const artifact = artifactFromRecord(data.artifact)
-      setTurns(current => current.map(item => item.id === turn.id
-        ? { ...item, artifacts: item.artifacts.map(item => item.id === loadingId ? artifact : item) }
-        : item))
-      setExpandedArtifactId(artifact.id)
-      setRecentDynamicExplanationArtifactId(artifact.id)
-      setNotice('动态讲解已生成。结果已保留在“后台任务”中，点击即可返回并打开。')
-      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-        document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }))
+      const task: StoredDynamicExplanationJob = {
+        jobId: queued.job.job_id,
+        turnId: turn.id,
+        sessionId,
+        loadingId,
+        createdAt: Date.now(),
+      }
+      writeStoredDynamicExplanationJob(task)
+      await monitorDynamicExplanationJob(task, queued.job)
     } catch (error) {
-      const message = error instanceof Error ? error.message : '动态讲解生成失败'
+      // monitorDynamicExplanationJob normally owns the failure state. This only
+      // covers a request that could not enter the backend queue at all.
+      const message = error instanceof Error ? error.message : '动态讲解暂时无法启动'
+      const failedTask: StoredDynamicExplanationJob = {
+        jobId: `request-${Date.now()}`,
+        turnId: turn.id,
+        sessionId,
+        loadingId,
+        createdAt: Date.now(),
+        status: 'failed',
+        error: message,
+        errorCode: 'queue_unavailable',
+        retryable: true,
+      }
+      writeStoredDynamicExplanationJob(failedTask)
       setTurns(current => current.map(item => item.id === turn.id
         ? {
             ...item,
-            artifacts: item.artifacts.map(item => item.id === loadingId
-              ? { ...item, title: '动态讲解生成失败', summary: message, details: ['点击下方“立即重试”，这张卡片会原位重新生成。'], status: 'error' }
-              : item),
+            artifacts: item.artifacts.map(artifact => artifact.id === loadingId
+              ? { ...artifact, title: '动态讲解暂未完成', summary: message, details: ['生成任务尚未进入后台队列，点击下方“立即重试”即可重新开始。'], status: 'error' }
+              : artifact),
           }
         : item))
       setNotice(message)
     } finally {
-      dynamicExplanationGenerationLocked.current = false
-      setDynamicExplanationGeneratingTurnId(null)
+      if (dynamicExplanationJobMonitors.current.size === 0) {
+        dynamicExplanationGenerationLocked.current = false
+        setDynamicExplanationGeneratingTurnId(null)
+      }
     }
   }
 
@@ -4156,6 +4367,7 @@ function App() {
 
   function dismissBackgroundDynamicTask(artifact: Artifact) {
     if (artifact.status === 'generating') return
+    removeStoredDynamicExplanationJob(artifact.id)
     setDismissedDynamicTaskIds(current => new Set([...current, artifact.id]))
     if (recentDynamicExplanationArtifactId === artifact.id) setRecentDynamicExplanationArtifactId(null)
   }

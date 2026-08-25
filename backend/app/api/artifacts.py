@@ -1276,6 +1276,27 @@ def _generate_dynamic_explanation_artifact(req: GenerateDynamicExplanationReques
             learning_state=learning_state,
             progress_callback=report_progress,
         )
+        quality_report = generated.get("explanation", {}).get("quality_report", {})
+        if quality_report.get("display_ready") is False:
+            blocked_count = len(quality_report.get("blocking_scene_ids") or [])
+            logger.warning(
+                "动态讲解已被动画质量门拦截：sid=%s blocked_scenes=%s codes=%s",
+                req.session_id,
+                blocked_count,
+                quality_report.get("blocking_codes") or [],
+            )
+            if report_progress:
+                report_progress({
+                    "phase": "blocked",
+                    "label": "动画质量检查未通过",
+                    "message": "这份内容仍像讲义而不是可操作动画，系统没有保存它，请重新生成。",
+                    "percent": 94,
+                    "quality_score": quality_report.get("score"),
+                })
+            raise HTTPException(
+                status_code=422,
+                detail="这份动态讲解没有通过动画质量检查，系统没有保存。请重新生成。",
+            )
         logger.info(
             "[artifact-timing] kind=interactive sid=%s stage=generation seconds=%.3f",
             req.session_id,

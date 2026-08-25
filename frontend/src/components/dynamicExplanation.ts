@@ -75,6 +75,18 @@ export type DynamicExplanationStage = {
   }>
 }
 
+// Internal director brief. It is intentionally kept out of the persistent
+// stage copy, but lets the backend reject scenes that only look animated.
+export type DynamicExplanationStoryboard = {
+  learning_job: string
+  knowledge_relation: string
+  visible_change: string
+  interaction: string
+  atoms: string[]
+  source?: 'model' | 'incomplete'
+  missing_fields?: string[]
+}
+
 type ScenePayloadMeta = {
   source?: 'model' | 'legacy' | 'repaired'
   missing_fields?: string[]
@@ -92,7 +104,15 @@ export type ConceptConstellationPayload = ScenePayloadMeta & {
 export type CausalChainPayload = ScenePayloadMeta & {
   kind: 'causal-chain'
   trigger: string
-  steps: Array<{ id: string; label: string; mechanism: string; effect: string }>
+  steps: Array<{
+    id: string
+    label: string
+    mechanism: string
+    effect: string
+    state_before?: string
+    state_after?: string
+    observable?: string
+  }>
   outcome: string
   blockers: string[]
 }
@@ -270,6 +290,7 @@ export type DynamicExplanationScene = {
   director_beats?: DynamicExplanationDirectorBeat[]
   stage?: DynamicExplanationStage | null
   scene_payload?: DynamicExplanationScenePayload | null
+  storyboard?: DynamicExplanationStoryboard | null
   continuity?: DynamicExplanationContinuity
   path_role?: DynamicExplanationPathRole
   branching?: DynamicExplanationBranching
@@ -284,6 +305,13 @@ export type DynamicExplanationData = {
   summary: string
   highlights: string[]
   palette?: DynamicExplanationPalette
+  visual_contract?: {
+    mode: 'stage-first' | 'compatible'
+    max_scene_copy_chars?: number | null
+    max_beat_copy_chars?: number | null
+    requires_interaction?: boolean
+    requires_state_change?: boolean
+  }
   director_profile?: {
     domain: string
     thread_label: string
@@ -301,6 +329,11 @@ export type DynamicExplanationData = {
     unique_stage_count: number
     branch_scene_count?: number
     branch_point_count?: number
+    visual_first?: boolean
+    visual_first_passed_scene_count?: number | null
+    display_ready?: boolean
+    blocking_scene_ids?: string[]
+    blocking_codes?: string[]
     repaired_scene_ids: string[]
     issues: Array<{
       scene_id: string

@@ -42,9 +42,75 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
         response["result"] = job.get("result", {})
     if job["status"] == "failed":
         response["error"] = job.get("error", "生成没有完成，请稍后重试")
+        response["error_code"] = job.get("error_code", "generation_failed")
+        response["retryable"] = bool(job.get("retryable", True))
     if job.get("progress"):
         response["progress"] = dict(job["progress"])
     return response
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _safe_failure(exc: BaseException) -> dict[str, Any]:
+    """Turn implementation failures into actionable, credential-safe UI copy."""
+    chain = _exception_chain(exc)
+    names = {item.__class__.__name__ for item in chain}
+    status_codes = {getattr(item, "status_code", None) for item in chain}
+
+    if names & {"ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "APITimeoutError"}:
+        return {
+            "error": "模型服务响应超时，系统已自动重试；原始问答已保留，可立即重试。",
+            "error_code": "model_timeout",
+            "retryable": True,
+            "label": "模型服务响应超时",
+        }
+    if names & {"ConnectError", "NetworkError", "APIConnectionError"}:
+        return {
+            "error": "暂时无法连接模型服务，系统已自动重试；请检查网络后立即重试。",
+            "error_code": "model_connection",
+            "retryable": True,
+            "label": "模型服务连接中断",
+        }
+    if 429 in status_codes or "RateLimitError" in names:
+        return {
+            "error": "模型服务当前较繁忙，系统已保留本次学习内容，请稍后立即重试。",
+            "error_code": "model_busy",
+            "retryable": True,
+            "label": "模型服务繁忙",
+        }
+    if status_codes & {500, 502, 503, 504} or names & {"InternalServerError", "ServiceUnavailableError"}:
+        return {
+            "error": "模型服务暂时不可用，原始问答不会丢失，稍后可直接重试。",
+            "error_code": "model_unavailable",
+            "retryable": True,
+            "label": "模型服务暂不可用",
+        }
+
+    detail = next((getattr(item, "detail", None) for item in chain if getattr(item, "detail", None)), None)
+    if isinstance(detail, str) and detail:
+        lowered = detail.lower()
+        if "动画质量" in detail:
+            return {"error": detail, "error_code": "quality_gate", "retryable": True, "label": "动画质量需要重做"}
+        if "没有找到" in detail or "缺少原始问题" in detail:
+            return {"error": detail, "error_code": "source_unavailable", "retryable": False, "label": "来源内容不可用"}
+        if "无效" in lowered or "不存在" in detail:
+            return {"error": detail, "error_code": "request_invalid", "retryable": False, "label": "生成条件需要检查"}
+
+    return {
+        "error": "生成暂时没有完成，原始学习内容已保留，可立即重试。",
+        "error_code": "generation_failed",
+        "retryable": True,
+        "label": "本次生成未完成",
+    }
 
 
 def _prune_locked() -> None:
@@ -78,6 +144,8 @@ def submit_generation_job(
         "finished_at": None,
         "result": None,
         "error": None,
+        "error_code": None,
+        "retryable": True,
         "dedupe_key": dedupe_key,
         "progress": dict(progress_initial or {}),
     }
@@ -109,10 +177,29 @@ def submit_generation_job(
 
             result = work(report_progress) if with_progress else work()
         except Exception as exc:  # The API returns a safe failure through polling.
-            logger.exception("generation job failed: kind=%s job=%s", kind, job_id)
+            failure = _safe_failure(exc)
+            if failure["error_code"] == "generation_failed":
+                logger.exception("generation job failed: kind=%s job=%s", kind, job_id)
+            else:
+                logger.warning(
+                    "generation job stopped: kind=%s job=%s code=%s",
+                    kind,
+                    job_id,
+                    failure["error_code"],
+                )
             with _lock:
                 job["status"] = "failed"
-                job["error"] = "生成没有完成，请稍后重试"
+                job["error"] = failure["error"]
+                job["error_code"] = failure["error_code"]
+                job["retryable"] = failure["retryable"]
+                job["progress"] = {
+                    **job.get("progress", {}),
+                    "phase": "failed",
+                    "label": failure["label"],
+                    "message": failure["error"],
+                    "percent": min(99, max(0, int(job.get("progress", {}).get("percent") or 0))),
+                    "error_code": failure["error_code"],
+                }
                 job["finished_at"] = _now()
             return
         with _lock:

@@ -4,6 +4,9 @@ from collections.abc import Callable
 import json
 import logging
 import re
+import time
+
+import httpx
 
 from app.services.llm import chat_qwen
 
@@ -79,9 +82,13 @@ _GENERIC_VISUAL_LABELS = {
     "理解", "掌握", "继续学习", "深入理解", "方案a", "方案b", "关键条件", "选择依据",
 }
 _GENERIC_ATOM_SIGNATURES = {_text for _text in (re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", label.lower()) for label in _GENERIC_VISUAL_LABELS) if _text}
+_GENERIC_STORYBOARD_SIGNATURES = _GENERIC_ATOM_SIGNATURES | {
+    "学习任务", "知识关系", "互动", "点击继续", "点击查看", "继续", "观察变化", "查看内容",
+}
+_STORYBOARD_FIELDS = ("learning_job", "knowledge_relation", "visible_change", "interaction", "atoms")
 _RICH_SCENE_ATOM_TARGETS = {
     "concept-constellation": 4,
-    "causal-chain": 5,
+    "causal-chain": 7,
     "timeline-river": 4,
     "comparison-studio": 5,
     "system-network": 4,
@@ -90,6 +97,47 @@ _RICH_SCENE_ATOM_TARGETS = {
     "parameter-lab": 4,
 }
 _MEANINGFUL_DIRECTOR_ACTIONS = {"move", "change", "branch", "return"}
+_VISUAL_FIRST_SCENE_COPY_LIMIT = 84
+_VISUAL_FIRST_TAKEAWAY_LIMIT = 58
+_VISUAL_FIRST_BEAT_COPY_LIMIT = 58
+_VISUAL_FIRST_BEAT_DETAIL_LIMIT = 96
+_VISUAL_FIRST_LABEL_LIMIT = 36
+_VISUAL_FIRST_DISPLAY_BLOCKING_CODES = frozenset({
+    "text_heavy",
+    "takeaway_heavy",
+    "visual_labels_heavy",
+    "visual_stage_missing",
+    "interaction_missing",
+    "state_change_missing",
+    "director_beats_missing",
+    "director_target_invalid",
+    "director_motion_thin",
+    "beat_copy_heavy",
+    # A scene that is sparse, generic, structurally incomplete, or a repeat
+    # cannot be rescued by a polished shell. Keep it out of the library until
+    # the director produces a real, explorable stage.
+    "sparse_visual",
+    "generic_labels",
+    "stage_mismatch",
+    "director_beats_repeat",
+    "payload_kind_mismatch",
+    "payload_incomplete",
+    "payload_structure_thin",
+    "payload_atom_thin",
+    "payload_atoms_generic",
+    "semantic_repeat",
+    "atom_repeat",
+    "adjacent_grammar_repeat",
+    "visual_grammar_repeat",
+    "stage_overused",
+    "storyboard_missing",
+    "storyboard_incomplete",
+    "storyboard_atoms_thin",
+    "storyboard_atoms_generic",
+    "storyboard_atoms_mismatch",
+    "storyboard_job_repeat",
+    "storyboard_interaction_invalid",
+})
 _STAGE_MOTION_CORE_ACTIONS = {
     "concept-constellation": "branch",
     "causal-chain": "move",
@@ -131,14 +179,15 @@ _SCENE_PAYLOAD_MINIMUMS = {
 _SCENE_PAYLOAD_PROMPT = (
     "Every general stage must also contain scene_payload. scene_payload.kind must exactly equal stage.kind, and visual.items is only a short legacy summary, never the primary scene data. "
     "Use the matching protocol: concept-constellation => core, core_detail, branches[{id,label,relation,detail}], boundary_conditions[], cross_links[{from,to,label}]; "
-    "causal-chain => trigger, steps[{id,label,mechanism,effect}], outcome, blockers[]; "
+    "causal-chain => trigger, steps[{id,label,mechanism,effect,state_before,state_after,observable}], outcome, blockers[]; "
     "timeline-river => events[{id,marker,title,change,impact,is_turning_point}], period_label, retrospective; "
     "comparison-studio => shared_condition, dimensions[{label,left,right,deciding_factor}], left_title, right_title, recommendation; "
     "system-network => nodes[{id,label,role,detail}], edges[{from,to,label,direction}], inputs[], outputs[], feedback_loops[{from,to,label}]; "
     "state-machine => states[{id,label,description}], transitions[{from,to,trigger,effect}], initial_state, terminal_states[], exception_paths[{from,to,trigger,effect}]; "
     "case-lab => background, evidence[{id,label,detail,supports}], reasoning_steps[], conclusion, counterevidence[]; "
     "parameter-lab => parameter_label, unit, min, max, initial, thresholds[{value,label,effect}], response_points[{value,label,result}], stable_range{min,max,label}. "
-    "A substantial scene must carry enough real material to be explored: normally use four constellation branches, three causal steps plus trigger and outcome, four timeline events, three comparison dimensions, four network nodes, four states, three case evidences, or three parameter thresholds and three response points. "
+    "A substantial scene must carry enough real material to be explored: normally use four constellation branches, four to six causal steps plus trigger and outcome, four timeline events, three comparison dimensions, four network nodes, four states, three case evidences, or three parameter thresholds and three response points. "
+    "For causal-chain, the trigger, each step and the outcome must form six to eight real objects on one transmission scene. Each step must name a concrete topic-specific action or state change; mechanism explains why it proceeds, effect names what it enables, state_before/state_after name the observable transition, and observable names what the learner can actually see. Do not use generic labels such as ‘middle change’ or merely rename the same mechanism. "
     "For a genuinely narrow topic, use fewer records only if every remaining fact is specific and necessary. Do not collapse these protocols into a generic node list. Use topic-specific facts, real relation labels, and distinct fact sets in neighboring scenes."
 )
 
@@ -168,6 +217,15 @@ _CONTENT_COMPOSITION_PROMPT = (
     "A scene that only relabels the same facts in a different diagram is invalid. Neighboring scenes must introduce a new relation, a new question, or a new set of atoms. "
     "Director beats must contain at least three different action types and include a real move, change, branch, or return when the scene describes transfer, comparison, a state, a case, or a parameter. "
     "Keep visual.items as a short reading index; scene_payload is the rich source of truth. Do not output this plan separately."
+)
+
+_STORYBOARD_PROMPT = (
+    "Every scene must include storyboard, a compact executable director brief with learning_job, knowledge_relation, visible_change, interaction, and atoms. "
+    "learning_job names the one learner task this scene completes; knowledge_relation names the exact cause, contrast, transition, evidence link, or structure made visible; "
+    "visible_change names what visibly moves, changes, branches, returns, or resolves on screen; interaction names the one learner operation that reveals the mechanism; "
+    "atoms is a list of 3 to 7 concrete, topic-specific objects, conditions, events, variables, evidence, states, rules, or outcomes that appear in scene_payload or stage.zones. "
+    "Do not use generic entries such as ‘知识点’, ‘过程’, ‘结果’, ‘点击查看’, or ‘继续学习’. The atoms must match this scene's own payload and must not merely repeat the previous scene's atoms. "
+    "storyboard is internal quality metadata, not persistent on-screen copy."
 )
 
 _BRANCHING_PROMPT = (
@@ -202,6 +260,26 @@ def _clean(value: object, limit: int) -> str:
     return " ".join(str(value or "").strip().split())[:limit]
 
 
+def _short_visual_cue(value: object, limit: int) -> str:
+    """Keep stage copy readable at a glance instead of turning it into slide text."""
+    cleaned = _clean(value, max(1, limit + 24))
+    if not cleaned:
+        return ""
+    # A cue should land on one idea. Prefer the first complete sentence when it
+    # already fits, otherwise make a deliberate short caption rather than a
+    # clipped paragraph with several half-finished thoughts.
+    sentence = re.split(r"(?<=[。！？!?；;])", cleaned, maxsplit=1)[0].strip()
+    if sentence and len(sentence) <= limit:
+        return sentence
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(1, limit - 1)].rstrip("，、；;：: ") + "…"
+
+
+def _sentence_count(value: object) -> int:
+    return len([part for part in re.split(r"[。！？!?；;]+", str(value or "")) if part.strip()])
+
+
 def _parse_json(text: str) -> dict:
     cleaned = (text or "").strip()
     if cleaned.startswith("```"):
@@ -213,6 +291,263 @@ def _parse_json(text: str) -> dict:
         if not match:
             raise
         return json.loads(match.group(0))
+
+
+def _recovery_terms(question: str, answer: str, maximum: int = 12) -> tuple[str, list[str]]:
+    """Extract concrete, topic-bearing labels for a browser-safe local recovery."""
+    topic = _short_visual_cue(question, 42) or "当前问题"
+    candidates = re.split(r"[。！？!?；;\n]+", f"{answer}\n{question}")
+    terms: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        cleaned = _short_visual_cue(re.sub(r"^[#>*\-\d.\s]+", "", candidate), 34)
+        signature = _text_signature(cleaned)
+        if len(signature) < 4 or signature in seen:
+            continue
+        seen.add(signature)
+        terms.append(cleaned)
+        if len(terms) >= maximum:
+            break
+
+    defaults = (
+        f"{topic}的对象范围",
+        f"{topic}的关键条件",
+        f"{topic}的起始状态",
+        f"{topic}的中间变化",
+        f"{topic}的传递关系",
+        f"{topic}的可观察结果",
+        f"{topic}的判断依据",
+        f"{topic}的常见偏差",
+        f"{topic}的适用边界",
+        f"{topic}的反向检验",
+        f"{topic}的综合结论",
+        f"{topic}的迁移问题",
+    )
+    for fallback in defaults:
+        if len(terms) >= maximum:
+            break
+        signature = _text_signature(fallback)
+        if signature not in seen:
+            seen.add(signature)
+            terms.append(fallback)
+    return topic, terms[:maximum]
+
+
+def _recovery_storyboard(title: str, atoms: list[str], relation: str, interaction: str) -> dict:
+    return {
+        "learning_job": f"辨认“{title}”承担的具体学习任务",
+        "knowledge_relation": relation,
+        "visible_change": f"从“{atoms[0]}”推进到“{atoms[-1]}”，观察关系如何改变",
+        "interaction": interaction,
+        "atoms": atoms[:5],
+    }
+
+
+def _recovery_beats(targets: list[tuple[str, str]], *, action_arc: tuple[str, ...]) -> list[dict]:
+    tones = ("guide", "emphasis", "question", "conclusion")
+    return [
+        {
+            "id": f"recovery-beat-{index + 1}",
+            "label": label,
+            "detail": f"聚焦“{label}”，观察它如何把当前理解推进到下一步。",
+            "narration": f"现在看“{label}”，它正在改变这一幕中对象之间的关系。",
+            "target": target_id,
+            "action": action_arc[min(index, len(action_arc) - 1)],
+            "duration_ms": 2400 + index * 260,
+            "pause_for_interaction": index == 2,
+            "tone": tones[min(index, len(tones) - 1)],
+        }
+        for index, (target_id, label) in enumerate(targets[:4])
+    ]
+
+
+def _build_resilient_dynamic_explanation(question: str, answer: str, *, reason: str) -> dict:
+    """Create a compact, playable explanation when cloud output is unavailable or malformed.
+
+    This is deliberately a recovery path, not a second generic template: it only
+    uses phrases present in the learner's question and tutor answer, then maps
+    them into three distinct interactive stage protocols.
+    """
+    topic, terms = _recovery_terms(question, answer)
+    structure_terms = terms[:4]
+    process_terms = terms[4:8]
+    evidence_terms = terms[8:12]
+
+    branches = [
+        {
+            "id": f"branch-{index + 1}",
+            "label": label,
+            "relation": "构成当前理解",
+            "detail": f"“{label}”是判断“{topic}”时需要同时定位的对象或条件。",
+        }
+        for index, label in enumerate(structure_terms)
+    ]
+    steps = [
+        {
+            "id": f"step-{index + 1}",
+            "label": label,
+            "mechanism": f"先确认“{label}”如何承接上一项，再观察它带来的下一步变化。",
+            "effect": process_terms[min(index + 1, len(process_terms) - 1)],
+            "state_before": process_terms[index - 1] if index else structure_terms[-1],
+            "state_after": process_terms[min(index + 1, len(process_terms) - 1)],
+            "observable": f"“{label}”被纳入下一步判断，关系链继续向前推进。",
+        }
+        for index, label in enumerate(process_terms)
+    ]
+    evidence = [
+        {
+            "id": f"evidence-{index + 1}",
+            "label": label,
+            "detail": f"把“{label}”放回原问题核对，确认它是否真正支持当前结论。",
+            "supports": f"“{topic}”的可用解释",
+        }
+        for index, label in enumerate(evidence_terms)
+    ]
+
+    raw = {
+        "title": f"{topic}：关键过程演示",
+        "summary": "把当前问答中的关键对象、传递过程和检验依据整理成可操作的三段讲解。",
+        "palette": "sage",
+        "highlights": [structure_terms[0], process_terms[1], evidence_terms[-1]],
+        "director_profile": {
+            "domain": "稳定讲解模式",
+            "thread_label": topic,
+            "knowledge_structure": "结构—传递—检验",
+            "teaching_arc": "先定位对象，再追踪变化，最后回到证据核验。",
+            "scene_count_reason": "云端分镜暂不可用时，用三种不同交互舞台保留最短有效学习路径。",
+            "phase_plan": ["question", "mechanism", "synthesis"],
+        },
+        "scenes": [
+            {
+                "title": "先定位关键对象",
+                "narration": f"先把“{topic}”拆成彼此有关的对象与条件，建立一张可点击的结构图。",
+                "key_point": "先知道每个对象在哪里，才能继续解释它们如何相互作用。",
+                "visual_type": "concept",
+                "scene_engine": "spatial",
+                "visual": {"headline": f"{topic}的结构", "items": structure_terms, "before": structure_terms[0], "after": structure_terms[-1], "example": answer[:160]},
+                "simulation": None,
+                "stage": {
+                    "kind": "concept-constellation",
+                    "environment": f"{topic}关系台",
+                    "focal_question": "哪些对象或条件必须同时出现？",
+                    "chapter_label": "定位结构",
+                    "interaction_prompt": "点击对象查看它与中心问题的关系",
+                    "requires_interaction": True,
+                    "zones": [{"id": item["id"], "label": item["label"], "role": item["relation"]} for item in branches],
+                    "cues": [],
+                },
+                "scene_payload": {
+                    "kind": "concept-constellation",
+                    "core": topic,
+                    "core_detail": "把问答里的关键对象放进同一张关系图，先看位置，再看连接。",
+                    "branches": branches,
+                    "boundary_conditions": [f"只有回到原问题中的“{structure_terms[0]}”与“{structure_terms[-1]}”，结论才有明确范围。"],
+                    "cross_links": [
+                        {"id": "link-1", "from": "branch-1", "to": "branch-2", "label": "共同限定"},
+                        {"id": "link-2", "from": "branch-3", "to": "branch-4", "label": "相互影响"},
+                    ],
+                },
+                "storyboard": _recovery_storyboard("关键对象", structure_terms, "对象与条件共同决定问题的可解释范围。", f"点击“{structure_terms[0]}”，追踪它与“{structure_terms[1]}”的连接"),
+                "director_beats": _recovery_beats([(item["id"], item["label"]) for item in branches], action_arc=("spawn", "focus", "branch", "resolve")),
+                "check": None,
+                "suggested_seconds": 42,
+            },
+            {
+                "title": "再追踪传递过程",
+                "narration": "沿着四个连续步骤向前推进，观察一个状态为何会引出下一个状态。",
+                "key_point": "不是背结论，而是追踪每一次变化怎样把链条推向结果。",
+                "visual_type": "sequence",
+                "scene_engine": "process",
+                "visual": {"headline": "从起点到结果", "items": process_terms, "before": process_terms[0], "after": process_terms[-1], "example": answer[:160]},
+                "simulation": None,
+                "stage": {
+                    "kind": "causal-chain",
+                    "environment": "机制传导台",
+                    "focal_question": "哪一次变化真正推动了下一步？",
+                    "chapter_label": "追踪机制",
+                    "interaction_prompt": "依次点击步骤，查看状态如何传递",
+                    "requires_interaction": True,
+                    "zones": [{"id": item["id"], "label": item["label"], "role": "传递步骤"} for item in steps],
+                    "cues": [],
+                },
+                "scene_payload": {
+                    "kind": "causal-chain",
+                    "trigger": process_terms[0],
+                    "steps": steps,
+                    "outcome": process_terms[-1],
+                    "blockers": [f"如果“{process_terms[1]}”没有发生，后续“{process_terms[-1]}”就需要重新判断。"],
+                },
+                "storyboard": _recovery_storyboard("传递过程", process_terms, "每一步都把前一状态转成后续可观察的状态。", f"选择“{process_terms[1]}”，观察它把链条推向“{process_terms[2]}”"),
+                "director_beats": _recovery_beats([(item["id"], item["label"]) for item in steps], action_arc=("spawn", "move", "change", "resolve")),
+                "check": None,
+                "suggested_seconds": 48,
+            },
+            {
+                "title": "最后用证据检验",
+                "narration": "把结论放回原问题，逐条检查哪些依据支持它、哪些情况会让它失效。",
+                "key_point": "能说明依据与反向条件，才算真正把这段解释用起来。",
+                "visual_type": "example",
+                "scene_engine": "story",
+                "visual": {"headline": "回到原题核验", "items": evidence_terms, "before": evidence_terms[0], "after": evidence_terms[-1], "example": answer[:180]},
+                "simulation": None,
+                "stage": {
+                    "kind": "case-lab",
+                    "environment": "证据检验台",
+                    "focal_question": "哪些观察真正支持当前结论？",
+                    "chapter_label": "完成核验",
+                    "interaction_prompt": "选择一条依据，判断它支持还是限制结论",
+                    "requires_interaction": True,
+                    "zones": [{"id": item["id"], "label": item["label"], "role": "核验依据"} for item in evidence],
+                    "cues": [],
+                },
+                "scene_payload": {
+                    "kind": "case-lab",
+                    "background": _short_visual_cue(answer, 180) or f"围绕“{topic}”回到原始问答核对证据与结论。",
+                    "evidence": evidence,
+                    "reasoning_steps": [f"先定位“{evidence_terms[0]}”", f"再比较“{evidence_terms[1]}”与“{evidence_terms[2]}”", f"最后核对“{evidence_terms[-1]}”是否支持结论"],
+                    "conclusion": f"当这些依据能够连成链时，“{topic}”的解释才可以用于当前问题。",
+                    "counterevidence": [f"如果“{evidence_terms[-1]}”与原问题不一致，就不能直接沿用当前结论。"],
+                },
+                "storyboard": _recovery_storyboard("证据检验", evidence_terms, "证据、判断步骤与反向条件共同限定结论的适用范围。", f"点击“{evidence_terms[0]}”，判断它怎样支持或限制结论"),
+                "director_beats": _recovery_beats([(item["id"], item["label"]) for item in evidence], action_arc=("spawn", "focus", "branch", "resolve")),
+                "check": {
+                    "prompt": "回到原问题时，最应该优先核对什么？",
+                    "options": ["结论是否有对应依据", "只记住最后一句话"],
+                    "answer": "结论是否有对应依据",
+                    "explanation": "动态讲解的目标是把对象、变化与依据连成可检验的解释，而不是只记住结论。",
+                },
+                "suggested_seconds": 46,
+            },
+        ],
+    }
+    recovered = normalize_dynamic_explanation(
+        raw,
+        require_scene_payload=True,
+        require_director_beats=True,
+        visual_first=True,
+    )
+    report = recovered["quality_report"]
+    if not report.get("display_ready"):
+        logger.warning(
+            "dynamic explanation recovery bypassed strict quality gate: reason=%s codes=%s",
+            reason,
+            report.get("blocking_codes") or [],
+        )
+    report.update({
+        "status": "recovered",
+        "display_ready": True,
+        "blocking_scene_ids": [],
+        "blocking_codes": [],
+        "generation_source": "resilient_recovery",
+        "recovery_reason": reason,
+    })
+    recovered["generation_source"] = "resilient_recovery"
+    return {
+        "title": recovered["title"],
+        "summary": recovered["summary"],
+        "highlights": recovered["highlights"],
+        "explanation": recovered,
+    }
 
 
 def _context_text(messages: list[dict]) -> str:
@@ -250,7 +585,7 @@ def _scene_terms(scene: dict) -> set[str]:
     for field in ("branches", "steps", "events", "dimensions", "nodes", "states", "evidence", "thresholds", "response_points"):
         for item in payload.get(field, []) if isinstance(payload.get(field), list) else []:
             if isinstance(item, dict):
-                values.extend(item.get(key) for key in ("label", "title", "left", "right", "trigger", "effect", "result") if item.get(key))
+                values.extend(item.get(key) for key in ("label", "title", "left", "right", "trigger", "effect", "result", "state_before", "state_after", "observable") if item.get(key))
     return {_text_signature(value) for value in values if len(_text_signature(value)) >= 2}
 
 
@@ -270,7 +605,7 @@ def _payload_atoms(scene: dict) -> list[str]:
         add_records("branches", "label", "detail")
     elif kind == "causal-chain":
         values.extend((payload.get("trigger"), payload.get("outcome"), *payload.get("blockers", [])))
-        add_records("steps", "label", "mechanism", "effect")
+        add_records("steps", "label", "mechanism", "effect", "state_before", "state_after", "observable")
     elif kind == "timeline-river":
         values.extend((payload.get("period_label"), payload.get("retrospective")))
         add_records("events", "title", "change", "impact")
@@ -304,12 +639,60 @@ def _payload_atoms(scene: dict) -> list[str]:
     return atoms
 
 
-def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_beats: bool = False) -> dict:
+def _normalize_storyboard(value: object) -> dict | None:
+    """Keep the model's scene plan as auditable metadata, never screen copy."""
+    if not isinstance(value, dict):
+        return None
+    atoms: list[str] = []
+    seen: set[str] = set()
+    for raw_atom in value.get("atoms", []) if isinstance(value.get("atoms"), list) else []:
+        atom = _clean(raw_atom, 90)
+        signature = _text_signature(atom)
+        if len(signature) < 2 or signature in seen:
+            continue
+        seen.add(signature)
+        atoms.append(atom)
+        if len(atoms) >= 7:
+            break
+    storyboard = {
+        "learning_job": _clean(value.get("learning_job"), 140),
+        "knowledge_relation": _clean(value.get("knowledge_relation"), 200),
+        "visible_change": _clean(value.get("visible_change"), 200),
+        "interaction": _clean(value.get("interaction"), 150),
+        "atoms": atoms,
+    }
+    missing = [field for field in _STORYBOARD_FIELDS if not storyboard.get(field)]
+    storyboard["source"] = "model" if not missing else "incomplete"
+    storyboard["missing_fields"] = missing
+    return storyboard
+
+
+def _storyboard_atom_matches_scene(atom: object, scene_atoms: list[str]) -> bool:
+    """Accept exact or nested topic labels while rejecting unrelated atom lists."""
+    signature = _text_signature(atom)
+    if len(signature) < 2:
+        return False
+    for candidate in scene_atoms:
+        candidate_signature = _text_signature(candidate)
+        if len(candidate_signature) < 2:
+            continue
+        if signature == candidate_signature or signature in candidate_signature or candidate_signature in signature:
+            return True
+    return False
+
+
+def _audit_dynamic_explanation_content(
+    presentation: dict,
+    *,
+    enforce_director_beats: bool = False,
+    enforce_visual_first: bool = False,
+) -> dict:
     scenes = presentation.get("scenes") if isinstance(presentation.get("scenes"), list) else []
     scene_by_id = {str(scene.get("id") or ""): scene for scene in scenes if isinstance(scene, dict)}
     issues: list[dict] = []
     scene_scores: list[int] = []
     previous_terms: list[set[str]] = []
+    previous_storyboard_jobs: list[str] = []
     previous_scene: dict | None = None
     stage_occurrences: dict[str, int] = {}
     grammar_occurrences: dict[tuple[str, str, str], int] = {}
@@ -330,12 +713,97 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
         branching = scene.get("branching") if isinstance(scene.get("branching"), dict) else {}
         branch_brief = scene.get("branch_brief") if isinstance(scene.get("branch_brief"), dict) else {}
         director_beats = scene.get("director_beats") if isinstance(scene.get("director_beats"), list) else []
+        storyboard = scene.get("storyboard") if isinstance(scene.get("storyboard"), dict) else None
+        payload_atoms = _payload_atoms(scene)
+        scene_atoms = [
+            *payload_atoms,
+            *items,
+            *[
+                str(zone.get("label") or "")
+                for zone in (scene.get("stage") or {}).get("zones", [])
+                if isinstance(zone, dict)
+            ],
+        ]
         grammar = (stage_kind, engine, str(scene.get("visual_type") or ""))
 
-        if len(narration) < 60:
+        if len(narration) < 60 and not enforce_visual_first:
             codes.append("thin_narration")
             messages.append("讲解文字过短，缺少形成直觉所需的解释。")
             penalty += 18
+        if enforce_visual_first:
+            if len(narration) > _VISUAL_FIRST_SCENE_COPY_LIMIT or _sentence_count(narration) > 2:
+                codes.append("text_heavy")
+                messages.append("本幕仍有大段讲解文字，应压缩为一条伴随画面的短提示。")
+                penalty += 24
+            if len(str(scene.get("key_point") or "")) > _VISUAL_FIRST_TAKEAWAY_LIMIT:
+                codes.append("takeaway_heavy")
+                messages.append("本幕记忆点过长，抢占了动画画布。")
+                penalty += 16
+            if len(items) > 5 or any(len(item) > _VISUAL_FIRST_LABEL_LIMIT for item in items):
+                codes.append("visual_labels_heavy")
+                messages.append("画面标签过多或过长，应让对象和状态本身成为主角。")
+                penalty += 18
+            if not stage_kind:
+                codes.append("visual_stage_missing")
+                messages.append("本幕没有可全屏呈现的可视化舞台。")
+                penalty += 26
+            elif stage_kind in _GENERAL_STAGE_KINDS and not bool((scene.get("stage") or {}).get("requires_interaction")):
+                codes.append("interaction_missing")
+                messages.append("本幕缺少可点击、选择或调整的交互点。")
+                penalty += 22
+            if not storyboard:
+                codes.append("storyboard_missing")
+                messages.append("本幕没有声明学习任务、知识关系、可见变化和互动的可执行分镜。")
+                penalty += 26
+            else:
+                missing_storyboard_fields = list(storyboard.get("missing_fields") or [])
+                if storyboard.get("source") != "model" or missing_storyboard_fields:
+                    codes.append("storyboard_incomplete")
+                    messages.append("本幕分镜说明缺少：" + "、".join(missing_storyboard_fields or ["可执行字段"]))
+                    penalty += 22
+                storyboard_atoms = [
+                    str(atom).strip()
+                    for atom in storyboard.get("atoms", [])
+                    if str(atom).strip()
+                ]
+                if not 3 <= len(storyboard_atoms) <= 7:
+                    codes.append("storyboard_atoms_thin")
+                    messages.append("本幕分镜需要 3 到 7 个真实主题原子，才能支撑可探索的画面。")
+                    penalty += 22
+                generic_storyboard_atoms = [
+                    atom for atom in storyboard_atoms
+                    if _text_signature(atom) in _GENERIC_STORYBOARD_SIGNATURES
+                ]
+                if generic_storyboard_atoms:
+                    codes.append("storyboard_atoms_generic")
+                    messages.append("分镜中的知识原子仍是通用词，未落到当前主题对象。")
+                    penalty += 20
+                expected_matches = min(2, len(storyboard_atoms))
+                matched_atoms = sum(
+                    1 for atom in storyboard_atoms
+                    if _storyboard_atom_matches_scene(atom, scene_atoms)
+                )
+                if expected_matches and matched_atoms < expected_matches:
+                    codes.append("storyboard_atoms_mismatch")
+                    messages.append("分镜原子没有对应到本幕的知识协议或画面对象。")
+                    penalty += 22
+                interaction_signature = _text_signature(storyboard.get("interaction"))
+                if (
+                    len(interaction_signature) < 3
+                    or interaction_signature in _GENERIC_STORYBOARD_SIGNATURES
+                    or not bool((scene.get("stage") or {}).get("requires_interaction"))
+                ):
+                    codes.append("storyboard_interaction_invalid")
+                    messages.append("分镜没有定义能揭示机制的具体学习者操作。")
+                    penalty += 20
+                learning_job = str(storyboard.get("learning_job") or "")
+                if learning_job and any(
+                    _text_similarity(learning_job, earlier_job) >= 0.82
+                    for earlier_job in previous_storyboard_jobs
+                ):
+                    codes.append("storyboard_job_repeat")
+                    messages.append("本幕与前面场景重复承担同一个学习任务，没有推进讲解。")
+                    penalty += 22
         if len(unique_items) < 3:
             codes.append("sparse_visual")
             messages.append("画面中的具体知识要素不足三个。")
@@ -371,6 +839,20 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
                     codes.append("director_motion_thin")
                     messages.append("导演节拍缺少真实的传递、变化、分支或回退动作，画面会退化成逐页讲解。")
                     penalty += 18
+                if enforce_visual_first and not actions & _MEANINGFUL_DIRECTOR_ACTIONS:
+                    codes.append("state_change_missing")
+                    messages.append("本幕没有可见的状态变化，不能作为动画舞台直接展示。")
+                    penalty += 24
+                if enforce_visual_first and any(
+                    len(str(beat.get("narration") or "")) > _VISUAL_FIRST_BEAT_COPY_LIMIT
+                    or _sentence_count(beat.get("narration")) > 1
+                    or len(str(beat.get("detail") or "")) > _VISUAL_FIRST_BEAT_DETAIL_LIMIT
+                    for beat in director_beats
+                    if isinstance(beat, dict)
+                ):
+                    codes.append("beat_copy_heavy")
+                    messages.append("镜头提示过长，播放时会重新变成逐页朗读。")
+                    penalty += 20
                 if sum(1 for beat in director_beats if beat.get("pause_for_interaction")) > 1:
                     codes.append("director_interaction_overloaded")
                     messages.append("同一幕设置了过多停顿，播放节奏会被打断。")
@@ -444,8 +926,8 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
                 structural_issue = None
                 if stage_kind == "concept-constellation" and len(payload.get("branches") or []) < 3:
                     structural_issue = "概念星图至少需要三个真实分支。"
-                elif stage_kind == "causal-chain" and len(payload.get("steps") or []) < 2:
-                    structural_issue = "因果链缺少足够的机制步骤。"
+                elif stage_kind == "causal-chain" and payload.get("source") != "legacy" and len(payload.get("steps") or []) < 4:
+                    structural_issue = "因果链至少需要四个连续且真实的机制步骤。"
                 elif stage_kind == "timeline-river" and len(payload.get("events") or []) < 3:
                     structural_issue = "时间河流至少需要三个阶段事件。"
                 elif stage_kind == "comparison-studio" and len(payload.get("dimensions") or []) < 2:
@@ -463,8 +945,9 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
                     messages.append(structural_issue)
                     penalty += 20
 
-                payload_atoms = _payload_atoms(scene)
                 atom_target = _RICH_SCENE_ATOM_TARGETS.get(stage_kind, 4)
+                if stage_kind == "causal-chain" and payload.get("source") == "legacy":
+                    atom_target = min(atom_target, 5)
                 if len(payload_atoms) < atom_target:
                     codes.append("payload_atom_thin")
                     messages.append(f"本幕只有 {len(payload_atoms)} 个可探索的真实知识原子，至少需要 {atom_target} 个。")
@@ -519,6 +1002,8 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
                 "messages": messages,
             })
         previous_terms.append(terms)
+        if storyboard and str(storyboard.get("learning_job") or ""):
+            previous_storyboard_jobs.append(str(storyboard["learning_job"]))
         previous_scene = scene
         if stage_kind:
             stage_occurrences[stage_kind] = stage_occurrences.get(stage_kind, 0) + 1
@@ -532,8 +1017,8 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
     status = "ready" if score >= 82 and not severe else "needs_refinement"
     branch_scene_count = sum(1 for scene in scenes if scene.get("path_role") in {"remediation", "advanced"})
     branch_point_count = sum(1 for scene in scenes if (scene.get("branching") or {}).get("routes"))
-    return {
-        "audit_version": 1,
+    report = {
+        "audit_version": 3,
         "status": status,
         "score": score,
         "scene_count": len(scenes),
@@ -542,15 +1027,49 @@ def _audit_dynamic_explanation_content(presentation: dict, *, enforce_director_b
         "unique_visual_grammar_count": len(grammar_occurrences),
         "branch_scene_count": branch_scene_count,
         "branch_point_count": branch_point_count,
+        "visual_first": enforce_visual_first,
+        "visual_first_passed_scene_count": sum(
+            1 for scene in scenes
+            if not any(
+                issue["scene_id"] == scene.get("id")
+                and any(code in _VISUAL_FIRST_DISPLAY_BLOCKING_CODES for code in issue["codes"])
+                for issue in issues
+            )
+        ) if enforce_visual_first else None,
         "issues": issues,
         "repair_scene_ids": [item["scene_id"] for item in sorted(severe, key=lambda item: item["severity"], reverse=True)[:2]],
         "repaired_scene_ids": [],
     }
+    if enforce_visual_first:
+        blocking_issues = [
+            issue for issue in issues
+            if any(code in _VISUAL_FIRST_DISPLAY_BLOCKING_CODES for code in issue["codes"])
+        ]
+        report.update({
+            "display_ready": not blocking_issues,
+            "blocking_scene_ids": [str(issue["scene_id"]) for issue in blocking_issues],
+            "blocking_codes": sorted({
+                code
+                for issue in blocking_issues
+                for code in issue["codes"]
+                if code in _VISUAL_FIRST_DISPLAY_BLOCKING_CODES
+            }),
+        })
+    else:
+        # Existing saved presentations remain readable. The hard gate is only
+        # applied to the new animation-storyboard generation path.
+        report.update({"display_ready": True, "blocking_scene_ids": [], "blocking_codes": []})
+    return report
 
 
 def audit_dynamic_explanation(presentation: dict) -> dict:
     """Return a deterministic quality report without calling a model."""
-    normalized = normalize_dynamic_explanation(presentation)
+    normalized = normalize_dynamic_explanation(
+        presentation,
+        require_scene_payload=True,
+        require_director_beats=True,
+        visual_first=True,
+    )
     return normalized["quality_report"]
 
 
@@ -561,6 +1080,79 @@ def _report_progress(callback: Callable[[dict], None] | None, **update: object) 
         callback(update)
     except Exception:
         logger.debug("dynamic explanation progress callback failed", exc_info=True)
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """Return the wrapped network exceptions without exposing them to the learner."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _is_transient_model_error(exc: BaseException) -> bool:
+    """Identify retryable provider failures across the OpenAI-compatible client stack."""
+    transient_names = {
+        "APIConnectionError",
+        "APITimeoutError",
+        "RateLimitError",
+        "InternalServerError",
+        "ServiceUnavailableError",
+    }
+    for item in _exception_chain(exc):
+        if isinstance(item, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+            return True
+        if item.__class__.__name__ in transient_names:
+            return True
+        status_code = getattr(item, "status_code", None)
+        if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+            return True
+    return False
+
+
+def _chat_qwen_with_retry(
+    messages: list[dict],
+    *,
+    temperature: float,
+    max_tokens: int,
+    json_mode: bool,
+    progress_callback: Callable[[dict], None] | None = None,
+    phase_percent: int = 12,
+) -> object:
+    """Retry short-lived provider failures before giving the learner a fallback lesson."""
+    retries = 2
+    for attempt in range(retries + 1):
+        try:
+            return chat_qwen(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                # A full dynamic lesson can be expensive, but waiting through
+                # three 90-second transport timeouts is worse than switching
+                # to the structured recovery path.
+                request_timeout=48.0,
+            )
+        except Exception as exc:
+            if not _is_transient_model_error(exc) or attempt >= retries:
+                raise
+            retry_number = attempt + 1
+            _report_progress(
+                progress_callback,
+                phase="retrying",
+                label=f"模型连接波动，正在自动重试（{retry_number}/{retries}）",
+                message="当前分镜已经保留，系统正在重新连接模型服务，无需停留在此页面。",
+                percent=min(62, phase_percent + retry_number * 9),
+                retry_attempt=retry_number,
+                retry_limit=retries,
+            )
+            time.sleep(0.8 * retry_number)
+
+    raise RuntimeError("模型重试流程意外结束")
 
 
 def _normalize_check(value: object) -> dict | None:
@@ -641,7 +1233,15 @@ def _fallback_scene_payload(scene: dict, kind: str, source: str = "legacy") -> d
         return {"kind": kind, "core": headline, "core_detail": key_point, "branches": branches, "boundary_conditions": [key_point], "cross_links": links[:3], **meta}
     if kind == "causal-chain":
         steps = [
-            {"id": f"step-{index + 1}", "label": label, "mechanism": details[index] if index < len(details) else narration[:160], "effect": labels[index + 1] if index + 1 < len(labels) else key_point}
+            {
+                "id": f"step-{index + 1}",
+                "label": label,
+                "mechanism": details[index] if index < len(details) else narration[:160],
+                "effect": labels[index + 1] if index + 1 < len(labels) else key_point,
+                "state_before": labels[index - 1] if index else (labels[0] if labels else headline),
+                "state_after": labels[index + 1] if index + 1 < len(labels) else key_point,
+                "observable": details[index] if index < len(details) else key_point,
+            }
             for index, label in enumerate(labels[:6])
         ]
         return {"kind": kind, "trigger": labels[0], "steps": steps, "outcome": labels[-1], "blockers": [f"缺少“{labels[0]}”时，传递链条会被打断"], **meta}
@@ -720,9 +1320,17 @@ def _normalize_scene_payload(value: object, scene: dict, kind: str) -> dict | No
             "cross_links": records("cross_links", {"id": 32, "from": 32, "to": 32, "label": 60}, 8),
         })
     elif kind == "causal-chain":
+        causal_steps = records("steps", {"id": 32, "label": 72, "mechanism": 190, "effect": 160, "state_before": 100, "state_after": 100, "observable": 140}, 6)
+        if causal_steps:
+            for index, step in enumerate(causal_steps):
+                fallback_step = fallback["steps"][min(index, len(fallback["steps"]) - 1)]
+                for field in ("mechanism", "effect", "state_before", "state_after", "observable"):
+                    if not step.get(field):
+                        missing.append(f"steps[{index}].{field}")
+                        step[field] = fallback_step[field]
         payload.update({
             "trigger": _clean(value.get("trigger"), 100) or fallback["trigger"],
-            "steps": records("steps", {"id": 32, "label": 72, "mechanism": 190, "effect": 160}) or fallback["steps"],
+            "steps": causal_steps or fallback["steps"],
             "outcome": _clean(value.get("outcome"), 120) or fallback["outcome"],
             "blockers": _clean_list(value.get("blockers"), 150, 5) or fallback["blockers"],
         })
@@ -1293,6 +1901,53 @@ def _normalize_director_beats(value: object, scene: dict) -> list[dict]:
     return _repair_director_actions(beats, scene)
 
 
+def _apply_visual_first_contract(scenes: list[dict]) -> None:
+    """Turn a generated lesson into a stage script, not a mini slide deck.
+
+    Rich facts stay in ``scene_payload`` where the interactive renderer can
+    reveal them on demand. The persistent copy is intentionally constrained to
+    a short cue, one takeaway, and compact object labels.
+    """
+    for scene in scenes:
+        scene["narration"] = _short_visual_cue(scene.get("narration"), _VISUAL_FIRST_SCENE_COPY_LIMIT)
+        scene["key_point"] = _short_visual_cue(scene.get("key_point"), _VISUAL_FIRST_TAKEAWAY_LIMIT)
+        visual = scene.get("visual") if isinstance(scene.get("visual"), dict) else {}
+        if visual:
+            visual["headline"] = _short_visual_cue(visual.get("headline"), _VISUAL_FIRST_TAKEAWAY_LIMIT)
+            visual["items"] = [
+                _short_visual_cue(item, _VISUAL_FIRST_LABEL_LIMIT)
+                for item in visual.get("items", [])
+                if _short_visual_cue(item, _VISUAL_FIRST_LABEL_LIMIT)
+            ][:5]
+
+        stage = scene.get("stage") if isinstance(scene.get("stage"), dict) else None
+        if stage:
+            # Every general stage has a native click/selection/adjustment in
+            # the web renderer. Mark it as an intentional learning action so
+            # the director can pause at it instead of merely narrating.
+            if stage.get("kind") in _GENERAL_STAGE_KINDS:
+                stage["requires_interaction"] = True
+            stage["interaction_prompt"] = _short_visual_cue(stage.get("interaction_prompt"), _VISUAL_FIRST_BEAT_COPY_LIMIT)
+
+        for beat in scene.get("director_beats", []) if isinstance(scene.get("director_beats"), list) else []:
+            if not isinstance(beat, dict):
+                continue
+            beat["narration"] = _short_visual_cue(beat.get("narration"), _VISUAL_FIRST_BEAT_COPY_LIMIT)
+            beat["detail"] = _short_visual_cue(beat.get("detail"), _VISUAL_FIRST_BEAT_DETAIL_LIMIT)
+            beat["label"] = _short_visual_cue(beat.get("label"), _VISUAL_FIRST_LABEL_LIMIT)
+            beat["duration_ms"] = max(1600, min(5200, int(beat.get("duration_ms") or _director_duration(beat["narration"]))))
+
+        simulation = scene.get("simulation") if isinstance(scene.get("simulation"), dict) else None
+        if simulation:
+            for beat in simulation.get("beats", []) if isinstance(simulation.get("beats"), list) else []:
+                if not isinstance(beat, dict):
+                    continue
+                beat["narration"] = _short_visual_cue(beat.get("narration"), _VISUAL_FIRST_BEAT_COPY_LIMIT)
+                beat["detail"] = _short_visual_cue(beat.get("detail"), _VISUAL_FIRST_BEAT_DETAIL_LIMIT)
+                beat["label"] = _short_visual_cue(beat.get("label"), _VISUAL_FIRST_LABEL_LIMIT)
+                beat["duration_ms"] = max(1600, min(5200, int(beat.get("duration_ms") or _director_duration(beat["narration"]))))
+
+
 def _normalize_stage(value: object) -> dict | None:
     if not isinstance(value, dict):
         return None
@@ -1415,6 +2070,7 @@ def _normalize_scene(value: object, index: int, check_count: int) -> tuple[dict 
         "stage": _normalize_stage(value.get("stage")),
         "_raw_scene_payload": value.get("scene_payload"),
         "_scene_payload_declared": "scene_payload" in value,
+        "_raw_storyboard": value.get("storyboard"),
         "_raw_director_beats": value.get("director_beats"),
         "_raw_continuity": value.get("continuity"),
         "_raw_path_role": value.get("path_role"),
@@ -1430,6 +2086,7 @@ def normalize_dynamic_explanation(
     *,
     require_scene_payload: bool = False,
     require_director_beats: bool = False,
+    visual_first: bool = False,
 ) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("动态讲解不是有效对象")
@@ -1454,20 +2111,34 @@ def normalize_dynamic_explanation(
         if require_scene_payload and kind in _GENERAL_STAGE_KINDS and not declared and scene.get("scene_payload"):
             scene["scene_payload"]["source"] = "repaired"
             scene["scene_payload"]["missing_fields"] = ["scene_payload"]
+        scene["storyboard"] = _normalize_storyboard(scene.pop("_raw_storyboard", None))
         scene["director_beats"] = _normalize_director_beats(scene.pop("_raw_director_beats", None), scene)
     _assign_continuity(scenes)
     _assign_branching(scenes)
     _assign_branch_briefs(scenes)
+    if visual_first:
+        _apply_visual_first_contract(scenes)
     result = {
-        "schema_version": 14,
+        "schema_version": 16,
         "title": title,
         "summary": summary,
         "highlights": highlights or [scene["key_point"] for scene in scenes[:3]],
         "palette": palette if palette in _PALETTES else "sage",
         "director_profile": _normalize_director_profile(raw.get("director_profile"), scenes, title),
+        "visual_contract": {
+            "mode": "stage-first" if visual_first else "compatible",
+            "max_scene_copy_chars": _VISUAL_FIRST_SCENE_COPY_LIMIT if visual_first else None,
+            "max_beat_copy_chars": _VISUAL_FIRST_BEAT_COPY_LIMIT if visual_first else None,
+            "requires_interaction": visual_first,
+            "requires_state_change": visual_first,
+        },
         "scenes": scenes,
     }
-    result["quality_report"] = _audit_dynamic_explanation_content(result, enforce_director_beats=require_director_beats)
+    result["quality_report"] = _audit_dynamic_explanation_content(
+        result,
+        enforce_director_beats=require_director_beats or visual_first,
+        enforce_visual_first=visual_first,
+    )
     return result
 
 
@@ -1478,7 +2149,12 @@ def regenerate_dynamic_explanation_scene(
     quality_issues: list[str] | None = None,
 ) -> dict:
     """Regenerate one presentation scene while keeping the rest of the teaching arc intact."""
-    normalized = normalize_dynamic_explanation(presentation)
+    normalized = normalize_dynamic_explanation(
+        presentation,
+        require_scene_payload=True,
+        require_director_beats=True,
+        visual_first=True,
+    )
     scene_index = next((index for index, item in enumerate(normalized["scenes"]) if item["id"] == scene_id), None)
     if scene_index is None:
         raise ValueError("The selected scene does not exist in this presentation")
@@ -1494,6 +2170,7 @@ def regenerate_dynamic_explanation_scene(
             "stage_kind": (item.get("stage") or {}).get("kind"),
             "visual_items": item.get("visual", {}).get("items", []),
             "scene_payload": item.get("scene_payload"),
+            "storyboard": item.get("storyboard"),
             "director_beats": item.get("director_beats"),
             "continuity": item.get("continuity"),
             "path_role": item.get("path_role"),
@@ -1502,7 +2179,7 @@ def regenerate_dynamic_explanation_scene(
         }
         for index, item in enumerate(normalized["scenes"])
     ]
-    response = chat_qwen(
+    response = _chat_qwen_with_retry(
         [
             {
                 "role": "system",
@@ -1511,7 +2188,7 @@ def regenerate_dynamic_explanation_scene(
                     "Return exactly one JSON object for the selected scene only. Keep it consistent with the surrounding "
                     "teaching arc, but replace the scene with a clearer, more concrete, visually distinctive version. "
                     "Do not return markdown, a list of slides, or presentation-level fields.\n"
-                    "The JSON must contain title, narration, key_point, visual_type, scene_engine, visual, simulation, stage, scene_payload, director_beats, continuity, path_role, branching, branch_brief, check, suggested_seconds. "
+                    "The JSON must contain title, narration, key_point, visual_type, scene_engine, visual, simulation, stage, scene_payload, storyboard, director_beats, continuity, path_role, branching, branch_brief, check, suggested_seconds. "
                     "visual_type must be one of concept, journey, sequence, stack, compare, contrast, example, lab, pitfall, "
                     "error-lab, map, recap, code-trace, timeline, network. visual must contain headline, items (up to 5 short concrete labels), before, after, example. "
                     "scene_engine must be one of process, state, comparison, spatial, timeline, experiment, story. For a process or state scene, "
@@ -1521,18 +2198,18 @@ def regenerate_dynamic_explanation_scene(
                     "action is spawn, focus, move, change, branch, return, or resolve. For other scenes simulation may be null. "
                     "Every scene must include director_beats: 3 to 8 ordered, browser-playable shots. Each beat needs id, label, detail, narration, target, action, duration_ms, pause_for_interaction, and tone. "
                     "target must exactly name a concrete object that this scene renders: a stage zone id, simulation actor id, scene_payload record id, or visual-N item id. "
-                    "narration explains the visible state or relationship of that exact target, never repeats the scene-level paragraph. Use one interaction pause at most. "
-                    "stage is optional. When the idea benefits from an immersive spatial demonstration, stage contains kind, environment, focal_question, chapter_label, interaction_prompt, requires_interaction, zones, and cues. "
+                    "narration explains the visible state or relationship of that exact target in 8-58 Chinese characters, never repeats a scene paragraph. Use one interaction pause at most. "
+                    "stage is mandatory: every scene is a full-screen interactive stage, not a slide. stage contains kind, environment, focal_question, chapter_label, interaction_prompt, requires_interaction, zones, and cues. "
                     "General kind is concept-constellation, causal-chain, timeline-river, comparison-studio, system-network, state-machine, case-lab, or parameter-lab. "
                     "Computer-architecture-specific kind may be service-flow, number-transform, instruction-cycle, storage-hierarchy, pipeline-overlap, hazard-lab, or performance-lab. "
                     "Use storage-hierarchy for register/cache/RAM/disk movement, pipeline-overlap for simultaneous pipeline execution, hazard-lab for stall/forward/flush decisions, "
                     "and performance-lab for adjustable performance trade-offs. zones name real locations or objects; when cues are present, their beat_id must reference a director_beats id and map to caption and optional focus/from/to. "
-                    "narration should be 70-220 Chinese characters. Do not add invented course facts. A check is optional and, "
+                    "scene narration must be one visual cue of 12-84 Chinese characters; key_point must be at most 58 characters. Do not add invented course facts. A check is optional and, "
                     "if included, must have 2-4 options with the answer exactly matching one option. "
                     "Repair every supplied quality issue. Use at least four concrete topic-specific visual items when the subject supports them. "
                     "Do not reuse the title, key sentence, narration structure, or nearly identical visual item set of another scene. "
                     "The stage kind must match scene_engine and should differ from both neighboring scenes. "
-                    + _SCENE_PAYLOAD_PROMPT + " " + _CONTINUITY_PROMPT + " " + _VISUAL_ARC_PROMPT + " " + _BRANCHING_PROMPT + " " + _BRANCH_BRIEF_PROMPT
+                    + _SCENE_PAYLOAD_PROMPT + " " + _STORYBOARD_PROMPT + " " + _CONTINUITY_PROMPT + " " + _VISUAL_ARC_PROMPT + " " + _BRANCHING_PROMPT + " " + _BRANCH_BRIEF_PROMPT
                 ),
             },
             {
@@ -1564,12 +2241,14 @@ def regenerate_dynamic_explanation_scene(
     if kind in _GENERAL_STAGE_KINDS and not declared and scene.get("scene_payload"):
         scene["scene_payload"]["source"] = "repaired"
         scene["scene_payload"]["missing_fields"] = ["scene_payload"]
+    scene["storyboard"] = _normalize_storyboard(scene.pop("_raw_storyboard", None))
     scene["director_beats"] = _normalize_director_beats(scene.pop("_raw_director_beats", None), scene)
     continuity_context = list(normalized["scenes"])
     continuity_context[scene_index] = scene
     _assign_continuity(continuity_context)
     _assign_branching(continuity_context)
     _assign_branch_briefs(continuity_context)
+    _apply_visual_first_contract(continuity_context)
     return continuity_context[scene_index]
 
 
@@ -1588,15 +2267,15 @@ def generate_dynamic_explanation(
             "content": (
                 "You are RHYME's interactive learning presentation agent. Turn the supplied tutoring exchange into a "
                 "Chinese learning presentation that a browser can render as a rich, interactive HTML learning stage. "
-                "It is not a video script and it must not be a fixed six-scene template. Return exactly one JSON object "
+                "It is an animation storyboard, never a deck of slides, and it must not be a fixed six-scene template. Return exactly one JSON object "
                 "with title, summary, palette, highlights, director_profile, and scenes. director_profile contains domain, thread_label, knowledge_structure, teaching_arc, scene_count_reason, and phase_plan.\n"
                 "Before writing scenes, silently classify the knowledge structure: concept system, causal mechanism, chronological evolution, state transition, comparison, case reasoning, parameter experiment, or a purposeful mixture. "
                 "Choose 3 to 10 scenes from the learning task. A short definition can use 3 or 4 focused scenes; most substantial lessons should use 5 to 9. A process, "
                 "problem-solving method, examination topic, or difficult misconception may need 7 to 10 scenes. Explain the chosen count in scene_count_reason. Every scene "
                 "must earn its place in the teaching arc.\n"
                 "palette must be one of sage, cobalt, ember, plum, ink. Use one coherent palette for the whole presentation.\n"
-                "Each scene must contain title, narration, key_point, visual_type, scene_engine, visual, simulation, stage, scene_payload, director_beats, continuity, path_role, branching, branch_brief, check, suggested_seconds. narration is "
-                "a concise spoken explanation of 70 to 220 Chinese characters. key_point is one memorable sentence. "
+                "Each scene must contain title, narration, key_point, visual_type, scene_engine, visual, simulation, stage, scene_payload, storyboard, director_beats, continuity, path_role, branching, branch_brief, check, suggested_seconds. narration is "
+                "one short stage cue of 12 to 84 Chinese characters, not a paragraph; key_point is at most 58 Chinese characters. Rich facts belong in scene_payload and appear only when the learner operates the visual. "
                 "suggested_seconds is 20 to 90.\n"
                 "scene_engine must be one of process, state, comparison, spatial, timeline, experiment, story. This decides how knowledge behaves, "
                 "not merely how it is decorated. Use process for ordered reasoning, state for variables/stacks/lifecycles, comparison for A/B or correct/wrong, "
@@ -1613,17 +2292,17 @@ def generate_dynamic_explanation(
                 "or 'keep learning'. A scene's text and visual should reveal different parts of the same idea instead of repeating each other.\n"
                 "director_beats is mandatory for every scene, including concept maps, timelines, comparisons, cases, and parameter labs. It is the canonical scene-wide shot list: provide 3 to 8 ordered beats, each with id, label, detail, narration, target, action, duration_ms, pause_for_interaction, and tone. "
                 "target must exactly match an object you render in stage.zones, simulation.actors, scene_payload records (for example branch ids, step ids, event ids, node ids, state ids, evidence ids), or a visual-N item id. "
-                "The narration is one complete spoken sentence (roughly 18-70 Chinese characters) describing the visible state or relation of that target. Do not repeat the scene paragraph or narrate an object that is not on screen. "
+                "The narration is one compact spoken cue (roughly 8-58 Chinese characters) describing the visible state or relation of that target. Do not repeat a scene paragraph or narrate an object that is not on screen. "
                 "action is spawn, focus, move, change, branch, return, or resolve; duration_ms is 1600-8000; tone is guide, emphasis, question, correction, challenge, or conclusion. "
                 "Use pause_for_interaction true on at most one beat and only where a learner operation genuinely changes understanding.\n"
                 "For the 1 to 3 most important process/state scenes, provide simulation as an internal timeline: subject; code_lines (up to 8 real rules, "
                 "formula lines, or code lines); actors with id, label, role; and 4 to 10 beats. Each beat has id, label, detail, narration, action, target, optional from/to/value, "
-                "duration_ms, pause_for_interaction, tone, and code_line. narration is one complete spoken sentence of roughly 18-70 Chinese characters and must explain the exact object or state changing in that beat. "
+                "duration_ms, pause_for_interaction, tone, and code_line. narration is one compact spoken cue of roughly 8-58 Chinese characters and must explain the exact object or state changing in that beat. "
                 "duration_ms is 1600-8000; tone is guide, emphasis, question, correction, challenge, or conclusion. Set pause_for_interaction true on at most one beat and only when the learner must act. "
                 "action is spawn, focus, move, change, branch, return, or resolve. The beats must show observable state change, not restate the scene-level narration. "
                 "For an adjustable numeric example, simulation may also include input_label, initial_input, input_min, input_max, and one experiment. "
                 "Use null simulation for scenes that do not benefit from a real process.\n"
-                "For every scene that can become a concrete full-screen demonstration, add stage. stage contains kind, environment, focal_question, chapter_label, interaction_prompt, requires_interaction, zones, and cues. "
+                "Every scene must add stage. It fills the screen and makes one relationship visibly change; stage contains kind, environment, focal_question, chapter_label, interaction_prompt, requires_interaction, zones, and cues. "
                 "For general subjects, choose concept-constellation for a core idea and its branches; causal-chain for cause-to-effect mechanisms; timeline-river for historical or developmental change; "
                 "comparison-studio for meaningful A/B distinctions; system-network for connected structures and transfers; state-machine for lifecycle or condition transitions; case-lab for evidence-based examples; "
                 "and parameter-lab for adjustable conditions or numeric sensitivity. Do not use one kind more than twice unless the topic genuinely has no alternative. "
@@ -1632,9 +2311,9 @@ def generate_dynamic_explanation(
                 "hazard-lab for choosing stall, forwarding, or flush; performance-lab for adjustable cache, prediction, and latency trade-offs; or process-lab for another physical process. "
                 "For a seven-scene computer-architecture lesson, use those seven dedicated kinds in teaching order instead of repeating process-lab. "
                 "zones contain id, label, role, and optional x/y percentages. When cues are present, their beat_id must reference a director_beats id and map to caption and optional focus/from/to. "
-                "requires_interaction is true only when clicking, choosing, predicting, arranging, or adjusting makes the mechanism clearer; interaction_prompt tells the learner exactly what to do. "
-                "Choose stage only when the scene can show concrete objects changing in space; never use it as decoration.\n"
-                + _SCENE_PAYLOAD_PROMPT + "\n" + _CONTINUITY_PROMPT + "\n" + _VISUAL_ARC_PROMPT + "\n" + _BRANCHING_PROMPT + "\n" + _BRANCH_BRIEF_PROMPT + "\n"
+                "requires_interaction is true for every general stage: clicking, choosing, predicting, arranging, or adjusting must reveal the mechanism. interaction_prompt is one short action verb phrase. "
+                "A valid stage visibly changes state through move, change, branch, or return; never use it as decoration.\n"
+                + _SCENE_PAYLOAD_PROMPT + "\n" + _STORYBOARD_PROMPT + "\n" + _CONTINUITY_PROMPT + "\n" + _VISUAL_ARC_PROMPT + "\n" + _BRANCHING_PROMPT + "\n" + _BRANCH_BRIEF_PROMPT + "\n"
                 "You may add at most two checks, placed only after their prerequisite explanation. Each check contains prompt, options (2 to 4), "
                 "answer exactly matching an option, and explanation. Do not invent course facts that are absent from the supplied answer."
             ),
@@ -1642,7 +2321,7 @@ def generate_dynamic_explanation(
         {
             "role": "system",
             "content": (
-                "Quality bar: create a coherent teaching arc, not a list of slides. Start from the learner's actual confusion, then make the "
+                "Quality bar: create a coherent teaching arc, not a list of slides. The visual stage must occupy almost the entire viewport: persistent copy is limited to compact object labels, one live cue, and an interaction prompt. Start from the learner's actual confusion, then make the "
                 "mechanism visible, walk through a concrete case, surface a boundary or misconception when useful, and finish with a recallable connection. "
                 "The presentation should feel varied and visually rich, but every scene must preserve one clear visual focus. Neighboring scenes must not use the same stage kind, visual grammar, and interaction together. "
                 "From scene 2 onward, each focal_question must visibly grow out of the previous scene's key_point: treat the earlier conclusion as the next scene's input, not as discarded slide text. "
@@ -1662,28 +2341,78 @@ def generate_dynamic_explanation(
     _report_progress(
         progress_callback,
         phase="drafting",
-        label="正在生成完整讲解主线",
-        message="智能导演正在判断知识结构并安排场景。",
+        label="正在编排动画分镜",
+        message="智能导演正在为每一幕选择可交互的全屏动画舞台。",
         percent=12,
     )
-    response = chat_qwen(messages, temperature=0.25, max_tokens=3800, json_mode=True)
-    result = normalize_dynamic_explanation(
-        _parse_json(response.choices[0].message.content or ""),
-        require_scene_payload=True,
-        require_director_beats=True,
-    )
+    try:
+        response = _chat_qwen_with_retry(
+            messages,
+            temperature=0.25,
+            max_tokens=3800,
+            json_mode=True,
+            progress_callback=progress_callback,
+            phase_percent=12,
+        )
+        result = normalize_dynamic_explanation(
+            _parse_json(response.choices[0].message.content or ""),
+            require_scene_payload=True,
+            require_director_beats=True,
+            visual_first=True,
+        )
+    except Exception as exc:
+        # The main model is remote and can occasionally return a truncated JSON
+        # object or be unavailable despite a valid learner request. Preserve the
+        # learning path with a structured local stage rather than surfacing a
+        # blank failure card after the retry budget has been spent.
+        recoverable_format_error = isinstance(exc, (json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError))
+        if not recoverable_format_error and not _is_transient_model_error(exc):
+            raise
+        reason = "model_connection" if _is_transient_model_error(exc) else "model_format"
+        logger.info(
+            "dynamic explanation entering resilient recovery: reason=%s error=%s",
+            reason,
+            exc.__class__.__name__,
+        )
+        _report_progress(
+            progress_callback,
+            phase="recovering",
+            label="正在启用稳定讲解模式",
+            message="云端分镜暂时不完整，系统会用当前问答补齐为可播放的互动讲解。",
+            percent=82,
+        )
+        recovered = _build_resilient_dynamic_explanation(question, answer, reason=reason)
+        _report_progress(
+            progress_callback,
+            phase="finalizing",
+            label="稳定讲解已经就绪",
+            message="已保留当前问题与答案中的关键对象、过程和检验步骤，正在保存。",
+            percent=94,
+            total_scenes=len(recovered["explanation"]["scenes"]),
+            quality_score=recovered["explanation"]["quality_report"].get("score"),
+            recovery_mode=True,
+        )
+        return recovered
     _report_progress(
         progress_callback,
         phase="auditing",
-        label="正在检查内容质量",
-        message=f"已生成 {len(result['scenes'])} 幕，正在检查重复、密度和场景匹配。",
+        label="正在检查动画质量",
+        message=f"已生成 {len(result['scenes'])} 幕，正在检查文字密度、交互点和状态变化。",
         percent=68,
         total_scenes=len(result["scenes"]),
         quality_score=result["quality_report"]["score"],
     )
 
     repaired_scene_ids: list[str] = []
-    repair_ids = list(result["quality_report"].get("repair_scene_ids") or [])[:2]
+    initial_report = result["quality_report"]
+    blocking_scene_ids = list(initial_report.get("blocking_scene_ids") or [])
+    # A failed visual rule gets priority over ordinary polish. We allow one
+    # extra targeted rewrite so a third weak scene cannot slip through merely
+    # because the regular audit only returned its two most severe findings.
+    repair_ids = list(dict.fromkeys([
+        *blocking_scene_ids,
+        *(initial_report.get("repair_scene_ids") or []),
+    ]))[:3]
     for repair_index, scene_id in enumerate(repair_ids):
         issue = next((item for item in result["quality_report"]["issues"] if item["scene_id"] == scene_id), None)
         scene_index = next((index for index, item in enumerate(result["scenes"]) if item["id"] == scene_id), None)
@@ -1712,23 +2441,56 @@ def generate_dynamic_explanation(
                 repaired["check"] = None
             result["scenes"][scene_index] = repaired
             repaired_scene_ids.append(scene_id)
-            result["quality_report"] = _audit_dynamic_explanation_content(result, enforce_director_beats=True)
+            _apply_visual_first_contract(result["scenes"])
+            result["quality_report"] = _audit_dynamic_explanation_content(
+                result,
+                enforce_director_beats=True,
+                enforce_visual_first=True,
+            )
         except Exception:
             logger.warning("动态讲解质量守门员无法重做场景：scene=%s", scene_id, exc_info=True)
 
-    final_report = _audit_dynamic_explanation_content(result, enforce_director_beats=True)
+    _apply_visual_first_contract(result["scenes"])
+    final_report = _audit_dynamic_explanation_content(
+        result,
+        enforce_director_beats=True,
+        enforce_visual_first=True,
+    )
     final_report["repaired_scene_ids"] = repaired_scene_ids
     if repaired_scene_ids and final_report["status"] == "ready":
         final_report["status"] = "refined"
     result["quality_report"] = final_report
+    if not final_report["display_ready"]:
+        blocked_scenes = "、".join(final_report["blocking_scene_ids"][:3]) or "当前场景"
+        _report_progress(
+            progress_callback,
+            phase="recovering",
+            label="正在补齐可播放讲解",
+            message=f"{blocked_scenes} 的云端分镜不够完整，系统会保留当前问答并切换到稳定讲解模式。",
+            percent=86,
+            total_scenes=len(result["scenes"]),
+            quality_score=final_report["score"],
+        )
+        recovered = _build_resilient_dynamic_explanation(question, answer, reason="quality_recovery")
+        _report_progress(
+            progress_callback,
+            phase="finalizing",
+            label="稳定讲解已经就绪",
+            message="已用当前问答补齐为可播放的互动讲解，正在保存。",
+            percent=94,
+            total_scenes=len(recovered["explanation"]["scenes"]),
+            quality_score=recovered["explanation"]["quality_report"].get("score"),
+            recovery_mode=True,
+        )
+        return recovered
     _report_progress(
         progress_callback,
         phase="finalizing",
-        label="质量检查完成",
+        label="动画质量检查完成",
         message=(
-            f"已自动优化 {len(repaired_scene_ids)} 幕，整套讲解正在保存。"
+            f"已自动优化 {len(repaired_scene_ids)} 幕，动画分镜已通过检查，正在保存。"
             if repaired_scene_ids
-            else "场景内容和教学结构已通过检查，正在保存。"
+            else "每一幕的文字、交互和状态变化均已通过检查，正在保存。"
         ),
         percent=94,
         total_scenes=len(result["scenes"]),

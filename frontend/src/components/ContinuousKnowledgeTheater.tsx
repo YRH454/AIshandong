@@ -108,8 +108,15 @@ export function ContinuousKnowledgeTheater(props: ContinuousKnowledgeTheaterProp
   } = props
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [checkOpen, setCheckOpen] = useState(false)
-  const [directorActive, setDirectorActive] = useState(false)
-  const [directorPlaying, setDirectorPlaying] = useState(false)
+  // Immersive lessons enter as a running stage rather than a frozen first
+  // page. Learners can still pause or open the route, while reduced-motion
+  // users retain the calm manual state.
+  const [directorActive, setDirectorActive] = useState(() => (
+    typeof window !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  ))
+  const [directorPlaying, setDirectorPlaying] = useState(() => (
+    typeof window !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  ))
   const [directorAwaitingInteraction, setDirectorAwaitingInteraction] = useState(false)
   const [directorTransitioning, setDirectorTransitioning] = useState(false)
   const [controlsVisible, setControlsVisible] = useState(true)

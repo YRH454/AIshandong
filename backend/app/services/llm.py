@@ -24,10 +24,11 @@ deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, http_cli
 mimo = OpenAI(api_key=MIMO_API_KEY, base_url=MIMO_BASE_URL, http_client=http_client) if MIMO_BASE_URL else None
 
 
-def chat_qwen(messages: list, temperature=0.7, max_tokens=2048, json_mode=False):
+def chat_qwen(messages: list, temperature=0.7, max_tokens=2048, json_mode=False, request_timeout: float | None = None):
     """调用千问主力模型"""
     return chat_qwen_model(QWEN_MODEL, messages, temperature=temperature,
-                           max_tokens=max_tokens, json_mode=json_mode)
+                           max_tokens=max_tokens, json_mode=json_mode,
+                           request_timeout=request_timeout)
 
 
 # ── 千问多模型调用 ─────────────────────────────────────────
@@ -46,7 +47,7 @@ MODEL_REGISTRY = {
 
 
 def chat_qwen_model(model: str, messages: list, temperature=0.3, max_tokens=4096,
-                    json_mode=False, stream=False):
+                    json_mode=False, stream=False, request_timeout: float | None = None):
     """调用指定千问模型。
 
     model 可为 "qwen-max" / "qwen-coder" / "qwen-flash" / "qwen-long" 等（MODEL_REGISTRY 键）
@@ -59,6 +60,8 @@ def chat_qwen_model(model: str, messages: list, temperature=0.3, max_tokens=4096
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if request_timeout is not None:
+        kwargs["timeout"] = request_timeout
     if stream or real_model == "qwq-plus":
         kwargs["stream"] = True
     return qwen.chat.completions.create(**kwargs)

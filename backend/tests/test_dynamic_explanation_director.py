@@ -35,7 +35,18 @@ def _protocol(kind: str, title: str) -> dict:
     if kind == "concept-constellation":
         return {"kind": kind, "core": title, "core_detail": f"{title}的中心解释", "branches": [{"id": f"b{i}", "label": f"{title}分支{i}", "relation": "组成", "detail": f"分支{i}承担独立作用"} for i in range(1, 5)], "boundary_conditions": ["只在给定条件内成立"], "cross_links": [{"from": "b1", "to": "b3", "label": "共同约束"}]}
     if kind == "causal-chain":
-        return {"kind": kind, "trigger": f"{title}触发", "steps": [{"id": f"s{i}", "label": f"{title}步骤{i}", "mechanism": f"机制{i}改变中间状态", "effect": f"产生结果{i}"} for i in range(1, 4)], "outcome": f"{title}结果", "blockers": ["关键条件缺失会中断链条"]}
+        return {"kind": kind, "trigger": f"{title}触发", "steps": [
+            {
+                "id": f"s{i}",
+                "label": f"{title}步骤{i}",
+                "mechanism": f"机制{i}改变中间状态",
+                "effect": f"产生结果{i}",
+                "state_before": f"前一状态{i}",
+                "state_after": f"后一状态{i}",
+                "observable": f"可观察变化{i}",
+            }
+            for i in range(1, 6)
+        ], "outcome": f"{title}结果", "blockers": ["关键条件缺失会中断链条"]}
     if kind == "timeline-river":
         return {"kind": kind, "events": [{"id": f"e{i}", "marker": f"时期{i}", "title": f"{title}事件{i}", "change": f"新增变化{i}", "impact": f"阶段影响{i}", "is_turning_point": i == 2} for i in range(1, 4)], "period_label": f"{title}演化", "retrospective": "回看各阶段的累积影响"}
     if kind == "comparison-studio":
@@ -58,6 +69,31 @@ def _attach_protocol(scene: dict, kind: str) -> dict:
         "cues": [],
     }
     scene["scene_payload"] = _protocol(kind, scene["title"])
+    return scene
+
+
+def _attach_storyboard(scene: dict) -> dict:
+    payload = scene.get("scene_payload") or {}
+    atoms: list[str] = []
+    for field in ("core", "trigger", "outcome", "period_label", "left_title", "right_title", "background", "conclusion", "parameter_label"):
+        if payload.get(field):
+            atoms.append(str(payload[field]))
+    for field in ("branches", "steps", "events", "dimensions", "nodes", "states", "evidence", "thresholds", "response_points"):
+        for item in payload.get(field, []) if isinstance(payload.get(field), list) else []:
+            if isinstance(item, dict):
+                label = item.get("label") or item.get("title") or item.get("left") or item.get("trigger")
+                if label:
+                    atoms.append(str(label))
+    if len(atoms) < 3:
+        atoms.extend(scene["visual"]["items"])
+    unique_atoms = list(dict.fromkeys(atoms))[:5]
+    scene["storyboard"] = {
+        "learning_job": f"辨认{scene['title']}承担的独立学习任务",
+        "knowledge_relation": f"追踪{scene['title']}中对象、条件与结果之间的具体关系",
+        "visible_change": f"从{unique_atoms[0]}推进到{unique_atoms[1]}，观察状态如何改变",
+        "interaction": f"选择{unique_atoms[0]}，比较它与{unique_atoms[1]}的作用",
+        "atoms": unique_atoms,
+    }
     return scene
 
 
@@ -204,6 +240,111 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
 
         self.assertTrue(any("director_beats_missing" in issue["codes"] for issue in result["quality_report"]["issues"]))
 
+    def test_visual_first_contract_compresses_copy_and_keeps_an_interactive_stage(self):
+        from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
+
+        scenes = [
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("结构定位", "spatial", "concept", 0), "concept-constellation"))),
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("因果传递", "process", "sequence", 1), "causal-chain"))),
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("案例验证", "story", "example", 2), "case-lab"))),
+        ]
+        long_copy = [
+            "核心概念、边界条件、组成分支和交叉约束依次显现，学习者沿连线辨认结构定位中的关系。" * 4,
+            "触发条件推动中间机制和连锁效果连续前进，学习者追踪因果传递中的每一次状态改变。" * 4,
+            "案例背景、证据卡、反证线索与最终判断逐条打开，学习者核查案例验证的结论边界。" * 4,
+        ]
+        long_takeaways = [
+            "先定位核心、分支与边界，再用连接线保留结构中的可追踪关系。" * 3,
+            "从触发到结果必须经过可观察的机制步骤，任何断点都会改变因果结论。" * 3,
+            "证据支持结论但反证限定结论，案例判断必须同时检查这两个方向。" * 3,
+        ]
+        for index, scene in enumerate(scenes):
+            scene["narration"] = long_copy[index]
+            scene["key_point"] = long_takeaways[index]
+
+        result = normalize_dynamic_explanation(
+            {"title": "视觉优先", "summary": "动画应比讲义更重要。", "scenes": scenes},
+            require_scene_payload=True,
+            require_director_beats=True,
+            visual_first=True,
+        )
+
+        self.assertEqual(result["visual_contract"]["mode"], "stage-first")
+        self.assertTrue(result["quality_report"]["visual_first"])
+        self.assertEqual(result["quality_report"]["visual_first_passed_scene_count"], 3)
+        self.assertTrue(result["quality_report"]["display_ready"])
+        self.assertEqual(result["quality_report"]["blocking_codes"], [])
+        for scene in result["scenes"]:
+            self.assertLessEqual(len(scene["narration"]), 84)
+            self.assertLessEqual(len(scene["key_point"]), 58)
+            self.assertTrue(scene["stage"]["requires_interaction"])
+            self.assertTrue(all(len(beat["narration"]) <= 58 for beat in scene["director_beats"]))
+            self.assertEqual(scene["storyboard"]["source"], "model")
+
+    def test_visual_first_gate_blocks_a_scene_without_a_model_storyboard(self):
+        from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
+
+        result = normalize_dynamic_explanation({
+            "title": "没有分镜的讲义",
+            "summary": "新生成内容必须有真正的动画分镜。",
+            "scenes": [
+                _scene("先看结构", "spatial", "concept", 0),
+                _scene("再追踪机制", "process", "sequence", 1),
+                _scene("最后检验案例", "story", "example", 2),
+            ],
+        }, require_scene_payload=True, require_director_beats=True, visual_first=True)
+
+        report = result["quality_report"]
+        self.assertFalse(report["display_ready"])
+        self.assertEqual(report["blocking_scene_ids"], ["scene-1", "scene-2", "scene-3"])
+        self.assertIn("director_beats_missing", report["blocking_codes"])
+        self.assertIn("storyboard_missing", report["blocking_codes"])
+
+    def test_visual_first_gate_blocks_generic_or_unmapped_storyboard_atoms(self):
+        from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
+
+        scenes = [
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("结构定位", "spatial", "concept", 0), "concept-constellation"))),
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("因果传递", "process", "sequence", 1), "causal-chain"))),
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("案例验证", "story", "example", 2), "case-lab"))),
+        ]
+        scenes[1]["storyboard"]["atoms"] = ["知识点", "过程", "结果"]
+
+        result = normalize_dynamic_explanation(
+            {"title": "泛化分镜", "summary": "通用词不能伪装成可探索知识。", "scenes": scenes},
+            require_scene_payload=True,
+            require_director_beats=True,
+            visual_first=True,
+        )
+
+        report = result["quality_report"]
+        issue = next(item for item in report["issues"] if item["scene_id"] == "scene-2")
+        self.assertFalse(report["display_ready"])
+        self.assertIn("storyboard_atoms_generic", issue["codes"])
+        self.assertIn("storyboard_atoms_mismatch", issue["codes"])
+
+    def test_visual_first_gate_blocks_repeated_storyboard_learning_jobs(self):
+        from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
+
+        scenes = [
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("结构定位", "spatial", "concept", 0), "concept-constellation"))),
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("因果传递", "process", "sequence", 1), "causal-chain"))),
+            _attach_director_beats(_attach_storyboard(_attach_protocol(_scene("案例验证", "story", "example", 2), "case-lab"))),
+        ]
+        scenes[1]["storyboard"]["learning_job"] = scenes[0]["storyboard"]["learning_job"]
+
+        result = normalize_dynamic_explanation(
+            {"title": "重复任务", "summary": "每一幕必须承担不同的学习推进。", "scenes": scenes},
+            require_scene_payload=True,
+            require_director_beats=True,
+            visual_first=True,
+        )
+
+        report = result["quality_report"]
+        issue = next(item for item in report["issues"] if item["scene_id"] == "scene-2")
+        self.assertFalse(report["display_ready"])
+        self.assertIn("storyboard_job_repeat", issue["codes"])
+
     def test_history_arc_gets_varied_general_stages_and_profile(self):
         from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
 
@@ -229,7 +370,7 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         result = normalize_dynamic_explanation(raw)
         kinds = [scene["stage"]["kind"] for scene in result["scenes"]]
 
-        self.assertEqual(result["schema_version"], 14)
+        self.assertEqual(result["schema_version"], 16)
         self.assertEqual(result["director_profile"]["domain"], "历史")
         self.assertEqual(result["director_profile"]["thread_label"], "一台蒸汽机的影响路径")
         self.assertGreaterEqual(len(set(kinds)), 4)
@@ -372,6 +513,7 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         _attach_protocol(scenes[1], "causal-chain")
         _attach_protocol(scenes[2], "case-lab")
         for scene in scenes:
+            _attach_storyboard(scene)
             _attach_director_beats(scene)
         payload = {"title": "质量检查示例", "summary": "从结构到机制再到案例。", "scenes": scenes}
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False)))])
@@ -389,6 +531,89 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
         self.assertEqual(result["explanation"]["quality_report"]["status"], "ready")
         self.assertEqual([item["phase"] for item in progress], ["drafting", "auditing", "finalizing"])
         self.assertIn("Choose one visual teaching arc", mocked_chat.call_args.args[0][0]["content"])
+        self.assertIn("Every scene must include storyboard", mocked_chat.call_args.args[0][0]["content"])
+
+    def test_generation_recovers_lecture_style_content_into_a_playable_stage(self):
+        from app.agents.dynamic_explanation_agent import generate_dynamic_explanation
+
+        payload = {
+            "title": "仍是讲义的输出",
+            "summary": "缺少动画分镜时不得保存。",
+            "scenes": [
+                _scene("结构描述", "spatial", "concept", 0),
+                _scene("过程描述", "process", "sequence", 1),
+                _scene("案例描述", "story", "example", 2),
+            ],
+        }
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False)))])
+        progress: list[dict] = []
+
+        with (
+            patch("app.agents.dynamic_explanation_agent.chat_qwen", return_value=response),
+            patch("app.agents.dynamic_explanation_agent.logger"),
+        ):
+            result = generate_dynamic_explanation(
+                question="请解释这个主题",
+                answer="这里是一段足够完整的教师回答。",
+                recent_context=[],
+                learning_state={},
+                progress_callback=progress.append,
+            )
+
+        report = result["explanation"]["quality_report"]
+        self.assertTrue(report["display_ready"])
+        self.assertEqual(report["status"], "recovered")
+        self.assertEqual(report["generation_source"], "resilient_recovery")
+        self.assertEqual(
+            [scene["stage"]["kind"] for scene in result["explanation"]["scenes"]],
+            ["concept-constellation", "causal-chain", "case-lab"],
+        )
+        self.assertEqual(progress[-2]["phase"], "recovering")
+        self.assertEqual(progress[-1]["phase"], "finalizing")
+
+    def test_model_connection_is_retried_before_a_response_is_accepted(self):
+        import httpx
+        from app.agents.dynamic_explanation_agent import _chat_qwen_with_retry
+
+        progress: list[dict] = []
+        response = SimpleNamespace(choices=[])
+        with (
+            patch("app.agents.dynamic_explanation_agent.chat_qwen", side_effect=[httpx.ConnectError("offline"), response]) as mocked_chat,
+            patch("app.agents.dynamic_explanation_agent.time.sleep") as mocked_sleep,
+        ):
+            result = _chat_qwen_with_retry(
+                [{"role": "user", "content": "测试"}],
+                temperature=0.2,
+                max_tokens=400,
+                json_mode=True,
+                progress_callback=progress.append,
+            )
+
+        self.assertIs(result, response)
+        self.assertEqual(mocked_chat.call_count, 2)
+        mocked_sleep.assert_called_once()
+        self.assertEqual(progress[0]["phase"], "retrying")
+        self.assertEqual(progress[0]["retry_attempt"], 1)
+
+    def test_invalid_model_json_recovers_to_a_playable_local_explanation(self):
+        from app.agents.dynamic_explanation_agent import generate_dynamic_explanation
+
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{\"title\": \"截断的输出\""))])
+        progress: list[dict] = []
+        with patch("app.agents.dynamic_explanation_agent.chat_qwen", return_value=response):
+            result = generate_dynamic_explanation(
+                question="请解释缓存命中为什么能加快访存",
+                answer="处理器先查缓存；命中时数据直接返回；未命中才继续访问主存，因此平均等待时间会下降。",
+                recent_context=[],
+                learning_state={},
+                progress_callback=progress.append,
+            )
+
+        explanation = result["explanation"]
+        self.assertEqual(explanation["generation_source"], "resilient_recovery")
+        self.assertTrue(explanation["quality_report"]["display_ready"])
+        self.assertEqual(len(explanation["scenes"]), 3)
+        self.assertIn("recovering", [item["phase"] for item in progress])
 
     def test_all_eight_scene_payload_protocols_are_preserved(self):
         from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
@@ -429,6 +654,18 @@ class DynamicExplanationDirectorTest(unittest.TestCase):
 
         self.assertIn("payload_incomplete", first_issue["codes"])
         self.assertIn("steps", result["scenes"][0]["scene_payload"]["missing_fields"])
+
+    def test_causal_payload_repairs_missing_observable_state_transition(self):
+        from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation
+
+        scene = _attach_protocol(_scene("缓存回填", "process", "sequence", 0), "causal-chain")
+        del scene["scene_payload"]["steps"][0]["state_after"]
+        result = normalize_dynamic_explanation({"title": "状态传导检查", "summary": "检查因果链是否保留可观察的状态变化。", "scenes": [scene, _scene("补充场景一", "spatial", "concept", 1), _scene("补充场景二", "story", "example", 2)]})
+        payload = result["scenes"][0]["scene_payload"]
+
+        self.assertEqual(payload["source"], "repaired")
+        self.assertIn("steps[0].state_after", payload["missing_fields"])
+        self.assertTrue(payload["steps"][0]["state_after"])
 
     def test_branch_routes_are_normalized_and_rejoin_the_main_path(self):
         from app.agents.dynamic_explanation_agent import normalize_dynamic_explanation

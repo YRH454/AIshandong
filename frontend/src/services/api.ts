@@ -44,11 +44,13 @@ export interface GenerationJob<T = Record<string, never>> {
   finished_at?: string
   result?: T
   error?: string
+  error_code?: string
+  retryable?: boolean
   progress?: Record<string, unknown>
 }
 
 export interface DynamicExplanationJobProgress {
-  phase: 'queued' | 'drafting' | 'auditing' | 'repairing' | 'finalizing' | 'persisting'
+  phase: 'queued' | 'drafting' | 'retrying' | 'auditing' | 'repairing' | 'recovering' | 'finalizing' | 'persisting' | 'blocked' | 'failed'
   label: string
   message: string
   percent: number
@@ -57,6 +59,10 @@ export interface DynamicExplanationJobProgress {
   current_scene_title?: string
   quality_score?: number
   repaired_scenes?: number
+  retry_attempt?: number
+  retry_limit?: number
+  recovery_mode?: boolean
+  error_code?: string
 }
 
 export interface TutorMessage {

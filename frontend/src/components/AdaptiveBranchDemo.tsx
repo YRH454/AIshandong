@@ -9,10 +9,22 @@ const visual = (headline: string, items: string[], example: string) => ({
   example,
 })
 
-const baseScene = (scene: Omit<DynamicExplanationScene, 'suggested_seconds'>): DynamicExplanationScene => ({
-  ...scene,
-  suggested_seconds: 38,
-})
+const baseScene = (scene: Omit<DynamicExplanationScene, 'suggested_seconds'>): DynamicExplanationScene => {
+  const atoms = (scene.director_beats || [])
+    .map(beat => beat.label)
+    .filter(Boolean)
+  return {
+    ...scene,
+    storyboard: scene.storyboard || {
+      learning_job: `辨认“${scene.title}”中的关键学习对象。`,
+      knowledge_relation: scene.key_point,
+      visible_change: `沿着${atoms.slice(0, 2).join('与')}观察关系如何推进。`,
+      interaction: `选择${atoms[0] || scene.visual.items[0] || scene.title}，追踪它对当前结果的影响。`,
+      atoms: atoms.length ? atoms : scene.visual.items,
+    },
+    suggested_seconds: 38,
+  }
+}
 
 const directorBeats = (targets: Array<{ id: string; label: string }>, conclusion: string) => targets.slice(0, 5).map((target, index) => ({
   id: `director-${index + 1}`,
@@ -120,13 +132,15 @@ const demo: DynamicExplanationData = {
       key_point: '未命中不是流程终点，而是一次向下一层请求并重建缓存状态的过程。',
       visual_type: 'sequence',
       scene_engine: 'process',
-      visual: visual('一次未命中的回填链', ['发出地址', '确认未命中', '访问下一层', '写入缓存', '返回 CPU'], '回填完成后，再访问同一块数据才可能命中。'),
-      director_beats: directorBeats([{ id: 'request', label: '请求下一层' }, { id: 'fill', label: '回填缓存行' }, { id: 'return', label: '返回 CPU' }], '未命中会通过下层读取和缓存回填恢复访问。'),
-      stage: { kind: 'causal-chain', environment: '缓存回填通道', focal_question: '未命中如何重新建立可命中的缓存状态？', chapter_label: '回归主线', interaction_prompt: '选择链条中的一步，观察请求如何继续传递。', requires_interaction: true, zones: [], cues: [] },
+      visual: visual('一次未命中的回填链', ['缓存未命中', '发出下层请求', '定位目标数据块', '选择待替换缓存行', '回填数据并更新标记', '返回 CPU', '获得目标数据'], '回填完成后，再访问同一块数据才可能命中。'),
+      director_beats: directorBeats([{ id: 'request', label: '发出下层请求' }, { id: 'locate', label: '定位目标数据块' }, { id: 'select', label: '选择待替换缓存行' }, { id: 'fill', label: '回填数据并更新标记' }, { id: 'return', label: '返回 CPU' }], '未命中会通过下层读取、替换和缓存回填恢复访问。'),
+      stage: { kind: 'causal-chain', environment: '缓存回填通道', focal_question: '未命中如何重新建立可命中的缓存状态？', chapter_label: '回归主线', interaction_prompt: '选择链条中的一个对象，观察信号如何继续传导。', requires_interaction: true, zones: [], cues: [] },
       scene_payload: { kind: 'causal-chain', trigger: '缓存标记或有效位检查失败', steps: [
-        { id: 'request', label: '请求下一层', mechanism: '把目标地址交给更低层存储', effect: '开始读取目标内存块' },
-        { id: 'fill', label: '回填缓存行', mechanism: '写入数据并更新标记与有效位', effect: '建立新的缓存状态' },
-        { id: 'return', label: '返回 CPU', mechanism: '把目标数据送回处理器', effect: '本次访问完成' },
+        { id: 'request', label: '发出下层请求', mechanism: '把未命中的目标地址交给下一层存储系统', effect: '下一层开始查找目标内存块', state_before: '缓存检查失败', state_after: '下层请求已建立', observable: '请求从缓存出口离开' },
+        { id: 'locate', label: '定位目标数据块', mechanism: '下一层按地址定位包含所需数据的完整内存块', effect: '确定需要返回的块数据', state_before: '下层请求已建立', state_after: '目标块被找到', observable: '目标块进入返回通道' },
+        { id: 'select', label: '选择待替换缓存行', mechanism: '依据映射位置和替换策略确定可以写入的缓存行', effect: '为回填腾出明确位置', state_before: '目标块被找到', state_after: '可写缓存行已确定', observable: '一行缓存被标为待更新' },
+        { id: 'fill', label: '回填数据并更新标记', mechanism: '把块数据写入该行，同时写入对应标记并置有效位', effect: '建立下一次可命中的缓存状态', state_before: '可写缓存行已确定', state_after: '缓存行有效且标记匹配', observable: '缓存行内容与状态位同步变化' },
+        { id: 'return', label: '返回 CPU', mechanism: '将已经得到的目标数据送回发起访问的处理器', effect: '本次访问完成并解除等待', state_before: '缓存行有效且标记匹配', state_after: 'CPU 获得目标数据', observable: 'CPU 的等待状态结束' },
       ], outcome: '缓存状态更新且 CPU 获得目标数据', blockers: ['下一层访问仍可能继续未命中'] },
       continuity: { teaching_phase: 'mechanism', receives: '已经确认本次访问为何命中或未命中', passes: '未命中通过下层读取和缓存回填得到解决', next_question: '把多次访问放进整个存储系统后，性能由什么共同决定？' },
       path_role: 'main',

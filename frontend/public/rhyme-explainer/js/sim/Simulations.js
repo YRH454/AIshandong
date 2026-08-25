@@ -123,8 +123,31 @@ function Sim(config){
 	self.networkConfig = cloneObject(config.network);
 	self.container = config.container;
 	self.options = config.options || {};
+	self.semanticSceneID = config.semanticScene || null;
+	self.focusedPeep = null;
+	self.knowledgeFocusTick = 0;
 
 	self.id = config.id;
+
+	// A semantic scene is optional. Existing crowds scenes still work exactly as
+	// before; RHYME scenes can give selected peeps names, roles and relationship
+	// labels without changing the simulation's editing mechanics.
+	self.getKnowledgeScene = function(){
+		if(!self.semanticSceneID) return null;
+		if(!window.RHYME_KNOWLEDGE_ATOMS) return null;
+		return window.RHYME_KNOWLEDGE_ATOMS.getScene(self.semanticSceneID);
+	};
+	self.getKnowledgeRelationship = function(fromIndex, toIndex){
+		var scene = self.getKnowledgeScene();
+		if(!scene || !scene.relations) return null;
+		return scene.relations[fromIndex+"-"+toIndex] || null;
+	};
+	self.focusKnowledgeAtom = function(peep){
+		if(!peep || !peep.knowledge) return false;
+		self.focusedPeep = (self.focusedPeep===peep) ? null : peep;
+		self.knowledgeFocusTick = 0;
+		return true;
+	};
 
 	// CONTAGION SOUND
 	//var _CONTAGION_SOUND = 0;
@@ -179,6 +202,7 @@ function Sim(config){
 		self.peeps = [];
 		self.connections = [];
 		self.contagion = 0;
+		self.focusedPeep = null;
 	};
 	self.init = function(){
 
@@ -186,19 +210,22 @@ function Sim(config){
 		self.clear();
 
 		// Peeps
-		self.networkConfig.peeps.forEach(function(p){
+		var semanticScene = self.getKnowledgeScene();
+		self.networkConfig.peeps.forEach(function(p, index){
 			var x = p[0],
 				y = p[1],
 				infected = p[2];
-			self.addPeep(x, y, infected);
+			var knowledge = semanticScene && semanticScene.nodes ? semanticScene.nodes[index] : null;
+			self.addPeep(x, y, infected, knowledge);
 		});
 
 		// Connections
 		self.networkConfig.connections.forEach(function(c){
 			var from = self.peeps[c[0]],
 				to = self.peeps[c[1]],
-				uncuttable = c[2]||false
-			self.addConnection(from, to, uncuttable);
+				uncuttable = c[2]||false,
+				relationship = self.getKnowledgeRelationship(c[0], c[1]);
+			self.addConnection(from, to, uncuttable, relationship);
 		});
 
 		// Contagion
@@ -236,6 +263,9 @@ function Sim(config){
 		self.peeps.forEach(function(peep){
 			peep.update();
 		});
+		if(self.focusedPeep){
+			self.knowledgeFocusTick += 1;
+		}
 
 		// secret editor...
 		// drag Peep
@@ -610,8 +640,8 @@ function Sim(config){
 	////////////////
 
 	// Add Peeps/Connections
-	self.addPeep = function(x, y, infected){
-		var peep = new Peep({ x:x, y:y, infected:infected, sim:self });
+	self.addPeep = function(x, y, infected, knowledge){
+		var peep = new Peep({ x:x, y:y, infected:infected, sim:self, knowledge:knowledge });
 		self.peeps.push(peep);
 		return peep;
 	};
@@ -619,7 +649,7 @@ function Sim(config){
 		self.removeAllConnectedTo(peep); // delete all connections
 		removeFromArray(self.peeps, peep); // BYE peep
 	};
-	self.addConnection = function(from, to, uncuttable){
+	self.addConnection = function(from, to, uncuttable, relationship){
 
 		// Don't allow connecting to self...
 		if(from==to) return;
@@ -632,7 +662,7 @@ function Sim(config){
 		}
 
 		// Otherwise, go ahead and add it!
-		var connection = new Connection({ from:from, to:to, uncuttable:uncuttable, sim:self });
+		var connection = new Connection({ from:from, to:to, uncuttable:uncuttable, sim:self, relationship:relationship });
 		self.connections.push(connection);
 		return connection;
 

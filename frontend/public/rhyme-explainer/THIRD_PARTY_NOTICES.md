@@ -4,6 +4,8 @@ This directory contains an adapted local copy of **The Wisdom and/or Madness of 
 
 The interaction structure, hand-drawn UI, simulation code, sprites, and the RHYME adaptation are served locally from this directory. RHYME's learning narrative and copy were written separately for this product.
 
+The semantic-node interaction pattern (named nodes, concise relationship labels, and local node notes) was informed by **LOOPY: A tool for thinking in systems** by Nicky Case, also released under **CC0 1.0**. RHYME implements its own lesson data and rendering adaptation.
+
 ## Included audio credits
 
 The original project's `README.md` identifies these audio sources:

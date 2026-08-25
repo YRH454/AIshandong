@@ -7,6 +7,7 @@ function Connection(config){
 	self.to = config.to;
 	self.uncuttable = config.uncuttable || false;
 	self.sim = config.sim;
+	self.relationship = config.relationship || null;
 
 	// Line Sprite
 	self.sprite = new Sprite({
@@ -27,6 +28,58 @@ function Connection(config){
 
 	// Update
 	self.update = function(){};
+
+	function _roundRect(ctx, x, y, width, height, radius){
+		var r = Math.min(radius, width/2, height/2);
+		ctx.beginPath();
+		ctx.moveTo(x+r, y);
+		ctx.lineTo(x+width-r, y);
+		ctx.quadraticCurveTo(x+width, y, x+width, y+r);
+		ctx.lineTo(x+width, y+height-r);
+		ctx.quadraticCurveTo(x+width, y+height, x+width-r, y+height);
+		ctx.lineTo(x+r, y+height);
+		ctx.quadraticCurveTo(x, y+height, x, y+height-r);
+		ctx.lineTo(x, y+r);
+		ctx.quadraticCurveTo(x, y, x+r, y);
+		ctx.closePath();
+	}
+	self.shouldShowRelationship = function(){
+		if(!self.relationship) return false;
+		if(self.contagionDot) return true;
+		return self.sim.focusedPeep===self.from || self.sim.focusedPeep===self.to;
+	};
+	self.drawRelationship = function(ctx){
+		if(!self.shouldShowRelationship()) return;
+
+		var label = self.relationship.label;
+		if(!label) return;
+		var dx = self.to.x-self.from.x;
+		var dy = self.to.y-self.from.y;
+		var distance = Math.sqrt(dx*dx+dy*dy) || 1;
+		var normal = { x:-dy/distance, y:dx/distance };
+		var offset = self.relationship.offset || [0,0];
+		var x = (self.from.x+self.to.x)/2 + offset[0] + normal.x*15;
+		var y = (self.from.y+self.to.y)/2 + offset[1] + normal.y*15;
+
+		ctx.save();
+		ctx.translate(x, y);
+		ctx.font = "13px PatrickHand";
+		var width = Math.max(50, ctx.measureText(label).width+20);
+		var height = 24;
+		_roundRect(ctx, -width/2, -height/2, width, height, 8);
+		ctx.globalAlpha = 0.96;
+		ctx.fillStyle = "#fff";
+		ctx.fill();
+		ctx.strokeStyle = self.contagionDot ? "#222" : "#999";
+		ctx.lineWidth = self.contagionDot ? 2 : 1.2;
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+		ctx.textAlign = "center";
+		ctx.textBaseline = "middle";
+		ctx.fillStyle = "#333";
+		ctx.fillText(label, 0, 1);
+		ctx.restore();
+	};
 
 	// Draw
 	self.draw = function(ctx){
@@ -63,6 +116,8 @@ function Connection(config){
 			self.dotSprite.gotoFrame(infectedFrame);
 			self.dotSprite.draw(ctx);
 		}
+
+		self.drawRelationship(ctx);
 
 	};
 

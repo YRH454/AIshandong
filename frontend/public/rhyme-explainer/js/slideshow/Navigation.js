@@ -113,14 +113,11 @@ function Navigation(){
 
 /****************************
 
-SOCIAL SHARING 
+CONTACT
 
 ****************************/
 
-var shareURL = encodeURIComponent( window.location.href );
 var shareTitle = encodeURIComponent( $("#share_title").innerText.trim() );
 var shareDesc = encodeURIComponent( $("#share_desc").innerText.trim() );
 
-$("#fb").href = "https://www.facebook.com/sharer/sharer.php?u="+shareURL+"&t="+shareDesc+" "+shareURL;
-$("#tw").href = "https://twitter.com/intent/tweet?source="+shareURL+"&text="+shareDesc+" "+shareURL;
-$("#em").href = "mailto:?subject="+shareTitle+"&body="+shareDesc+" "+shareURL;
+$("#em").href = "mailto:3539921167@qq.com?subject="+shareTitle+"&body="+shareDesc;

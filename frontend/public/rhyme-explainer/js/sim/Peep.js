@@ -8,6 +8,12 @@ function Peep(config){
 	self.velocity = {x:0, y:0};
 	self.infected = !!config.infected;
 	self.sim = config.sim;
+	self.knowledge = config.knowledge || null;
+	self.isKnowledgeHovered = false;
+	self.getKnowledgeState = function(){
+		if(!self.knowledge) return null;
+		return self.infected ? (self.knowledge.activeState || "familiar") : (self.knowledge.state || "unlinked");
+	};
 
 	// Update:
 	self.numFriends = 0;
@@ -145,6 +151,11 @@ function Peep(config){
 
 		}
 
+		if(self.knowledge){
+			self.isKnowledgeHovered = self.hitTest(self.sim.mouse.x, self.sim.mouse.y, true);
+			_knowledgePulse += 0.045;
+		}
+
 	};
 
 	// Body Sprite
@@ -181,8 +192,136 @@ function Peep(config){
 		"#7DE74E", // green
 		"#FBCBDC" // pink
 	];
+	var KNOWLEDGE_STATE_FRAMES = {
+		unlinked:0,
+		familiar:1,
+		verified:3,
+		transfer:4
+	};
+	var KNOWLEDGE_STATE_LABELS = {
+		unlinked:"尚未建立关系",
+		familiar:"只记住答案",
+		verified:"经过多重验证",
+		transfer:"能够迁移"
+	};
 	var _glowAnim = 0;
+	var _knowledgePulse = 0;
 	self.conclusionFrame = Math.floor(1+Math.random()*5);
+
+	function _roundRect(ctx, x, y, width, height, radius){
+		var r = Math.min(radius, width/2, height/2);
+		ctx.beginPath();
+		ctx.moveTo(x+r, y);
+		ctx.lineTo(x+width-r, y);
+		ctx.quadraticCurveTo(x+width, y, x+width, y+r);
+		ctx.lineTo(x+width, y+height-r);
+		ctx.quadraticCurveTo(x+width, y+height, x+width-r, y+height);
+		ctx.lineTo(x+r, y+height);
+		ctx.quadraticCurveTo(x, y+height, x, y+height-r);
+		ctx.lineTo(x, y+r);
+		ctx.quadraticCurveTo(x, y, x+r, y);
+		ctx.closePath();
+	}
+	function _wrapKnowledgeText(ctx, text, maxWidth){
+		var lines = [];
+		var current = "";
+		for(var i=0; i<text.length; i++){
+			var next = current + text.charAt(i);
+			if(current && ctx.measureText(next).width>maxWidth){
+				lines.push(current);
+				current = text.charAt(i);
+			}else{
+				current = next;
+			}
+		}
+		if(current) lines.push(current);
+		return lines;
+	}
+	function _drawKnowledgeTag(ctx, color){
+		if(!self.knowledge) return;
+
+		var knowledge = self.knowledge;
+		var isFocused = (self.sim.focusedPeep===self);
+		if(knowledge.featured===false && !isFocused) return;
+		var isHovered = self.isKnowledgeHovered && !Simulations.IS_RUNNING;
+		var offset = knowledge.labelOffset || [0,-48];
+		var title = knowledge.label || "知识原子";
+		var role = knowledge.role || "知识点";
+		var state = self.getKnowledgeState();
+		var stateLabel = KNOWLEDGE_STATE_LABELS[state] || "正在建立关系";
+		var scale = isFocused ? 1.07 : (isHovered ? 1.035 : 1);
+
+		ctx.save();
+		ctx.translate(offset[0], offset[1]);
+		ctx.scale(scale, scale);
+		ctx.font = "15px PatrickHand";
+		var titleWidth = ctx.measureText(title).width;
+		ctx.font = "10px PatrickHand";
+		var roleWidth = ctx.measureText(role).width;
+		var tagWidth = Math.max(68, titleWidth+24, roleWidth+24);
+		var tagHeight = 35;
+		var left = -tagWidth/2;
+		var top = -tagHeight/2;
+
+		// A small imperfect label keeps the information attached to the atom,
+		// not in a separate dashboard panel.
+		ctx.globalAlpha = isFocused ? 0.98 : 0.92;
+		_roundRect(ctx, left, top, tagWidth, tagHeight, 8);
+		ctx.fillStyle = "#fff";
+		ctx.fill();
+		ctx.lineWidth = isFocused ? 2.5 : 1.7;
+		ctx.strokeStyle = color;
+		ctx.stroke();
+		ctx.globalAlpha = 0.2;
+		_roundRect(ctx, left-1, top+1, tagWidth+2, tagHeight, 8);
+		ctx.strokeStyle = "#222";
+		ctx.lineWidth = 1;
+		ctx.stroke();
+		ctx.globalAlpha = 1;
+
+		ctx.beginPath();
+		ctx.arc(left+10, top+10, 3.5, 0, Math.TAU);
+		ctx.fillStyle = color;
+		ctx.fill();
+		ctx.font = "15px PatrickHand";
+		ctx.fillStyle = "#222";
+		ctx.textBaseline = "middle";
+		ctx.textAlign = "center";
+		ctx.fillText(title, 3, top+11);
+		ctx.font = "10px PatrickHand";
+		ctx.fillStyle = "#777";
+		ctx.fillText(role, 3, top+25);
+
+		if(isFocused){
+			var noteWidth = 160;
+			var noteOnLeft = self.x>520;
+			var noteLeft = noteOnLeft ? -noteWidth-40 : 40;
+			var noteTop = -32;
+			ctx.font = "13px PatrickHand";
+			var lines = _wrapKnowledgeText(ctx, knowledge.detail || "这个知识原子正在等待和其他证据连起来。", noteWidth-22);
+			lines = lines.slice(0,4);
+			var noteHeight = 35 + lines.length*16;
+			_roundRect(ctx, noteLeft, noteTop, noteWidth, noteHeight, 11);
+			ctx.fillStyle = "rgba(255,255,255,0.98)";
+			ctx.fill();
+			ctx.strokeStyle = color;
+			ctx.lineWidth = 2;
+			ctx.stroke();
+
+			ctx.textAlign = "left";
+			ctx.textBaseline = "middle";
+			ctx.font = "11px PatrickHand";
+			ctx.fillStyle = color;
+			ctx.fillText(stateLabel, noteLeft+11, noteTop+14);
+			ctx.font = "13px PatrickHand";
+			ctx.fillStyle = "#222";
+			lines.forEach(function(line, index){
+				ctx.fillText(line, noteLeft+11, noteTop+34+index*16);
+			});
+		}
+
+		ctx.restore();
+	}
 	self.draw = function(ctx){
 
 		ctx.save();
@@ -196,6 +335,15 @@ function Peep(config){
 		var infectedColor = PEEP_COLORS[infectedFrame];
 		var myFrame = self.infected ? infectedFrame : 0;
 		var myColor = PEEP_COLORS[myFrame];
+		if(self.knowledge){
+			var knowledgeState = self.getKnowledgeState();
+			var knowledgeFrame = KNOWLEDGE_STATE_FRAMES[knowledgeState];
+			if(knowledgeFrame===undefined) knowledgeFrame = 0;
+			infectedFrame = knowledgeFrame;
+			infectedColor = PEEP_COLORS[knowledgeFrame];
+			myFrame = knowledgeFrame;
+			myColor = infectedColor;
+		}
 		// CONCLUSION SPLASH
 		if(self.sim.options.CONCLUSION){
 			var distance = getVectorLength(self);
@@ -206,6 +354,18 @@ function Peep(config){
 			}
 		}
 		self.sprite.rotation = bodyRotation;
+		if(self.knowledge){
+			var ringScale = 1 + Math.sin(_knowledgePulse)*0.025;
+			ctx.save();
+			ctx.scale(ringScale, ringScale);
+			ctx.beginPath();
+			ctx.arc(0, 0, 29, 0, Math.TAU);
+			ctx.globalAlpha = (self.sim.focusedPeep===self) ? 0.65 : 0.34;
+			ctx.strokeStyle = myColor;
+			ctx.lineWidth = (self.sim.focusedPeep===self) ? 2.6 : 1.5;
+			ctx.stroke();
+			ctx.restore();
+		}
 		if(self.isPastThreshold){ // highlight! glow!
 
 			_glowAnim += 0.03;
@@ -256,12 +416,14 @@ function Peep(config){
 			self.propSprite.draw(ctx);
 		}
 
+		_drawKnowledgeTag(ctx, myColor);
+
 		//////////////////////////////////////////////////////////
 		// LABEL FOR INFECTED/FRIENDS, BAR, AND CONTAGION LEVEL //
 		//////////////////////////////////////////////////////////
 
 		// DON'T show bar if simple contagion
-		if(self.sim.contagion>0){
+		if(self.sim.contagion>0 && !self.sim.semanticSceneID){
 
 			ctx.save();
 

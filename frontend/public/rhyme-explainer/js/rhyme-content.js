@@ -60,12 +60,12 @@
 			<b>所以，别只看一个概念；也看看它和谁相连。</b>
 			<next>来画一张理解网络 <div class="rarr"></div></next>`,
 
-		networks_tutorial_start: `<b>先画出一张理解网络。</b><br>每一个小人都是一个概念或例子；每一条线代表“我知道它们为什么有关”。`,
-		networks_tutorial_connect: `建立连接`,
-		networks_tutorial_disconnect: `擦去&nbsp;&nbsp;&nbsp;连接`,
+		networks_tutorial_start: `<b>先看这张由知识原子组成的网络。</b><br><span style="font-size:.78em;color:#777">单击原子看局部说明；从一个原子拖到另一个原子，建立关系。</span>`,
+		networks_tutorial_connect: `拖拽两个原子，补上一条你认为成立的关系。`,
+		networks_tutorial_disconnect: `从空白处拖过一条线，可以擦去不成立的联系。`,
 		networks_tutorial_end: `如果你画好了，<next wiggle>继续看看 <div class="rarr"></div></next>`,
-		networks_threshold: `一个概念不是被孤立地记住的。<br>当它和足够多的已知内容接上时，才会变得稳定。<icon name="yellow"></icon>`,
-		networks_threshold_instruction: `<b>试着画线、擦线，观察每个节点的变化 <div class="rarr"></div></b>`,
+		networks_threshold: `条件概率的关键不在公式长相。<br>先进入 <b>条件 B</b> 的范围，再在里面观察 <b>事件 A</b>。`,
+		networks_threshold_instruction: `<b>单击原子，看看每一步在做什么；再启动推演。 <div class="rarr"></div></b>`,
 		networks_threshold_end: `<next>明白了</next>`,
 		networks_pre_puzzle: `但“连接感”也会骗人。<br>一个概念如果只和熟悉的词挨在一起，很容易让人误以为：我已经懂了。`,
 		optional_reading: ``,
@@ -87,12 +87,12 @@
 			<next>先看看最快的记忆方式 <div class="rarr"></div></next>`,
 
 		simple_simple: `
-			先把条件放得最简单：一个红色线索 <icon name="red"></icon> 出现了。
+			先把条件放得最简单：一个红色线索出现了。
 			<br>
 			它是一个口诀、一张速记卡，或一道题的标准答案。
 			<br>
 			它沿着已经存在的连接，很快被反复看见。
-			<br><b>开始推演 <div class="darr"></div></b>`,
+			<br><span style="font-size:.8em;color:#777">红色表示：它被记住了，但还没有被充分验证。</span><br><b>开始推演 <div class="darr"></div></b>`,
 		simple_simple_2: `快速记住不是坏事。关键词、步骤卡、典型例题都很有用。<br>只是它们解决的是“想起来”，不自动解决“为什么成立”。`,
 		simple_simple_end: `<next wiggle>继续看</next>`,
 		simple_cascade: `很好。<b>再来一个挑战。</b><br>调整连接并启动推演，让这条速记线索走到每个节点。<br>（有些粗线代表已经很难被忽略的旧经验。）`,
@@ -104,7 +104,7 @@
 			<next wiggle>这就是“多重验证” <div class="rarr"></div></next>`,
 
 		complex_complex: `
-			回到刚才的黄色节点 <icon name="yellow"></icon>。这一次，不是看见一个提示就接受它。
+			回到刚才的关键判断。这一次，不是看见一个提示就接受它。
 			<br><br>
 			只有当它同时接到定义、例子或反例等足够多的线索时，它才愿意说：“我理解了。”
 			<br><br><b>先猜一猜，然后运行推演 <div class="rarr"></div></b>`,
@@ -118,7 +118,7 @@
 			<next>那就让理解继续长出来</next>
 			</span>`,
 		complex_complex_3: `
-			现在有一个蓝色概念 <icon name="blue"></icon>。
+			现在有一个蓝色概念。
 			它不想只背一句结论，而想把结论用到新的场景里。
 			<br><br>
 			给它搭上不同类型的连接：一个定义、一个具体例子、一个反例，或一次回忆。

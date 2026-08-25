@@ -21,6 +21,7 @@ SLIDES.push(
 			type:"sim",
 			x:0, y:0,
 			fullscreen: true,
+			semanticScene:"evidence-gate",
 			network: {
 				"contagion":0.5,
 				"peeps":[[849,356,0],[808,199,0],[543,97,1],[679,114,0],[781,480,0],[906,480,0]],
@@ -90,6 +91,7 @@ SLIDES.push(
 			type:"sim",
 			x:0, y:0,
 			fullscreen: true,
+			semanticScene:"verification-path",
 			network: {
 				"contagion":0.25,
 				"peeps":[[54,240,1],[227,237,0],[298,98,0],[405,157,0],[408,296,0],[311,380,0]],
@@ -169,6 +171,7 @@ SLIDES.push(
 			id:"contagion",
 			x:0, y:-40,
 			fullscreen: true,
+			semanticScene:"verified-cascade",
 			network: {
 				"contagion":0.25,
 				"peeps":CASCADE_PUZZLE.peeps,
@@ -276,6 +279,7 @@ SLIDES.push(
 			type:"sim",
 			x:0, y:80,
 			fullscreen: true,
+			semanticScene:"prevent-gate",
 			network: {
 				"contagion":0.25,
 				"peeps":CONTAGION_PUZZLE.peeps,

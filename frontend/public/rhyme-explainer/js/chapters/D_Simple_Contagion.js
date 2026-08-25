@@ -32,6 +32,7 @@ SLIDES.push(
 			id:"contagion",
 			x:0, y:80,
 			fullscreen: true,
+			semanticScene:"cue-path",
 			network: {
 				"contagion":0,
 				"peeps":CONTAGION_PUZZLE.peeps,
@@ -126,6 +127,7 @@ SLIDES.push(
 			id:"contagion",
 			x:0, y:-60,
 			fullscreen: true,
+			semanticScene:"cue-cascade",
 			network: {
 				"contagion":0,
 				"peeps":CASCADE_PUZZLE.peeps,

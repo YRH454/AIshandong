@@ -12,6 +12,7 @@ SLIDES.push(
 			type:"sim",
 			x:0, y:130,
 			fullscreen: true,
+			semanticScene:"organization-map",
 			network: {
 				"contagion":0.25,
 				"peeps":[
@@ -103,6 +104,7 @@ SLIDES.push(
 			type:"sim",
 			x:-70, y:-30,
 			fullscreen: true,
+			semanticScene:"transfer-bridge",
 			network: {
 				"contagion":0.25,
 				"peeps":[[182,92,1],[300,106,0],[107,196,0],[151,300,0],[301,309,0],[354,213,0],[441,384,0],[500,290,0],[644,304,0],[691,422,0],[621,510,0],[491,488,0]],

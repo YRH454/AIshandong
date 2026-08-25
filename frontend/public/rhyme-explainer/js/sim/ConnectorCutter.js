@@ -79,7 +79,14 @@ function ConnectorCutter(config){
 					// End connect?
 					if(self.state==1){
 						var peepReleased = self.sim.getHoveredPeep(20);
-						if(peepReleased){
+						// A short click on a named knowledge atom opens its local
+						// explanation. Dragging from one atom to another still draws
+						// a connection, so the original learning-by-building mechanic
+						// remains intact.
+						if(peepReleased===self.connectFrom && self.sim.focusKnowledgeAtom(self.connectFrom)){
+							SOUNDS.pluck0.volume(0.28);
+							SOUNDS.pluck0.play();
+						}else if(peepReleased){
 							var successfulConnection = self.sim.addConnection(self.connectFrom, peepReleased);
 
 							// SOUND!

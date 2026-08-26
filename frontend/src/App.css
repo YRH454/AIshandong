@@ -206,7 +206,6 @@ button { color: inherit; }
 .learning-house-entry .icon, .learning-house-entry-spark { color: var(--accent); }
 .learning-house-entry-spark { margin-left: auto; opacity: .85; }
 .learning-house-entry:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: var(--accent-soft); color: var(--accent-deep); }
-
 .sidebar-section { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .section-label { padding: 7px 9px 5px; color: var(--faint); font-size: 10px; font-weight: 650; }
 .history-empty { margin: 4px 9px; color: var(--faint); font-size: 11px; line-height: 1.55; }
@@ -421,6 +420,9 @@ body.interactive-presentation-open { overflow: hidden; }
 .dynamic-compact-scenes { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
 .dynamic-compact-scenes span { max-width: 22ch; overflow: hidden; padding: 5px 7px; border: 1px solid var(--presentation-rule); border-radius: 6px; background: var(--presentation-paper); color: var(--presentation-quiet); font-size: 8.5px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
 .dynamic-compact-open { min-width: 132px; justify-content: center; }
+.dynamic-compact-actions { display: grid; gap: 7px; min-width: 132px; }
+.dynamic-compact-actions .dynamic-compact-continue { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid var(--presentation-accent); border-radius: 8px; background: var(--presentation-paper); color: var(--presentation-accent-deep); cursor: pointer; font: inherit; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.dynamic-compact-actions .dynamic-compact-continue:hover { background: var(--presentation-accent-soft); }
 .dynamic-explanation-player .dynamic-player-head { align-items: flex-start; padding: clamp(20px, 3vw, 34px) clamp(18px, 3.5vw, 44px) 20px; background: var(--presentation-paper); }
 .dynamic-player-head > div { max-width: 62ch; min-width: 0; }
 .dynamic-player-head > div > span { color: var(--presentation-accent-deep); font-size: 10px; font-weight: 750; letter-spacing: .02em; }
@@ -452,6 +454,11 @@ body.interactive-presentation-open { overflow: hidden; }
 .dynamic-explanation-player .dynamic-autoplay { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 0 9px; border: 1px solid var(--presentation-rule); border-radius: 8px; background: var(--presentation-paper); color: var(--presentation-quiet); cursor: pointer; font-size: 10px; font-weight: 750; }
 .dynamic-explanation-player .dynamic-autoplay:hover,
 .dynamic-explanation-player .dynamic-autoplay.active { border-color: var(--presentation-accent); background: var(--presentation-accent-soft); color: var(--presentation-accent-deep); }
+.presentation-completion-continue { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px clamp(18px, 3vw, 36px); border-top: 1px solid var(--presentation-rule); background: var(--presentation-field); }
+.presentation-completion-continue > span { color: var(--presentation-accent-deep); font-size: 10px; font-weight: 800; white-space: nowrap; }
+.presentation-completion-continue p { max-width: 48ch; margin: 0; color: var(--presentation-quiet); font-size: 10.5px; line-height: 1.55; }
+.presentation-completion-continue button { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; background: var(--presentation-accent); color: var(--on-accent); cursor: pointer; font: inherit; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.presentation-completion-continue button:hover { background: var(--presentation-accent-deep); }
 
 .presentation-visual { width: 100%; min-height: 100%; position: relative; display: grid; place-items: center; overflow: hidden; isolation: isolate; background: color-mix(in srgb, var(--presentation-accent-soft) 45%, var(--presentation-paper)); }
 .presentation-visual button { color: inherit; font: inherit; }
@@ -706,6 +713,12 @@ body.interactive-presentation-open { overflow: hidden; }
 .learning-loop-foot-actions { display: inline-flex; align-items: center; flex: 0 0 auto; gap: 6px; }
 .learning-loop-foot .learning-loop-save { border: 1px solid var(--line-strong); background: var(--surface); color: var(--accent-deep); }
 .learning-loop-foot .learning-loop-save:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.learning-loop-steps button.completed { background: color-mix(in srgb, var(--accent-soft) 66%, var(--surface)); }
+.learning-loop-steps button.completed > i { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.learning-loop-steps button.completed b, .learning-loop-steps button.completed em { color: var(--accent-deep); }
+.learning-loop-steps button.failed { cursor: pointer; }
+.learning-loop-foot .learning-loop-complete { border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent-deep); }
+.learning-loop-foot .learning-loop-complete:hover:not(:disabled) { background: var(--surface); }
 .learning-loop-foot .learning-loop-start { border: 0; background: var(--accent); color: var(--on-accent); }
 .learning-loop-foot .learning-loop-start:hover:not(:disabled) { background: var(--accent-deep); }
 .next-actions { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; padding-bottom: 2px; overflow-x: auto; }

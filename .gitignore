@@ -28,6 +28,8 @@ backend/*.log
 .claude/
 .impeccable/
 .reference-demos/
+.tmp-yashs-room-source/
+.tmp-itom-portfolio/
 
 # Editor and operating-system files
 .vscode/

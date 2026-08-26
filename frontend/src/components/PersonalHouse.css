@@ -1,0 +1,210 @@
+.personal-flight-layer {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  overflow: hidden;
+  background: #9fcbe2;
+  color: #20313b;
+  font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  animation: personal-flight-in .46s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.personal-flight-layer *, .personal-flight-layer *::before, .personal-flight-layer *::after { box-sizing: border-box; }
+.personal-flight-layer button { font: inherit; }
+.personal-flight-layer button:focus-visible { outline: 2px solid #e96e54; outline-offset: 3px; }
+.personal-house-open { overflow: hidden; }
+.personal-flight { position: relative; width: 100%; height: 100dvh; min-height: 560px; background: #9fcbe2; }
+.personal-flight-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 22% 25%, rgb(255 255 255 / .44) 0 9%, transparent 10%),
+    radial-gradient(ellipse at 76% 38%, rgb(255 255 255 / .25) 0 11%, transparent 12%),
+    linear-gradient(180deg, #b5dced 0%, #9fcbe2 53%, #8cb8d0 100%);
+}
+.personal-flight-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  cursor: grab;
+}
+.personal-flight-canvas:active { cursor: grabbing; }
+
+.personal-flight-topbar {
+  position: absolute;
+  z-index: 8;
+  inset: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 18px;
+  min-height: 72px;
+  padding: 16px clamp(20px, 3vw, 48px);
+  pointer-events: none;
+}
+
+.personal-flight-topbar button { pointer-events: auto; }
+.personal-flight-back, .personal-flight-actions button, .personal-flight-contact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 35px;
+  border: 1px solid rgb(31 50 63 / .24);
+  border-radius: 999px;
+  background: rgb(247 251 249 / .66);
+  color: #284250;
+  box-shadow: 0 8px 24px rgb(41 86 107 / .11);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .075em;
+  backdrop-filter: blur(10px);
+  transition: transform .2s ease, color .2s ease, background-color .2s ease, border-color .2s ease;
+}
+
+.personal-flight-back { justify-self: start; padding: 0 13px; }
+.personal-flight-back:hover, .personal-flight-actions button:hover, .personal-flight-contact:hover {
+  border-color: rgb(190 77 57 / .62);
+  background: #fffaf2;
+  color: #9c3e30;
+  transform: translateY(-1px);
+}
+
+.personal-flight-brand { display: grid; justify-items: center; gap: 2px; pointer-events: none; text-align: center; }
+.personal-flight-brand strong { color: #233d4d; font-family: Georgia, "Times New Roman", serif; font-size: 19px; font-weight: 700; letter-spacing: .18em; line-height: 1; }
+.personal-flight-brand span { color: rgb(40 67 82 / .7); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 8px; font-weight: 700; letter-spacing: .12em; }
+.personal-flight-actions { justify-self: end; display: inline-flex; align-items: center; gap: 7px; pointer-events: auto; }
+.personal-flight-actions button { min-width: 35px; padding: 0 10px; }
+.personal-flight-actions button:last-child { width: 35px; padding: 0; }
+.personal-flight-actions button.active { border-color: rgb(193 88 70 / .58); background: #fff7ef; color: #9c3e30; }
+.personal-flight-actions button:disabled { cursor: default; opacity: .45; transform: none; }
+
+.personal-flight-hero {
+  position: absolute;
+  z-index: 3;
+  top: clamp(105px, 18vh, 170px);
+  left: clamp(24px, 6vw, 92px);
+  width: min(350px, calc(100% - 48px));
+  color: #203743;
+  pointer-events: none;
+  transition: opacity .55s ease, transform .55s ease;
+}
+
+.personal-flight-hero[aria-hidden='true'] { opacity: 0; transform: translateY(-13px); }
+.personal-flight-hero > span { color: #c04f3d; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 10px; font-weight: 800; letter-spacing: .13em; }
+.personal-flight-hero h1 { margin: 12px 0 11px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(34px, 4.2vw, 58px); font-weight: 500; letter-spacing: -.065em; line-height: .96; }
+.personal-flight-hero p { max-width: 290px; margin: 0; color: rgb(32 55 67 / .76); font-size: 12px; font-weight: 600; line-height: 1.62; }
+
+.personal-flight-route {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: clamp(21px, 3.2vw, 52px);
+  display: grid;
+  gap: 9px;
+  width: 115px;
+  padding: 13px 12px 13px 17px;
+  border: 1px solid rgb(33 63 78 / .2);
+  border-radius: 10px;
+  background: rgb(246 252 253 / .56);
+  box-shadow: 0 16px 42px rgb(45 87 104 / .12);
+  backdrop-filter: blur(11px);
+  transform: translateY(-50%);
+}
+
+.personal-flight-route-line { position: absolute; top: 27px; bottom: 27px; left: 17px; width: 1px; overflow: hidden; background: rgb(37 68 83 / .21); }
+.personal-flight-route-line i { display: block; width: 100%; height: 100%; background: #d1604c; transform-origin: top; transition: transform .22s linear; }
+.personal-flight-route button { position: relative; z-index: 1; display: grid; grid-template-columns: 12px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 22px; border: 0; background: transparent; color: #41616f; cursor: pointer; text-align: left; }
+.personal-flight-route button b { width: 11px; height: 11px; border: 2px solid #eff8f7; border-radius: 50%; background: #90adba; box-shadow: 0 0 0 1px rgb(43 75 90 / .3); font-size: 0; transition: background-color .18s ease, transform .18s ease; }
+.personal-flight-route button span { overflow: hidden; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 8px; font-weight: 800; letter-spacing: .075em; text-overflow: ellipsis; white-space: nowrap; transition: color .18s ease; }
+.personal-flight-route button:hover span, .personal-flight-route button.active span { color: #a34234; }
+.personal-flight-route button.active b { background: #d6614d; transform: scale(1.22); }
+
+.personal-flight-card {
+  position: absolute;
+  z-index: 5;
+  top: 50%;
+  right: clamp(22px, 4vw, 72px);
+  display: grid;
+  gap: 9px;
+  width: min(340px, calc(100% - 195px));
+  padding: 22px 22px 18px;
+  border: 1px solid rgb(34 62 76 / .23);
+  border-radius: 2px 16px 2px 16px;
+  background: linear-gradient(145deg, rgb(255 253 247 / .91), rgb(242 249 249 / .78));
+  box-shadow: 0 23px 68px rgb(31 73 91 / .18);
+  backdrop-filter: blur(16px);
+  color: #223744;
+  transform: translateY(-50%);
+  animation: personal-flight-card-in .5s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.personal-flight-card-order { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 9px; font-weight: 900; letter-spacing: .13em; }
+.personal-flight-card h2 { margin: -1px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp(25px, 2.5vw, 34px); font-weight: 500; letter-spacing: -.055em; line-height: 1.02; }
+.personal-flight-card > strong { color: #48616c; font-size: 11px; font-weight: 750; line-height: 1.42; }
+.personal-flight-card > p { margin: 2px 0 0; color: #435a64; font-size: 12px; font-weight: 600; line-height: 1.6; }
+.personal-flight-card ul { display: grid; gap: 5px; margin: 2px 0 0; padding: 0; list-style: none; }
+.personal-flight-card li { position: relative; padding-left: 13px; color: #617780; font-size: 10.5px; font-weight: 650; line-height: 1.5; }
+.personal-flight-card li::before { position: absolute; top: .57em; left: 0; width: 5px; height: 5px; border-radius: 50%; background: #d96c55; content: ''; }
+.personal-flight-card-actions { display: flex; flex-wrap: wrap; gap: 7px; padding-top: 3px; }
+.personal-flight-card-actions button { display: inline-flex; align-items: center; gap: 6px; min-height: 31px; padding: 0 10px; border: 1px solid rgb(37 67 80 / .23); border-radius: 2px 8px 2px 8px; background: rgb(255 255 252 / .65); color: #345260; cursor: pointer; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 8px; font-weight: 800; letter-spacing: .07em; transition: transform .18s ease, border-color .18s ease, color .18s ease, background-color .18s ease; }
+.personal-flight-card-actions button:hover { border-color: #c44f3e; background: #fff7ed; color: #a33d30; transform: translateY(-1px); }
+.personal-flight-next { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; margin-top: 3px; padding: 0 12px; border: 1px solid #d6614d; border-radius: 2px 10px 2px 10px; background: #d6614d; color: #fffaf3; cursor: pointer; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 8px; font-weight: 900; letter-spacing: .08em; transition: transform .18s ease, background-color .18s ease; }
+.personal-flight-next:hover { background: #b94435; transform: translateY(-1px); }
+.personal-flight-next:disabled { cursor: default; background: #6f858d; border-color: #6f858d; opacity: .76; transform: none; }
+
+.personal-flight-contact { position: absolute; z-index: 5; bottom: 27px; left: clamp(24px, 3.2vw, 52px); padding: 0 12px; }
+.personal-flight-notice { position: absolute; z-index: 10; top: 82px; right: 28px; display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1px solid rgb(178 67 51 / .36); border-radius: 6px; background: rgb(255 249 240 / .88); box-shadow: 0 12px 30px rgb(42 83 99 / .18); color: #923729; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 9px; font-weight: 800; letter-spacing: .06em; animation: personal-flight-notice-in .24s ease both; }
+
+.personal-flight-fallback { display: grid; width: 100%; height: 100%; place-content: center; gap: 12px; padding: 30px; background: radial-gradient(circle at 50% 35%, #d9eff7, #88b6cf); color: #25404e; text-align: center; }
+.personal-flight-fallback svg { justify-self: center; color: #c94e3d; }
+.personal-flight-fallback h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 31px; font-weight: 500; letter-spacing: -.04em; }
+.personal-flight-fallback p { max-width: 330px; margin: 0; color: #4b6571; font-size: 12px; line-height: 1.6; }
+.personal-flight-fallback > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; }
+.personal-flight-fallback button { min-height: 32px; padding: 0 10px; border: 1px solid #587886; border-radius: 999px; background: #f7fdfc; color: #335462; cursor: pointer; font: 800 9px ui-monospace, monospace; letter-spacing: .06em; }
+
+@keyframes personal-flight-in { from { opacity: 0; transform: scale(.992); } to { opacity: 1; transform: scale(1); } }
+@keyframes personal-flight-card-in { from { opacity: 0; transform: translate(12px, -50%); } to { opacity: 1; transform: translateY(-50%); } }
+@keyframes personal-flight-notice-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 900px) {
+  .personal-flight-card { top: auto; right: 18px; bottom: 66px; width: min(355px, calc(100% - 190px)); max-height: calc(100dvh - 150px); overflow: auto; transform: none; }
+  .personal-flight-card { animation-name: personal-flight-card-mobile-in; }
+  .personal-flight-card h2 { font-size: 27px; }
+}
+
+@media (max-width: 650px) {
+  .personal-flight { min-height: 490px; }
+  .personal-flight-topbar { grid-template-columns: 40px minmax(0, 1fr) auto; gap: 7px; min-height: 57px; padding: 10px 12px; }
+  .personal-flight-back { width: 35px; padding: 0; }
+  .personal-flight-back span, .personal-flight-actions button:first-child span { display: none; }
+  .personal-flight-brand { justify-items: start; overflow: hidden; text-align: left; }
+  .personal-flight-brand strong { font-size: 14px; }
+  .personal-flight-brand span { overflow: hidden; width: 100%; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .personal-flight-actions button { width: 34px; min-width: 34px; padding: 0; }
+  .personal-flight-hero { top: 80px; left: 18px; width: 245px; }
+  .personal-flight-hero h1 { margin: 8px 0; font-size: 32px; }
+  .personal-flight-hero p { font-size: 10px; }
+  .personal-flight-route { top: auto; bottom: 13px; left: 50%; display: flex; gap: 8px; width: calc(100% - 24px); padding: 9px 10px; transform: translateX(-50%); }
+  .personal-flight-route-line { top: auto; bottom: 8px; left: 15px; right: 15px; width: auto; height: 1px; }
+  .personal-flight-route-line i { width: 100%; height: 100%; transform-origin: left; }
+  .personal-flight-route button { display: flex; flex: 1; justify-content: center; gap: 5px; min-height: 23px; }
+  .personal-flight-route button span { display: none; }
+  .personal-flight-route button b { width: 9px; height: 9px; }
+  .personal-flight-card { right: 12px; bottom: 57px; width: calc(100% - 24px); max-height: min(355px, calc(100dvh - 130px)); padding: 17px 17px 14px; }
+  .personal-flight-card h2 { font-size: 24px; }
+  .personal-flight-card > p { font-size: 11px; }
+  .personal-flight-contact { display: none; }
+  .personal-flight-notice { top: 64px; right: 14px; }
+}
+
+@keyframes personal-flight-card-mobile-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .personal-flight-layer, .personal-flight-card, .personal-flight-notice { animation: none; }
+  .personal-flight-back, .personal-flight-actions button, .personal-flight-contact, .personal-flight-route button b, .personal-flight-route button span, .personal-flight-card-actions button, .personal-flight-next { transition: none; }
+}

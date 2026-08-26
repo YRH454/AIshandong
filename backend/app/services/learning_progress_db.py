@@ -427,18 +427,30 @@ def _map_progress(user_id: int, maps: list[dict]) -> tuple[dict, dict[int, dict]
     for artifact in maps:
         try:
             content = _json(artifact.get("content"), {})
-            nodes = content.get("nodes", []) if isinstance(content, dict) else []
-            total = len(nodes) if isinstance(nodes, list) else 0
+            raw_nodes = content.get("nodes", []) if isinstance(content, dict) else []
+            nodes = [
+                node for node in raw_nodes
+                if isinstance(node, dict)
+                and str(node.get("id") or "").strip()
+                and str(node.get("role") or "branch") != "core"
+            ] if isinstance(raw_nodes, list) else []
+            valid_node_ids = {str(node.get("id") or "").strip() for node in nodes}
+            total = len(nodes)
         except (AttributeError, TypeError):
+            valid_node_ids = set()
             total = 0
         rows = query(
-            "SELECT status, COUNT(*) AS count FROM knowledge_map_node_progress "
-            "WHERE user_id = %s AND artifact_id = %s GROUP BY status",
+            "SELECT node_id, status FROM knowledge_map_node_progress "
+            "WHERE user_id = %s AND artifact_id = %s",
             (user_id, artifact["id"]),
         )
-        statuses = {str(row["status"]): int(row.get("count") or 0) for row in rows}
-        mastered = statuses.get("mastered", 0)
-        review = statuses.get("review", 0)
+        statuses = [
+            str(row.get("status") or "")
+            for row in rows
+            if str(row.get("node_id") or "").strip() in valid_node_ids
+        ]
+        mastered = sum(status == "mastered" for status in statuses)
+        review = sum(status == "review" for status in statuses)
         current = {
             "total": total,
             "mastered": mastered,

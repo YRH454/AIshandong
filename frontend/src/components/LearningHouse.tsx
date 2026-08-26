@@ -10,9 +10,13 @@ import {
 import * as THREE from 'three'
 
 type Language = 'zh-CN' | 'en'
-type RoomId = 'document' | 'practice' | 'map' | 'dynamic'
+type RoomId = 'document' | 'practice' | 'map' | 'dynamic' | 'profile'
 type Phase = 'entrance' | 'corridor'
-type Props = { language?: Language; onExit: () => void }
+type Props = {
+  language?: Language
+  onExit: () => void
+  onOpenPersonalRoom?: () => void
+}
 
 type Room = {
   id: RoomId
@@ -35,6 +39,7 @@ const rooms: Room[] = [
   { id: 'practice', title: '练习检验室', titleEn: 'Practice studio', short: '练习检验', shortEn: 'Practice', empty: '第一份练习会在这里等你完成。', emptyEn: 'Your first practice set will wait here.', color: '#c4934f', side: 'right', z: -22, icon: ClipboardCheck },
   { id: 'map', title: '知识图解室', titleEn: 'Knowledge maps', short: '知识图解', shortEn: 'Maps', empty: '生成的图解会挂到这面墙上。', emptyEn: 'Generated maps will appear on this wall.', color: '#628db6', side: 'left', z: -35, icon: BrainCircuit },
   { id: 'dynamic', title: '动态讲解室', titleEn: 'Dynamic lessons', short: '动态讲解', shortEn: 'Lessons', empty: '第一段动态讲解会在这里亮起来。', emptyEn: 'Your first dynamic lesson will light up here.', color: '#9173b6', side: 'right', z: -48, icon: Play },
+  { id: 'profile', title: '个人档案室', titleEn: 'Personal archive', short: '个人档案', shortEn: 'Archive', empty: 'EGOIST 的个人档案与成长路线收藏在这间小屋。', emptyEn: 'EGOIST’s personal archive and flight route live in this room.', color: '#d6614d', side: 'left', z: -60, icon: Box },
 ]
 
 function ReferenceMaterial({ path, opacity = 1, transparent = true, color = '#e0e0e0', side = THREE.DoubleSide }: { path: string; opacity?: number; transparent?: boolean; color?: string; side?: THREE.Side }) {
@@ -124,7 +129,7 @@ function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; active
     if (phase !== 'corridor') return
     const move = (distance: number) => {
       const next = targetPosition.current.z + distance
-      targetPosition.current.z = THREE.MathUtils.clamp(next, -52.5, 5.35)
+      targetPosition.current.z = THREE.MathUtils.clamp(next, -62.5, 5.35)
     }
     const wheel = (event: WheelEvent) => { event.preventDefault(); move(event.deltaY * .019) }
     const key = (event: KeyboardEvent) => {
@@ -272,7 +277,7 @@ function CorridorMascot({ soundOn }: { soundOn: boolean }) {
 }
 
 function EndWall() {
-  return <group position={[0, 0, -57.15]}>
+  return <group position={[0, 0, -67.15]}>
     <mesh position={[0, 0, -.04]}><planeGeometry args={[7.08, 3.58]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" transparent={false} /></mesh>
     <ReferencePlane path="/textures/corridor/pustatabliczka.webp" position={[0, .32, .03]} args={[3.85, 1.78]} />
     <Text position={[0, .75, .06]} font={`${assetBase}/fonts/CabinSketch-Bold.ttf`} fontSize={.31} color="#27231f" anchorX="center" anchorY="middle">RHYME</Text>
@@ -295,6 +300,7 @@ function CorridorDoor({ room, active, onSelect, soundOn }: { room: Room; active:
     practice: '/textures/corridor/doors/drzwikontakt.webp',
     map: '/textures/corridor/doors/drzwiabout.webp',
     dynamic: '/textures/corridor/doors/drzwisocial.webp',
+    profile: '/textures/corridor/doors/drzwiabout_painted.webp',
   }
   useFrame((_, delta) => {
     const target = hovered || active ? .23 : 0
@@ -306,15 +312,19 @@ function CorridorDoor({ room, active, onSelect, soundOn }: { room: Room; active:
     <group ref={door} position={[-.89, -.22, .08]}>
       <ReferencePlane path={textureByRoom[room.id]} position={[.89, 0, .08]} args={[1.84, 2.52]} />
     </group>
+    {room.id === 'profile' && <group position={[0, 1.02, .18]}>
+      <mesh position={[0, 0, -.012]}><planeGeometry args={[1.34, .37]} /><meshBasicMaterial color="#f5eee2" /></mesh>
+      <Text position={[0, 0, .015]} font={`${assetBase}/fonts/CabinSketch-Bold.ttf`} fontSize={.16} color="#b64737" anchorX="center" anchorY="middle">EGOIST</Text>
+    </group>}
     <mesh position={[0, -.15, .35]} onClick={event => { event.stopPropagation(); playSound('/sounds/otwarciedrzwi.mp3', soundOn, .18); onSelect() }}><planeGeometry args={[2.2, 3.05]} /><meshBasicMaterial transparent opacity={0} /></mesh>
     {(hovered || active) && <pointLight position={[0, .1, .7]} color={room.color} intensity={.5} distance={3.5} />}
   </group>
 }
 
 function Corridor({ soundOn }: { soundOn: boolean }) {
-  const lights = Array.from({ length: 9 }, (_, index) => -4 - index * 7.2)
-  const floorTiles = Array.from({ length: 8 }, (_, index) => 5 - index * 10)
-  const plankGaps = Array.from({ length: 38 }, (_, index) => 6 - index * 1.93)
+  const lights = Array.from({ length: 11 }, (_, index) => -4 - index * 7.2)
+  const floorTiles = Array.from({ length: 9 }, (_, index) => 5 - index * 10)
+  const plankGaps = Array.from({ length: 44 }, (_, index) => 6 - index * 1.93)
   const doorAngle = Math.atan2(1.8, 4)
   return <group>
     {floorTiles.map((z, index) => {
@@ -324,15 +334,15 @@ function Corridor({ soundOn }: { soundOn: boolean }) {
         <mesh position={[0, 1.77, z]} rotation={[Math.PI / 2, 0, mirrored ? Math.PI : 0]} scale={[mirrored ? -1 : 1, 1, 1]}><planeGeometry args={[6.2, 10]} /><ReferenceMaterial path="/textures/corridor/ceiling_texture.webp" /></mesh>
       </group>
     })}
-    <mesh position={[-3.48, 0, -29]} rotation={[0, Math.PI / 2, 0]}><planeGeometry args={[74, 3.56]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" /></mesh>
-    <mesh position={[3.48, 0, -29]} rotation={[0, -Math.PI / 2, 0]}><planeGeometry args={[74, 3.56]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" /></mesh>
+    <mesh position={[-3.48, 0, -34]} rotation={[0, Math.PI / 2, 0]}><planeGeometry args={[84, 3.56]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" /></mesh>
+    <mesh position={[3.48, 0, -34]} rotation={[0, -Math.PI / 2, 0]}><planeGeometry args={[84, 3.56]} /><ReferenceMaterial path="/textures/corridor/wall_texture.webp" /></mesh>
     {rooms.map(room => {
       const direction = room.side === 'left' ? -1 : 1
       const rotation = direction === -1 ? Math.PI / 2 - doorAngle : -Math.PI / 2 + doorAngle
       return <group key={`wall-${room.id}`} position={[direction * 2.6, 0, room.z]} rotation={[0, rotation, 0]}><ReferencePlane path="/textures/corridor/wall_texture.webp" position={[0, 0, -.035]} args={[4.38, 3.56]} transparent={false} /></group>
     })}
     {plankGaps.map(z => <mesh key={z} position={[0, -1.765, z]}><boxGeometry args={[6.08, .018, .026]} /><meshBasicMaterial color="#563a26" transparent opacity={.5} /></mesh>)}
-    {[-3.44, 3.44].map(x => <mesh key={x} position={[x, -1.66, -29]} rotation={[0, Math.PI / 2, 0]}><boxGeometry args={[74, .1, .035]} /><meshBasicMaterial color="#6e4931" transparent opacity={.88} /></mesh>)}
+    {[-3.44, 3.44].map(x => <mesh key={x} position={[x, -1.66, -34]} rotation={[0, Math.PI / 2, 0]}><boxGeometry args={[84, .1, .035]} /><meshBasicMaterial color="#6e4931" transparent opacity={.88} /></mesh>)}
     {lights.map(z => <CorridorFixture key={z} z={z} />)}
     <CorridorFrame position={[-3.46, .33, -2.3]} side="left" artPath="/textures/corridor/rysuneknaobraz1.webp" />
     <CorridorFrame position={[3.46, .26, -11.6]} side="right" artPath="/textures/corridor/rysuneknaobrazek3.webp" />
@@ -353,7 +363,7 @@ function FlatFallback({ language, onEnter }: { language: Language; onEnter: () =
   return <div className="learning-house-flat entrance"><BookOpen size={30} /><h1>RHYME</h1><p>{zh ? '3D 学习屋需要浏览器开启图形加速。' : 'The 3D learning house needs WebGL graphics support.'}</p><button type="button" onClick={onEnter}>{zh ? '进入学习空间' : 'Enter learning space'}</button></div>
 }
 
-export default function LearningHouse({ language = 'zh-CN', onExit }: Props) {
+export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPersonalRoom }: Props) {
   const [canUseWebGL] = useState(() => supportsWebGL())
   const [lowPower] = useState(() => reducedScene())
   const [phase, setPhase] = useState<Phase>('entrance')
@@ -377,7 +387,11 @@ export default function LearningHouse({ language = 'zh-CN', onExit }: Props) {
   const enterCorridor = () => setPhase('corridor')
   const status = phase === 'entrance'
     ? (zh ? '点击任意一扇门进入。声音已开启。' : 'Click either door to enter. Audio is on.')
-    : (activeRoom ? (zh ? `${activeRoom.title}已预留，生成资料后会自动入住。` : `${activeRoom.titleEn} is ready for generated work.`) : (zh ? '滚动或按 W / S 前进，靠近房门后点击。' : 'Scroll or use W / S to walk. Click a nearby door.'))
+    : (activeRoom
+      ? (activeRoom.id === 'profile'
+        ? (zh ? '个人档案室已开启，点击门进入 EGOIST 的个人空间。' : 'The personal archive is ready. Click its door to enter EGOIST’s space.')
+        : (zh ? `${activeRoom.title}已预留，生成资料后会自动入住。` : `${activeRoom.titleEn} is ready for generated work.`))
+      : (zh ? '滚动或按 W / S 前进，靠近房门后点击。' : 'Scroll or use W / S to walk. Click a nearby door.'))
 
   return createPortal(<div className="learning-house-layer" role="dialog" aria-modal="true" aria-label="RHYME 3D learning house">
     <section className="learning-house">
@@ -394,7 +408,7 @@ export default function LearningHouse({ language = 'zh-CN', onExit }: Props) {
           {canUseWebGL ? <Canvas className="learning-house-canvas" camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
             <color attach="background" args={['#fafafa']} /><fog attach="fog" args={['#fafafa', 20, 62]} /><ambientLight intensity={1.04} /><hemisphereLight args={['#ffffff', '#d7d7d2', .72]} /><directionalLight position={[4, 8, 8]} intensity={.86} color="#fff9e9" />
             <Suspense fallback={null}>
-              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => setActiveRoomId(room.id)} />)}</>}
+              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'profile') onOpenPersonalRoom?.() }} />)}</>}
             </Suspense>
             <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} />
           </Canvas> : <FlatFallback language={language} onEnter={enterCorridor} />}

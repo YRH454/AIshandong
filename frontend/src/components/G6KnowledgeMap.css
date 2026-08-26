@@ -190,6 +190,114 @@
 
 .g6-knowledge-map.is-workspace .g6-map-surface { min-height: calc(100vh - 220px); }
 
+/* A quiet, paper-like atmosphere gives the large canvas a sense of place.
+   These shapes stay behind the graph, so they enrich the scene without
+   competing with labels or making the map feel like a dashboard. */
+.g6-map-atmosphere {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: .72;
+  isolation: isolate;
+}
+
+.g6-map-atmosphere::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+  background: radial-gradient(circle at var(--g6-focus-x, 50%) var(--g6-focus-y, 50%), rgba(101, 125, 197, .12), transparent clamp(115px, 18vw, 280px));
+  opacity: .7;
+  transition: background-position .45s ease, opacity .45s ease;
+}
+
+.g6-map-atmosphere-orb,
+.g6-map-atmosphere-arc,
+.g6-map-atmosphere-grain {
+  position: absolute;
+  pointer-events: none;
+}
+
+.g6-map-atmosphere-orb {
+  width: clamp(190px, 24vw, 390px);
+  aspect-ratio: 1.35;
+  border-radius: 50%;
+  filter: blur(22px);
+  opacity: .3;
+  transform-origin: 50% 50%;
+  mix-blend-mode: multiply;
+}
+
+.g6-map-atmosphere-orb.orb-a {
+  top: -7%;
+  left: 8%;
+  background: radial-gradient(ellipse at 46% 50%, rgba(117, 146, 224, .32), rgba(117, 146, 224, 0) 70%);
+  animation: g6-map-atmosphere-drift-a 17s ease-in-out infinite alternate;
+}
+
+.g6-map-atmosphere-orb.orb-b {
+  right: 5%;
+  bottom: -10%;
+  background: radial-gradient(ellipse at 54% 50%, rgba(213, 157, 94, .25), rgba(213, 157, 94, 0) 72%);
+  animation: g6-map-atmosphere-drift-b 21s ease-in-out -4s infinite alternate;
+}
+
+.g6-map-atmosphere-arc {
+  border: 1px solid rgba(83, 105, 157, .12);
+  border-radius: 50%;
+  opacity: .6;
+  transform-origin: 50% 50%;
+}
+
+.g6-map-atmosphere-arc.arc-a {
+  top: 10%;
+  left: 17%;
+  width: 66%;
+  height: 76%;
+  transform: rotate(-13deg);
+  animation: g6-map-atmosphere-arc-a 28s ease-in-out infinite alternate;
+}
+
+.g6-map-atmosphere-arc.arc-b {
+  top: 20%;
+  left: 26%;
+  width: 48%;
+  height: 60%;
+  border-color: rgba(194, 128, 75, .1);
+  transform: rotate(16deg);
+  animation: g6-map-atmosphere-arc-b 34s ease-in-out -8s infinite alternate;
+}
+
+.g6-map-atmosphere-grain {
+  inset: 0;
+  opacity: .16;
+  background-image: radial-gradient(rgba(45, 55, 76, .16) .55px, transparent .7px);
+  background-size: 13px 13px;
+  mask-image: linear-gradient(180deg, transparent, #000 16% 84%, transparent);
+}
+
+@keyframes g6-map-atmosphere-drift-a {
+  0% { transform: translate3d(-2%, -1%, 0) rotate(-5deg) scale(.96); }
+  100% { transform: translate3d(7%, 4%, 0) rotate(7deg) scale(1.08); }
+}
+
+@keyframes g6-map-atmosphere-drift-b {
+  0% { transform: translate3d(3%, 2%, 0) rotate(8deg) scale(1.02); }
+  100% { transform: translate3d(-6%, -5%, 0) rotate(-4deg) scale(.92); }
+}
+
+@keyframes g6-map-atmosphere-arc-a {
+  0% { transform: rotate(-13deg) scale(.98); opacity: .42; }
+  100% { transform: rotate(-7deg) scale(1.03); opacity: .72; }
+}
+
+@keyframes g6-map-atmosphere-arc-b {
+  0% { transform: rotate(16deg) scale(1.02); opacity: .3; }
+  100% { transform: rotate(8deg) scale(.96); opacity: .58; }
+}
+
 .g6-map-canvas {
   position: absolute;
   inset: 0;
@@ -198,6 +306,64 @@
 
 .g6-map-canvas:active { cursor: grabbing; }
 .g6-map-canvas canvas, .g6-map-canvas svg { outline: none; }
+
+/* Borrow the reference map's most useful motion language: edges carry a
+   quiet stream of attention, while the center gives a single restrained pulse.
+   The layer is decorative and never steals pointer events from G6. */
+.g6-map-motion-layer {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .34s ease;
+}
+
+.g6-map-surface[data-render-state='ready'] .g6-map-motion-layer { opacity: 1; }
+
+.g6-map-motion-trace {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-dasharray: 2 14;
+  opacity: .3;
+  animation: g6-map-dash-flow 3.6s linear infinite;
+}
+
+.g6-map-motion-signal {
+  opacity: .72;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+.g6-map-motion-endpoint {
+  opacity: .14;
+  filter: blur(.15px) drop-shadow(0 0 5px currentColor);
+}
+
+.g6-map-motion-core {
+  fill: none;
+  stroke: #6174c7;
+  stroke-width: 2;
+  opacity: .28;
+}
+
+.g6-map-motion-core-group { pointer-events: none; }
+
+@keyframes g6-map-dash-flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -32; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .g6-map-motion-trace { animation: none; }
+  .g6-map-motion-signal, .g6-map-motion-endpoint, .g6-map-motion-core,
+  .g6-map-atmosphere-orb, .g6-map-atmosphere-arc { animation: none; }
+  .g6-map-motion-layer { transition: none; }
+  .g6-map-atmosphere::after { transition: none; }
+}
 
 .g6-map-controls {
   position: absolute;
@@ -393,7 +559,8 @@
 
 .g6-map-canvas { z-index: 2; transition: opacity .22s ease; }
 .g6-map-surface[data-render-state='booting'] .g6-map-canvas,
-.g6-map-surface[data-render-state='failed'] .g6-map-canvas { opacity: 0; pointer-events: none; }
+.g6-map-surface[data-render-state='failed'] .g6-map-canvas,
+.g6-map-surface[data-render-state='empty'] .g6-map-canvas { opacity: 0; pointer-events: none; }
 
 .g6-map-fallback {
   position: absolute;
@@ -465,6 +632,68 @@
 }
 
 .g6-map-fallback-node:focus-visible { outline: 2px solid #252c42; outline-offset: 3px; }
+
+.g6-map-fallback-guide {
+  position: absolute;
+  top: var(--fallback-y);
+  left: var(--fallback-x);
+  min-width: 98px;
+  padding: 6px 9px;
+  box-sizing: border-box;
+  border: 1px solid var(--fallback-color);
+  border-radius: 8px;
+  color: #303746;
+  background: color-mix(in srgb, var(--fallback-color) 9%, white);
+  font-size: 10px;
+  font-weight: 720;
+  line-height: 1.25;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.g6-map-empty {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 36px;
+  color: #3b4150;
+  text-align: center;
+}
+
+.g6-map-empty-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 50%;
+  color: #486ad0;
+  background: #eef3ff;
+}
+
+.g6-map-empty-icon svg { width: 21px; height: 21px; }
+.g6-map-empty h2 { max-width: 460px; margin: 0; font-size: 17px; line-height: 1.4; }
+.g6-map-empty p { max-width: 440px; margin: 0; color: #6c7280; font-size: 13px; line-height: 1.72; }
+.g6-map-empty button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #dce3f1;
+  border-radius: 8px;
+  color: #3a5dbf;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.g6-map-empty button:hover { border-color: #aac0f1; background: #f7f9ff; }
+.g6-map-empty button:focus-visible { outline: 2px solid #486ad0; outline-offset: 3px; }
 
 .g6-map-fallback-status {
   position: absolute;

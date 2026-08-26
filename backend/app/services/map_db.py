@@ -119,17 +119,18 @@ def get_map_progress(artifact_id: int, user_id: int) -> dict | None:
     if payload is None:
         return None
     nodes = _map_nodes(artifact_id, user_id) or []
-    valid_ids = {node["id"] for node in nodes}
+    trackable_nodes = [node for node in nodes if node.get("role") != "core"]
+    valid_ids = {node["id"] for node in trackable_nodes}
     progress = {node_id: status for node_id, status in _progress_rows(artifact_id, user_id).items() if node_id in valid_ids}
     mastered = sum(status == "mastered" for status in progress.values())
     review = sum(status == "review" for status in progress.values())
     return {
         "progress": progress,
         "summary": {
-            "total": len(nodes),
+            "total": len(trackable_nodes),
             "mastered": mastered,
             "review": review,
-            "untouched": max(0, len(nodes) - mastered - review),
+            "untouched": max(0, len(trackable_nodes) - mastered - review),
         },
         "exploration": _workspace_progress(artifact_id, user_id, payload, nodes),
     }
@@ -177,7 +178,10 @@ def update_map_workspace_progress(
 
 def set_map_node_progress(artifact_id: int, user_id: int, node_id: str, status: str) -> dict | None:
     nodes = _map_nodes(artifact_id, user_id)
-    if nodes is None or node_id not in {node["id"] for node in nodes}:
+    if nodes is None:
+        return None
+    target = next((node for node in nodes if node["id"] == node_id), None)
+    if target is None or target.get("role") == "core":
         return None
     if status == "new":
         execute(
@@ -222,7 +226,7 @@ def prune_map_progress(artifact_id: int, user_id: int) -> dict | None:
     nodes = _map_nodes(artifact_id, user_id)
     if nodes is None:
         return None
-    valid_ids = {node["id"] for node in nodes}
+    valid_ids = {node["id"] for node in nodes if node.get("role") != "core"}
     for node_id in _progress_rows(artifact_id, user_id):
         if node_id not in valid_ids:
             execute(
@@ -261,6 +265,8 @@ def apply_practice_results(artifact_id: int, user_id: int, results: list[dict]) 
     for result in results or []:
         point = str(result.get("knowledge_point") or "")
         for node in nodes:
+            if node.get("role") == "core":
+                continue
             if not _matches_node(node["label"], point):
                 continue
             outcome = outcomes.setdefault(node["id"], {"correct": False, "incorrect": False})

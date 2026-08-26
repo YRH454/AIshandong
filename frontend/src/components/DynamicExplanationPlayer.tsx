@@ -28,6 +28,9 @@ type DynamicExplanationPlayerProps = {
   saveAsVersion?: boolean
   openImmersiveRequest?: number
   compact?: boolean
+  /** Optional hand-off into the next learning activity once this lesson ends. */
+  onContinueLearning?: () => void
+  continueLearningLabel?: string
 }
 
 type SceneVisualProps = {
@@ -328,7 +331,7 @@ function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisua
   )
 }
 
-export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, progress, onProgressChange, onCheckpoint, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true, openImmersiveRequest, compact = false }: DynamicExplanationPlayerProps) {
+export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, progress, onProgressChange, onCheckpoint, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true, openImmersiveRequest, compact = false, onContinueLearning, continueLearningLabel }: DynamicExplanationPlayerProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [answers, setAnswers] = useState<Record<string, string>>({})
@@ -695,6 +698,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   const selectedAnswer = answers[scene.id]
   const checked = Boolean(selectedAnswer)
   const completedSceneCount = presentation.scenes.filter(item => completedScenes.current.has(item.id)).length
+  const explanationComplete = completedExplanation.current || Boolean(progress?.isCompleted)
   const palette = presentation.palette || 'sage'
   const selectedMode = learningModes.find(item => item.id === learningMode) || learningModes[1]
   const showNarration = learningMode !== 'challenge' || Boolean(revealedSceneIds[scene.id])
@@ -822,12 +826,15 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
           </div>
           <strong>{tr('讲解已经编排完成', 'Your lesson is ready')}</strong>
           <p>{tr(`从“${scene.title}”开始，进入后可切换学习节奏、播放推演并完成理解检查。`, `Begin with “${scene.title}”, then change pace, play the walkthrough, and complete understanding checks.`)}</p>
-          <div className="dynamic-compact-scenes" aria-label={tr('讲解场景预览', 'Lesson scene preview')}>
+        <div className="dynamic-compact-scenes" aria-label={tr('讲解场景预览', 'Lesson scene preview')}>
             {compactSceneIndexes.map(index => <span key={presentation.scenes[index].id}>{presentation.scenes[index].title}</span>)}
             {visibleSceneIndexes.length > compactSceneIndexes.length && <span>{tr(`还有 ${visibleSceneIndexes.length - compactSceneIndexes.length} 个场景`, `${visibleSceneIndexes.length - compactSceneIndexes.length} more scenes`)}</span>}
           </div>
         </div>
-        <button className="presentation-open dynamic-compact-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr(activeIndex > 0 && !completedExplanation.current ? '继续动态讲解' : '进入动态讲解', activeIndex > 0 && !completedExplanation.current ? 'Continue lesson' : 'Open lesson')}</button>
+        <div className="dynamic-compact-actions">
+          <button className="presentation-open dynamic-compact-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr(activeIndex > 0 && !explanationComplete ? '继续动态讲解' : '进入动态讲解', activeIndex > 0 && !explanationComplete ? 'Continue lesson' : 'Open lesson')}</button>
+          {explanationComplete && onContinueLearning && <button className="dynamic-compact-continue" type="button" onClick={() => { setImmersive(false); onContinueLearning() }}><Target size={16} />{continueLearningLabel || tr('进入练习检验', 'Continue to practice')}</button>}
+        </div>
         {immersive && createPortal(<div className="interactive-presentation-layer" role="dialog" aria-modal="true">{immersiveStage}</div>, document.body)}
       </section>
     )
@@ -860,6 +867,12 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         </div>
         <button className={playing ? 'dynamic-autoplay active' : 'dynamic-autoplay'} type="button" aria-pressed={playing} onClick={() => setPlaying(value => !value)}>{playing ? <CirclePause size={15} /> : <CirclePlay size={15} />}{playing ? tr('暂停', 'Pause') : tr('自动播放', 'Autoplay')}</button>
       </div>
+
+      {explanationComplete && onContinueLearning && <div className="presentation-completion-continue">
+        <span>{tr('讲解已完成', 'Lesson complete')}</span>
+        <p>{tr('现在用一组练习把刚才的推演变成真正能用的理解。', 'Use a short practice set to turn the walkthrough into usable understanding.')}</p>
+        <button type="button" onClick={() => { setImmersive(false); onContinueLearning() }}><Target size={15} />{continueLearningLabel || tr('进入练习检验', 'Continue to practice')}</button>
+      </div>}
 
       {immersive && createPortal(<div className="interactive-presentation-layer" role="dialog" aria-modal="true">{immersiveStage}</div>, document.body)}
     </section>

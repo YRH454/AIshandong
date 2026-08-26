@@ -84,6 +84,42 @@ class KnowledgeMapWorkspaceProgressTest(unittest.TestCase):
         cleared = get_map_progress(1, 1)
         self.assertEqual(cleared["exploration"]["explored_node_ids"], [])
 
+    def test_core_node_is_not_a_trackable_progress_atom(self):
+        from app.services.map_db import get_map_progress, set_map_node_progress
+
+        content = {
+            "nodes": [
+                {"id": "core", "label": "Conditional probability", "role": "core"},
+                {"id": "n2", "label": "Given condition", "role": "branch"},
+                {"id": "n3", "label": "Sample space", "role": "detail"},
+            ],
+        }
+        self.execute(
+            "INSERT INTO learning_artifacts (id, user_id, kind, status, content) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (2, 1, "map", "saved", json.dumps(content)),
+        )
+
+        self.assertIsNone(set_map_node_progress(2, 1, "core", "mastered"))
+        updated = set_map_node_progress(2, 1, "n2", "mastered")
+        self.assertEqual(updated["summary"], {
+            "total": 2,
+            "mastered": 1,
+            "review": 0,
+            "untouched": 1,
+        })
+
+        # Old progress records for a former core should not pollute the score.
+        self.execute(
+            "INSERT INTO knowledge_map_node_progress (user_id, artifact_id, node_id, status) "
+            "VALUES (%s, %s, %s, %s)",
+            (1, 2, "core", "mastered"),
+        )
+        progress = get_map_progress(2, 1)
+        self.assertEqual(progress["summary"]["total"], 2)
+        self.assertEqual(progress["summary"]["mastered"], 1)
+        self.assertNotIn("core", progress["progress"])
+
 
 if __name__ == "__main__":
     unittest.main()

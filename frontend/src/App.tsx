@@ -85,6 +85,7 @@ import './theme-worlds.css'
 import './knowledge-map-worlds.css'
 
 const LearningHouse = lazy(() => import('./components/LearningHouse'))
+const PersonalHouse = lazy(() => import('./components/PersonalHouse'))
 
 type IconName =
   | 'archive'
@@ -315,6 +316,8 @@ type StoredDynamicExplanationJob = {
   error?: string
   errorCode?: string
   retryable?: boolean
+  learningLoopId?: string
+  learningLoopStep?: LearningLoopStep
 }
 
 const DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY = 'rhyme-dynamic-explanation-jobs'
@@ -378,6 +381,8 @@ type StoredBackgroundGenerationTask = {
   practiceMode?: PracticeMode
   sourceMapArtifactId?: number
   focusPoints?: string[]
+  learningLoopId?: string
+  learningLoopStep?: LearningLoopStep
   videoContext?: VideoSearchContext
   videoResultCount?: number
   videoSearchUrl?: string
@@ -447,6 +452,13 @@ type DocumentPackPlanningState = {
 }
 
 type LearningLoopStep = 'notes' | 'map' | 'interactive' | 'practice'
+
+type LearningLoopRuntime = {
+  opened: LearningLoopStep[]
+  completed: LearningLoopStep[]
+  updatedAt: number
+}
+
 type LearningLoopSaveTarget = {
   turnId: string
   loopId: string
@@ -771,6 +783,45 @@ const interfaceStyles: Array<{ id: InterfaceStyleId; label: string; labelEn: str
   { id: 'naturalist', label: '自然博物志', labelEn: 'Naturalist', description: '标本册、植物墨色与档案标签', descriptionEn: 'Specimen pages, botanical ink, and archive labels', icon: 'trees' },
   { id: 'manga', label: '黑白漫画', labelEn: 'Monochrome manga', description: '网点、对白框与强烈分镜', descriptionEn: 'Halftone, speech panels, and bold framing', icon: 'image' },
 ]
+
+const LEARNING_LOOP_RUNTIME_STORAGE_KEY = 'rhyme-learning-loop-runtime-v1'
+
+function readStoredLearningLoopRuntime(): Record<string, LearningLoopRuntime> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LEARNING_LOOP_RUNTIME_STORAGE_KEY) || '{}')
+    if (!raw || typeof raw !== 'object') return {}
+    return Object.fromEntries(Object.entries(raw).flatMap(([key, value]) => {
+      if (!value || typeof value !== 'object') return []
+      const candidate = value as Partial<LearningLoopRuntime>
+      const valid = (items: unknown) => Array.isArray(items)
+        ? [...new Set(items.filter(item => learningLoopSteps.some(step => step.kind === item)))] as LearningLoopStep[]
+        : []
+      const updatedAt = Number(candidate.updatedAt)
+      return [[key, {
+        opened: valid(candidate.opened),
+        completed: valid(candidate.completed),
+        updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+      }]]
+    })) as Record<string, LearningLoopRuntime>
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredLearningLoopRuntime(state: Record<string, LearningLoopRuntime>) {
+  const retained = Object.entries(state)
+    .sort(([, left], [, right]) => right.updatedAt - left.updatedAt)
+    .slice(0, 48)
+    .reduce<Record<string, LearningLoopRuntime>>((result, [key, value]) => {
+      result[key] = value
+      return result
+    }, {})
+  localStorage.setItem(LEARNING_LOOP_RUNTIME_STORAGE_KEY, JSON.stringify(retained))
+}
+
+function learningLoopRuntimeKey(turnId: string, loopId: string) {
+  return `${turnId}:${loopId}`
+}
 
 const interfaceScales: Array<{ value: InterfaceScale; label: string; description: string }> = [
   { value: 90, label: '90%', description: '紧凑' },
@@ -1190,13 +1241,18 @@ function summarizeMapProgress(
   data: KnowledgeMapData,
   progress: Record<string, Exclude<KnowledgeMapNodeStatus, 'new'>>,
 ): KnowledgeMapProgressState['summary'] {
-  const mastered = data.nodes.filter(node => progress[node.id] === 'mastered').length
-  const review = data.nodes.filter(node => progress[node.id] === 'review').length
-  return { total: data.nodes.length, mastered, review, untouched: Math.max(0, data.nodes.length - mastered - review) }
+  // The root names the subject of the map; it is not a learnable atom and has
+  // no status action in the canvas. Count only the nodes a learner can actually
+  // mark, otherwise a map can never reach a truthful 100% state.
+  const trackableNodes = data.nodes.filter(node => node.role !== 'core')
+  const mastered = trackableNodes.filter(node => progress[node.id] === 'mastered').length
+  const review = trackableNodes.filter(node => progress[node.id] === 'review').length
+  return { total: trackableNodes.length, mastered, review, untouched: Math.max(0, trackableNodes.length - mastered - review) }
 }
 
 function mapProgressLabel(data: KnowledgeMapData, progress?: KnowledgeMapProgressState, language: InterfaceLanguage = 'zh-CN'): string {
-  const summary = progress?.summary?.total === data.nodes.length ? progress.summary : summarizeMapProgress(data, progress?.progress || {})
+  const trackableCount = data.nodes.filter(node => node.role !== 'core').length
+  const summary = progress?.summary?.total === trackableCount ? progress.summary : summarizeMapProgress(data, progress?.progress || {})
   if (!summary.total) return ''
   const totalDeepDives = progress?.exploration?.total_deep_dives || data.nodes.filter(node => node.role !== 'core').length
   const explored = new Set(progress?.exploration?.explored_node_ids || []).size
@@ -1252,7 +1308,10 @@ function KnowledgeMap({
       }
   const selectedNode = data.nodes.find(node => node.id === selectedId) || core
   const nodeProgress = progress?.progress || {}
-  const summary = progress?.summary || summarizeMapProgress(data, nodeProgress)
+  const trackableCount = data.nodes.filter(node => node.role !== 'core').length
+  const summary = progress?.summary?.total === trackableCount
+    ? progress.summary
+    : summarizeMapProgress(data, nodeProgress)
   const reviewPath = data.learning_path.filter(id => mapNodeStatus(nodeProgress, id) === 'review')
   const guidedPath = reviewPath.length > 0 ? reviewPath : data.learning_path
   const guidedIndex = Math.max(0, guidedPath.indexOf(selectedNode.id))
@@ -1366,7 +1425,7 @@ function KnowledgeMap({
         <p>{selectedNode.detail || copy.fallback}</p>
         {selectedNode.example && <small><b>{copy.example}</b>{selectedNode.example}</small>}
         {selectedNode.mistake && <small className="map-mistake"><b>{copy.mistake}</b>{selectedNode.mistake}</small>}
-        {onStatusChange && (
+        {onStatusChange && selectedNode.role !== 'core' && (
           <div className="knowledge-map-status-actions" role="group" aria-label={`${selectedNode.label} ${copy.progress}`}>
             <button
               type="button"
@@ -1578,6 +1637,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('rhyme-sidebar-collapsed') === 'true')
   const [learningHouseOpen, setLearningHouseOpen] = useState(false)
+  const [personalHouseOpen, setPersonalHouseOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -1607,6 +1667,7 @@ function App() {
   const [learningLoopGeneratingTurnId, setLearningLoopGeneratingTurnId] = useState<string | null>(null)
   const learningLoopGenerationLocked = useRef(false)
   const [learningLoopActiveStepByTurn, setLearningLoopActiveStepByTurn] = useState<Record<string, LearningLoopStep>>({})
+  const [learningLoopRuntimeByKey, setLearningLoopRuntimeByKey] = useState<Record<string, LearningLoopRuntime>>(() => readStoredLearningLoopRuntime())
   const [immersiveOpenRequest, setImmersiveOpenRequest] = useState<{ artifactId: string; revision: number } | null>(null)
   const [mapProgressByArtifactId, setMapProgressByArtifactId] = useState<Record<string, KnowledgeMapProgressState>>({})
   const mapProgressFetches = useRef(new Set<string>())
@@ -1855,6 +1916,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('rhyme-learning-guide-open', String(learningGuideOpen))
   }, [learningGuideOpen])
+
+  useEffect(() => {
+    writeStoredLearningLoopRuntime(learningLoopRuntimeByKey)
+  }, [learningLoopRuntimeByKey])
 
   useEffect(() => {
     if (!practiceRun) return
@@ -2473,7 +2538,14 @@ function App() {
   const hasGuideArtifact = (kind: ArtifactKind) => learningGuideArtifacts.some(artifact => (
     artifact.kind === kind && artifact.status !== 'generating' && artifact.status !== 'error'
   ))
-  const hasGuideVideo = Boolean(learningGuideTurn && inlineVideoSearches[learningGuideTurn.id]?.results.length)
+  const guideInteractiveArtifact = learningGuideArtifacts.find(artifact => (
+    artifact.kind === 'interactive' && artifact.status !== 'generating' && artifact.status !== 'error'
+  ))
+  const guidePracticeArtifact = learningGuideArtifacts.find(artifact => (
+    artifact.kind === 'practice' && artifact.status !== 'generating' && artifact.status !== 'error'
+  ))
+  const guideInteractiveComplete = Boolean(guideInteractiveArtifact && presentationProgressByArtifactId[guideInteractiveArtifact.id]?.is_completed)
+  const guidePracticeComplete = Boolean(guidePracticeArtifact && (practiceAttemptCounts[guidePracticeArtifact.id] || 0) > 0)
   const learningGuideSteps = learningGuideTurn ? [
     {
       id: 'notes',
@@ -2492,20 +2564,33 @@ function App() {
       action: () => runKnowledgeMapGeneration(learningGuideTurn.id),
     },
     {
-      id: 'video',
-      label: t('课程视频', 'Course video'),
-      detail: t('补充一段可直接观看的讲解', 'Add a focused video explanation'),
-      icon: Video,
-      complete: hasGuideVideo,
-      action: () => { setView('chat'); openVideoSearch(learningGuideTurn.id) },
+      id: 'interactive',
+      label: t('动态讲解', 'Interactive explanation'),
+      detail: t('用可播放的推演把过程看明白', 'Use a playable walkthrough to make the process clear'),
+      icon: Presentation,
+      complete: guideInteractiveComplete,
+      action: () => {
+        if (!guideInteractiveArtifact) {
+          void runDynamicExplanationGeneration(learningGuideTurn.id)
+          return
+        }
+        setView('chat')
+        window.requestAnimationFrame(() => setImmersiveOpenRequest({ artifactId: guideInteractiveArtifact.id, revision: Date.now() }))
+      },
     },
     {
       id: 'practice',
       label: t('练习检验', 'Practice check'),
       detail: t('用题目确认是否真正掌握', 'Use questions to verify mastery'),
       icon: ClipboardCheck,
-      complete: hasGuideArtifact('practice'),
-      action: () => runPracticeGeneration(learningGuideTurn.id),
+      complete: guidePracticeComplete,
+      action: () => {
+        if (guidePracticeArtifact) {
+          void openPractice(guidePracticeArtifact)
+          return
+        }
+        void runPracticeGeneration(learningGuideTurn.id)
+      },
     },
   ] : []
   const nextLearningGuideStep = learningGuideSteps.find(step => !step.complete)
@@ -2528,6 +2613,63 @@ function App() {
     const templateLabel = documentTemplateLabel(artifact)
     const base = artifact ? artifactLabel(artifact.kind, '学习文档') : t('学习文档', 'Learning document')
     return templateLabel ? `${base} · ${templateLabel}` : base
+  }
+
+  function updateLearningLoopRuntime(
+    turnId: string,
+    loopId: string,
+    update: (runtime: LearningLoopRuntime) => LearningLoopRuntime,
+  ) {
+    const key = learningLoopRuntimeKey(turnId, loopId)
+    setLearningLoopRuntimeByKey(current => {
+      const base = current[key] || { opened: [], completed: [], updatedAt: Date.now() }
+      const next = update(base)
+      const normalise = (steps: LearningLoopStep[]) => [...new Set(steps.filter(step => learningLoopSteps.some(item => item.kind === step)))]
+      return {
+        ...current,
+        [key]: {
+          opened: normalise(next.opened),
+          completed: normalise(next.completed),
+          updatedAt: Date.now(),
+        },
+      }
+    })
+  }
+
+  function markLearningLoopStepOpened(turnId: string, loopId: string, step: LearningLoopStep) {
+    updateLearningLoopRuntime(turnId, loopId, runtime => ({
+      ...runtime,
+      opened: runtime.opened.includes(step) ? runtime.opened : [...runtime.opened, step],
+    }))
+  }
+
+  function markLearningLoopStepCompleted(turnId: string, loopId: string, step: LearningLoopStep) {
+    updateLearningLoopRuntime(turnId, loopId, runtime => ({
+      ...runtime,
+      opened: runtime.opened.includes(step) ? runtime.opened : [...runtime.opened, step],
+      completed: runtime.completed.includes(step) ? runtime.completed : [...runtime.completed, step],
+    }))
+  }
+
+  function findLearningLoopTurn(artifact: Artifact) {
+    return turns.find(turn => turn.artifacts.some(candidate => (
+      candidate.id === artifact.id
+      || (Boolean(artifact.backendId) && candidate.backendId === artifact.backendId)
+      || (Boolean(artifact.learningLoopId)
+        && candidate.learningLoopId === artifact.learningLoopId
+        && candidate.learningLoopStep === artifact.learningLoopStep)
+    )))
+  }
+
+  function markLearningLoopArtifactCompleted(artifact: Artifact, turnId?: string) {
+    if (!artifact.learningLoopId || !artifact.learningLoopStep) return
+    const ownerTurnId = turnId || findLearningLoopTurn(artifact)?.id
+    if (ownerTurnId) markLearningLoopStepCompleted(ownerTurnId, artifact.learningLoopId, artifact.learningLoopStep)
+  }
+
+  function isMapReviewComplete(data: KnowledgeMapData, progress?: KnowledgeMapProgressState) {
+    const summary = summarizeMapProgress(data, progress?.progress || {})
+    return summary.total > 0 && summary.mastered + summary.review >= summary.total
   }
 
   function recordSavedArtifactActivity(artifact: Artifact, activityType = 'opened', activityData: Record<string, unknown> = {}) {
@@ -2556,13 +2698,11 @@ function App() {
   }
 
   function persistInteractivePresentationProgress(artifact: Artifact, progress: DynamicExplanationProgress) {
-    if (!artifact.saved || !artifact.backendId) return
-
     const previous = presentationProgressByArtifactId[artifact.id]
     const token = (presentationProgressSaveTokens.current[artifact.id] || 0) + 1
     presentationProgressSaveTokens.current[artifact.id] = token
     const optimistic: InteractivePresentationProgress = {
-      artifact_id: artifact.backendId,
+      artifact_id: artifact.backendId || 0,
       active_scene_id: progress.activeSceneId,
       completed_scene_ids: progress.completedSceneIds,
       visited_scene_ids: progress.visitedSceneIds || [progress.activeSceneId],
@@ -2571,6 +2711,11 @@ function App() {
       checkpoints: previous?.checkpoints || {},
     }
     setPresentationProgressByArtifactId(current => ({ ...current, [artifact.id]: optimistic }))
+
+    // Temporary artifacts still need to remember completion while the learner
+    // moves through this chat. Saved artifacts additionally sync that state to
+    // the library so it survives a later visit.
+    if (!artifact.saved || !artifact.backendId) return
 
     void updateInteractivePresentationProgress(artifact.backendId, LOCAL_USER_ID, {
       active_scene_id: progress.activeSceneId,
@@ -3496,7 +3641,11 @@ function App() {
     const template = setup.template
     const templateLabel = documentTemplateById[template].label
     const loadingId = replaceArtifactId || `document-generating-${Date.now()}`
+    const replacedArtifact = replaceArtifactId
+      ? turn.artifacts.find(artifact => artifact.id === replaceArtifactId)
+      : undefined
     const loadingArtifact: Artifact = {
+      ...replacedArtifact,
       id: loadingId,
       kind: 'notes',
       title: `正在生成${templateLabel}…`,
@@ -3554,6 +3703,8 @@ function App() {
         topic: loadingArtifact.topic,
         title: `正在生成${templateLabel}…`,
         documentTemplate: template,
+        learningLoopId: loadingArtifact.learningLoopId,
+        learningLoopStep: loadingArtifact.learningLoopStep,
         progress: {
           label: queued.job.status === 'queued' ? '正在等待生成' : '正在整理学习文档',
           message: '任务已经在后台运行，你可以随时从后台任务查看进度。',
@@ -3577,6 +3728,8 @@ function App() {
         topic: loadingArtifact.topic,
         title: `${templateLabel}暂未完成`,
         documentTemplate: template,
+        learningLoopId: loadingArtifact.learningLoopId,
+        learningLoopStep: loadingArtifact.learningLoopStep,
         progress: { label: '任务没有进入后台队列', message, percent: 0 },
       })
       setTurns(current => current.map(item => item.id === turn.id
@@ -4002,7 +4155,10 @@ function App() {
         latestProgressSignature = signature
         patchBackgroundGenerationTask(task.loadingId, { progress })
       })
-      const artifact = artifactFromRecord(data.artifact)
+      const generatedArtifact = artifactFromRecord(data.artifact)
+      const artifact = task.learningLoopId && task.learningLoopStep
+        ? { ...generatedArtifact, learningLoopId: task.learningLoopId, learningLoopStep: task.learningLoopStep }
+        : generatedArtifact
       patchBackgroundGenerationTask(task.loadingId, {
         status: 'completed',
         title: artifact.title,
@@ -4107,7 +4263,10 @@ function App() {
         const progress = job.progress as DynamicExplanationJobProgress | undefined
         if (progress?.label) updateDynamicExplanationProgress(task.turnId, task.loadingId, progress)
       })
-      const artifact = artifactFromRecord(data.artifact)
+      const generatedArtifact = artifactFromRecord(data.artifact)
+      const artifact = task.learningLoopId && task.learningLoopStep
+        ? { ...generatedArtifact, learningLoopId: task.learningLoopId, learningLoopStep: task.learningLoopStep }
+        : generatedArtifact
       removeStoredDynamicExplanationJob(task.loadingId)
       setTurns(current => current.map(item => item.id === task.turnId
         ? { ...item, artifacts: item.artifacts.map(item => item.id === task.loadingId ? artifact : item) }
@@ -4223,6 +4382,8 @@ function App() {
         sessionId,
         loadingId,
         createdAt: Date.now(),
+        learningLoopId: loadingArtifact.learningLoopId,
+        learningLoopStep: loadingArtifact.learningLoopStep,
       }
       writeStoredDynamicExplanationJob(task)
       await monitorDynamicExplanationJob(task, queued.job)
@@ -4353,6 +4514,7 @@ function App() {
     setDocumentSetup(null)
     setPracticeSetupTurnId(null)
     setLearningLoopActiveStepByTurn(current => ({ ...current, [turnId]: 'notes' }))
+    updateLearningLoopRuntime(turnId, loopId, () => ({ opened: [], completed: [], updatedAt: Date.now() }))
     setNotice('正在生成学习闭环：讲义、图解和动态讲解会同时开始，练习将在图解完成后接入。')
     setTurns(current => current.map(item => item.id === turnId
       ? { ...item, artifacts: [...item.artifacts, ...placeholders] }
@@ -4409,6 +4571,7 @@ function App() {
       setNotice('这一环暂未生成成功，可以在资料卡片中单独重新生成。')
       return
     }
+    if (artifact.learningLoopId) markLearningLoopStepOpened(turnId, artifact.learningLoopId, step)
     setLearningLoopActiveStepByTurn(current => ({ ...current, [turnId]: step }))
     if (step === 'notes') {
       setExpandedArtifactId(artifact.id)
@@ -4424,6 +4587,28 @@ function App() {
       return
     }
     void openPractice(artifact)
+  }
+
+  function retryLearningLoopStep(turnId: string, artifact?: Artifact) {
+    if (!artifact || artifact.status !== 'error') return
+    if (artifact.learningLoopStep === 'map') {
+      void retryLearningLoopMap(turnId, artifact)
+      return
+    }
+    if (artifact.learningLoopStep === 'practice') {
+      void retryLearningLoopPractice(turnId, artifact)
+      return
+    }
+    if (artifact.learningLoopStep === 'interactive') {
+      void runDynamicExplanationGeneration(turnId, artifact.id)
+      return
+    }
+    if (artifact.learningLoopStep === 'notes') {
+      void runDocumentGeneration({
+        turnId,
+        template: artifact.documentTemplate || 'system_guide',
+      }, artifact.id)
+    }
   }
 
   async function retryLearningLoopMap(turnId: string, failedArtifact: Artifact) {
@@ -4533,37 +4718,80 @@ function App() {
       artifact.learningLoopId === latestLoopId && artifact.learningLoopStep === step.kind
     )))
     const readyCount = artifacts.filter(artifact => artifact && artifact.status !== 'generating' && artifact.status !== 'error').length
+    const runtime = learningLoopRuntimeByKey[learningLoopRuntimeKey(turn.id, latestLoopId)] || { opened: [], completed: [], updatedAt: 0 }
     const activeStep = learningLoopActiveStepByTurn[turn.id]
-    const nextArtifact = artifacts.find(artifact => artifact && artifact.status !== 'generating' && artifact.status !== 'error')
-    const nextStep = learningLoopSteps.find(step => step.kind === nextArtifact?.learningLoopStep)
+    const mapArtifact = artifacts.find(artifact => artifact?.learningLoopStep === 'map')
+    const mapData = mapArtifact ? parseKnowledgeMap(mapArtifact.content) : null
+    const mapComplete = Boolean(mapData && isMapReviewComplete(mapData, mapProgressByArtifactId[mapArtifact!.id]))
+    const interactiveArtifact = artifacts.find(artifact => artifact?.learningLoopStep === 'interactive')
+    const interactiveComplete = Boolean(interactiveArtifact && presentationProgressByArtifactId[interactiveArtifact.id]?.is_completed)
+    const practiceArtifact = artifacts.find(artifact => artifact?.learningLoopStep === 'practice')
+    const practiceComplete = Boolean(practiceArtifact && (practiceAttemptCounts[practiceArtifact.id] || 0) > 0)
+    const completedByStep: Record<LearningLoopStep, boolean> = {
+      notes: runtime.completed.includes('notes'),
+      map: runtime.completed.includes('map') || mapComplete,
+      interactive: runtime.completed.includes('interactive') || interactiveComplete,
+      practice: runtime.completed.includes('practice') || practiceComplete,
+    }
+    const completedCount = learningLoopSteps.filter(step => completedByStep[step.kind]).length
+    const nextEntry = learningLoopSteps
+      .map((step, index) => ({ step, artifact: artifacts[index] }))
+      .find(entry => entry.artifact && !completedByStep[entry.step.kind])
+    const nextArtifact = nextEntry?.artifact
+    const nextStep = nextEntry?.step
     const canSaveLoop = readyCount === learningLoopSteps.length
     const unsavedCount = artifacts.filter(artifact => artifact && !artifact.saved).length
     const loopPersisted = artifacts.every(artifact => artifact?.saved && artifact.learningLoopId)
+    const activeArtifact = activeStep
+      ? artifacts.find(artifact => artifact?.learningLoopStep === activeStep)
+      : undefined
+    const canMarkActiveStep = Boolean(
+      activeStep
+      && activeArtifact
+      && activeArtifact.status !== 'generating'
+      && activeArtifact.status !== 'error'
+      && !completedByStep[activeStep]
+      && runtime.opened.includes(activeStep),
+    )
+    const openNextStep = () => {
+      if (!nextStep || !nextArtifact) return
+      if (nextArtifact.status === 'error') {
+        retryLearningLoopStep(turn.id, nextArtifact)
+        return
+      }
+      openLearningLoopStep(turn.id, nextStep.kind, nextArtifact)
+    }
 
     return (
       <section className="learning-loop" aria-label={t('四步学习闭环', 'Four-step learning loop')}>
         <header className="learning-loop-head">
-          <div><b>{t('一套可继续学习的资料', 'One connected learning set')}</b><p>{t('按顺序完成四步，练习结果会回写到关联图解。', 'Move through the four steps. Practice results return to the linked map.')}</p></div>
-          <span>{t(`${readyCount}/4 已就绪`, `${readyCount}/4 ready`)}</span>
+          <div><b>{t('一套可继续学习的资料', 'One connected learning set')}</b><p>{t('从资料理解到练习检验；薄弱点会回写图解，下次可从未完成处继续。', 'Read, connect, play, and practise. Weak points return to the map, and you can resume from the unfinished step.')}</p></div>
+          <span>{t(`${completedCount}/4 已完成`, `${completedCount}/4 complete`)}</span>
         </header>
         <div className="learning-loop-steps">
           {learningLoopSteps.map((step, index) => {
             const artifact = artifacts[index]
             const isReady = Boolean(artifact && artifact.status !== 'generating' && artifact.status !== 'error')
+            const isCompleted = completedByStep[step.kind]
+            const isOpened = runtime.opened.includes(step.kind)
             const status = artifact?.status === 'error'
-              ? t('未完成', 'Unavailable')
+              ? t('重新生成', 'Retry')
               : artifact?.status === 'generating'
                 ? t('生成中', 'Building')
-                : isReady ? t('可开始', 'Ready') : t('等待中', 'Waiting')
+                : isCompleted ? t('已完成', 'Complete')
+                  : isOpened ? t('进行中', 'In progress')
+                    : isReady ? t('待开始', 'Up next') : t('等待中', 'Waiting')
             return (
               <button
-                className={`${activeStep === step.kind ? 'active ' : ''}${artifact?.status === 'error' ? 'failed' : ''}`}
+                className={`${activeStep === step.kind ? 'active ' : ''}${isCompleted ? 'completed ' : ''}${artifact?.status === 'error' ? 'failed' : ''}`}
                 type="button"
                 key={step.kind}
-                disabled={!isReady}
-                onClick={() => openLearningLoopStep(turn.id, step.kind, artifact)}
+                disabled={!isReady && artifact?.status !== 'error'}
+                onClick={() => artifact?.status === 'error'
+                  ? retryLearningLoopStep(turn.id, artifact)
+                  : openLearningLoopStep(turn.id, step.kind, artifact)}
               >
-                <i>{index + 1}</i>
+                <i>{isCompleted ? <Check size={12} aria-hidden="true" /> : index + 1}</i>
                 <span><b>{t(step.label, step.labelEn)}</b><small>{t(step.detail, step.detailEn)}</small></span>
                 <em>{status}</em>
               </button>
@@ -4571,8 +4799,18 @@ function App() {
           })}
         </div>
         <footer className="learning-loop-foot">
-          <p>{t('完成练习后，系统会标记图解中的薄弱节点；把四份资料保存到同一主题后，资料库会继续推荐下一步。', 'After practice, weak map nodes are marked. Save the four materials to one topic and the library will recommend the next step.')}</p>
+          <p>{completedCount === learningLoopSteps.length
+            ? t('这一轮已完成：结果已留在图解中。保存整套资料后，资料库会基于薄弱点安排下一次复习。', 'This round is complete. Its result stays with the map; save the set and the library will plan the next review around weak points.')
+            : nextStep
+              ? t(`下一步：${nextStep.label}${nextArtifact?.status === 'error' ? '需要重新生成' : '。'}`, `Next: ${nextStep.labelEn}${nextArtifact?.status === 'error' ? ' needs a retry.' : '.'}`)
+              : t('正在等待剩余资料就绪。', 'Waiting for the remaining material to be ready.')}</p>
           <div className="learning-loop-foot-actions">
+            {canMarkActiveStep && activeStep && (
+              <button className="learning-loop-complete" type="button" onClick={() => {
+                markLearningLoopStepCompleted(turn.id, latestLoopId, activeStep)
+                setNotice(t(`${learningLoopSteps.find(step => step.kind === activeStep)?.label || '当前步骤'}已标记完成，已为你切到下一步。`, `${learningLoopSteps.find(step => step.kind === activeStep)?.labelEn || 'This step'} is complete. Your next step is ready.`))
+              }}><Check size={14} />{t('标记本步完成', 'Mark step complete')}</button>
+            )}
             <button className="learning-loop-save" type="button" disabled={!canSaveLoop} onClick={() => {
               if (!loopPersisted) {
                 openLearningLoopSave(turn)
@@ -4586,9 +4824,26 @@ function App() {
             }}>
               <Save size={14} />{loopPersisted ? t('在资料库中查看', 'View in library') : unsavedCount > 0 ? t(`保存整套资料 (${unsavedCount})`, `Save full set (${unsavedCount})`) : t('整理为学习闭环', 'Organize as a learning loop')}
             </button>
-            <button className="learning-loop-start" type="button" disabled={!nextArtifact || !nextStep} onClick={() => openLearningLoopStep(turn.id, nextStep!.kind, nextArtifact)}>
-              <Sparkles size={15} />{nextStep ? t(`从${nextStep.label}开始`, `Start with ${nextStep.labelEn}`) : t('正在准备', 'Preparing')}
-            </button>
+            {completedCount === learningLoopSteps.length ? (
+              <button
+                className="learning-loop-start"
+                type="button"
+                disabled={!artifacts[0] || artifacts[0].status === 'generating' || artifacts[0].status === 'error'}
+                onClick={() => openLearningLoopStep(turn.id, 'notes', artifacts[0])}
+              >
+                <RotateCcw size={15} />{t('从头复盘', 'Review from the start')}
+              </button>
+            ) : (
+              <button className="learning-loop-start" type="button" disabled={!nextArtifact || !nextStep || nextArtifact.status === 'generating'} onClick={openNextStep}>
+                <Sparkles size={15} />{nextStep
+                  ? nextArtifact?.status === 'error'
+                    ? t(`重新生成${nextStep.label}`, `Retry ${nextStep.labelEn}`)
+                    : runtime.opened.includes(nextStep.kind)
+                      ? t(`继续${nextStep.label}`, `Continue ${nextStep.labelEn}`)
+                      : t(`开始${nextStep.label}`, `Start ${nextStep.labelEn}`)
+                  : t('正在准备', 'Preparing')}
+              </button>
+            )}
           </div>
         </footer>
       </section>
@@ -4658,6 +4913,10 @@ function App() {
       setNotice('这份图解内容无法读取，暂时不能记录进度。')
       return
     }
+    if (mapData.nodes.find(node => node.id === nodeId)?.role === 'core') {
+      setNotice('主题核心用于定位整张图，不计入需要标记的学习节点。')
+      return
+    }
     const previous = mapProgressByArtifactId[artifact.id]
     const nextProgress = { ...(previous?.progress || {}) }
     if (status === 'new') delete nextProgress[nodeId]
@@ -4667,12 +4926,14 @@ function App() {
       summary: summarizeMapProgress(mapData, nextProgress),
       exploration: previous?.exploration,
     }
+    if (isMapReviewComplete(mapData, optimistic)) markLearningLoopArtifactCompleted(artifact)
     const savingKey = `${artifact.id}:${nodeId}`
     setMapProgressByArtifactId(current => ({ ...current, [artifact.id]: optimistic }))
     setMapProgressSavingKey(savingKey)
     try {
       const updated = await updateKnowledgeMapNodeProgress(artifact.backendId, LOCAL_USER_ID, nodeId, status)
       setMapProgressByArtifactId(current => ({ ...current, [artifact.id]: updated }))
+      if (isMapReviewComplete(mapData, updated)) markLearningLoopArtifactCompleted(artifact)
       if (libraryTopic?.course === artifact.course && libraryTopic?.topic === artifact.topic) {
         void refreshLibraryTopicState()
       }
@@ -4964,6 +5225,12 @@ function App() {
     }
     if (nextStep.action === 'start_practice') {
       await openPractice(artifact)
+      return
+    }
+    if (nextStep.action === 'continue_explanation') {
+      setLibraryPreviewId(artifact.id)
+      setView('library')
+      window.requestAnimationFrame(() => setImmersiveOpenRequest({ artifactId: artifact.id, revision: Date.now() }))
       return
     }
     openLibraryArtifact(artifact)
@@ -5665,10 +5932,16 @@ function App() {
         topicMastery: data.topic_mastery,
       } : current)
       setPracticeAttemptCounts(current => ({ ...current, [practiceRun.artifact.id]: (current[practiceRun.artifact.id] || 0) + 1 }))
+      markLearningLoopArtifactCompleted(practiceRun.artifact)
       if (data.map_progress && practiceRun.artifact.sourceMapArtifactId) {
         const sourceMap = mapArtifacts.find(item => item.backendId === practiceRun.artifact.sourceMapArtifactId)
         if (sourceMap) {
-          setMapProgressByArtifactId(current => ({ ...current, [sourceMap.id]: data.map_progress as KnowledgeMapProgressState }))
+          const sourceMapProgress = data.map_progress as KnowledgeMapProgressState
+          setMapProgressByArtifactId(current => ({ ...current, [sourceMap.id]: sourceMapProgress }))
+          const sourceMapData = parseKnowledgeMap(sourceMap.content)
+          if (sourceMapData && isMapReviewComplete(sourceMapData, sourceMapProgress)) {
+            markLearningLoopArtifactCompleted(sourceMap)
+          }
         }
       }
       void refreshTopicReviews()
@@ -6589,6 +6862,14 @@ function App() {
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
                         const dynamicExplanation = artifact.kind === 'interactive' ? parseDynamicExplanation(artifact.content) : null
                         const mapProgress = mapProgressByArtifactId[artifact.id]
+                        const loopPracticeArtifact = artifact.learningLoopId
+                          ? turn.artifacts.find(item => (
+                            item.learningLoopId === artifact.learningLoopId
+                            && item.learningLoopStep === 'practice'
+                            && item.status !== 'generating'
+                            && item.status !== 'error'
+                          ))
+                          : undefined
                         return (
                           <article id={`artifact-${artifact.id}`} className={`artifact-card artifact-${artifact.status || 'draft'} ${artifact.kind === 'interactive' ? 'artifact-dynamic' : ''} ${artifact.kind !== 'map' && artifact.kind !== 'interactive' && expandedArtifactId === artifact.id ? 'artifact-expanded' : ''}`} key={artifact.id}>
                             <div className="artifact-head">
@@ -6619,12 +6900,18 @@ function App() {
                                 onCheckpoint={(scene, answer) => persistInteractivePresentationCheckpoint(artifact, scene, answer)}
                                 onSceneStarted={(scene, index) => recordSavedArtifactActivity(artifact, 'scene_started', { scene_id: scene.id, scene_index: index + 1 })}
                                 onSceneCompleted={(scene, index) => recordSavedArtifactActivity(artifact, 'scene_completed', { scene_id: scene.id, scene_index: index + 1 })}
-                                onCompleted={() => recordSavedArtifactActivity(artifact, 'completed', { scene_count: dynamicExplanation.scenes.length })}
+                                onCompleted={() => {
+                                  recordSavedArtifactActivity(artifact, 'completed', { scene_count: dynamicExplanation.scenes.length })
+                                  markLearningLoopArtifactCompleted(artifact, turn.id)
+                                  if (artifact.learningLoopId) setNotice('动态讲解已完成，下一步可以进入练习检验。')
+                                }}
                                 onSavePresentation={presentation => persistEditedInteractivePresentation(artifact, presentation)}
                                 onRegenerateScene={(presentation, scene) => remakeInteractivePresentationScene(artifact, presentation, scene)}
                                 saving={presentationEditingArtifactId === artifact.id}
                                 saveAsVersion={artifact.saved}
                                 openImmersiveRequest={immersiveOpenRequest?.artifactId === artifact.id ? immersiveOpenRequest.revision : undefined}
+                                onContinueLearning={loopPracticeArtifact ? () => openLearningLoopStep(turn.id, 'practice', loopPracticeArtifact) : undefined}
+                                continueLearningLabel={t('进入练习检验', 'Continue to practice')}
                                 compact
                               />
                             )}
@@ -6674,12 +6961,16 @@ function App() {
                                     turn.id,
                                     artifact.status === 'error' ? artifact.id : undefined,
                                   )
+                                  else if (artifact.status === 'error' && artifact.learningLoopId) void runDocumentGeneration({
+                                    turnId: turn.id,
+                                    template: artifact.documentTemplate || 'system_guide',
+                                  }, artifact.id)
                                   else setDocumentSetup({
                                     turnId: turn.id,
                                     template: artifact.documentTemplate || recommendDocumentTemplate(turn.prompt, turn.response),
                                   })
                                 }}>{artifact.status === 'error'
-                                  ? artifact.kind === 'notes' ? '重新设置' : '立即重试'
+                                  ? artifact.kind === 'notes' && !artifact.learningLoopId ? '重新设置' : '立即重试'
                                   : '重新生成'}</button>
                                 {artifact.status !== 'error' && (
                                   <button className="artifact-save" type="button" onClick={() => {
@@ -7017,6 +7308,7 @@ function App() {
                               onRegenerateScene={versionPreview ? undefined : (presentation, scene) => remakeInteractivePresentationScene(readerArtifact, presentation, scene)}
                               saving={presentationEditingArtifactId === readerArtifact.id}
                               saveAsVersion={readerArtifact.saved}
+                              openImmersiveRequest={immersiveOpenRequest?.artifactId === readerArtifact.id ? immersiveOpenRequest.revision : undefined}
                             />
                           : <p>这份动态讲解内容无法读取，请回到来源对话重新生成。</p>
                         : readerArtifact?.kind === 'external_video'
@@ -8313,7 +8605,17 @@ function App() {
 
       {learningHouseOpen && (
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 3D 学习屋…', 'Opening 3D learning house…')}</div>}>
-          <LearningHouse language={interfaceLanguage} onExit={() => setLearningHouseOpen(false)} />
+          <LearningHouse
+            language={interfaceLanguage}
+            onExit={() => { setPersonalHouseOpen(false); setLearningHouseOpen(false) }}
+            onOpenPersonalRoom={() => setPersonalHouseOpen(true)}
+          />
+        </Suspense>
+      )}
+
+      {personalHouseOpen && (
+        <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 EGOIST 小屋…', 'Opening EGOIST room…')}</div>}>
+          <PersonalHouse onExit={() => setPersonalHouseOpen(false)} returnTo={learningHouseOpen ? 'learning-house' : 'rhyme'} />
         </Suspense>
       )}
 

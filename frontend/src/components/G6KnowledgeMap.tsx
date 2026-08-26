@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Graph, NodeEvent, treeToGraphData } from '@antv/g6'
+import { Graph, GraphEvent, NodeEvent, treeToGraphData } from '@antv/g6'
 import {
   ArrowLeftRegular,
   ArrowResetRegular,
@@ -74,7 +74,7 @@ type GraphProfile = {
   usesTree: boolean
   layout?: Record<string, unknown>
   visual:
-    | 'cards' | 'dots' | 'compact' | 'fishbone' | 'index' | 'flow' | 'decision' | 'tokens' | 'bubbles'
+    | 'mindmap' | 'dendrogram' | 'dots' | 'compact' | 'fishbone' | 'index' | 'flow' | 'decision' | 'tokens' | 'bubbles'
     | 'grid' | 'arc' | 'timeline' | 'split' | 'org' | 'radial-tree' | 'outline' | 'funnel'
     | 'cycle' | 'lanes' | 'stairs' | 'orbit' | 'honeycomb' | 'bipartite' | 'chord'
     | 'quadrant' | 'pyramid' | 'spectrum' | 'heatmap'
@@ -90,7 +90,14 @@ type KnowledgeMapViewId =
 
 type FallbackNode = { id: string; label: string; color: string; x: number; y: number }
 type FallbackLink = { id: string; from: { x: number; y: number }; to: { x: number; y: number }; color: string }
-type FallbackMap = { core: FallbackNode; nodes: FallbackNode[]; links: FallbackLink[] }
+type FallbackMap = {
+  core: FallbackNode
+  nodes: FallbackNode[]
+  links: FallbackLink[]
+  guideNodes: FallbackNode[]
+}
+type MotionPoint = { x: number; y: number }
+type MotionSegment = { id: string; from: MotionPoint; to: MotionPoint; color: string }
 
 const branchPalette = ['#405ed8', '#5f8ee6', '#2e9f93', '#d17b4b', '#a65bc6', '#d05375', '#7c8b4d', '#7f72d6']
 
@@ -248,9 +255,16 @@ function NodeGlyph({ node }: { node: KnowledgeMapNode }) {
 
 function profileFor(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en'): GraphProfile {
   const profiles: Record<KnowledgeMapViewId, Omit<GraphProfile, 'label' | 'id'>> = {
-    mindmap: { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'cubic-horizontal', usesTree: true, visual: 'cards', layout: { type: 'mindmap', direction: 'H', getWidth: () => 164, getHeight: () => 52, getHGap: () => 56, getVGap: () => 28, getSide: (_child: unknown, index: number) => index % 2 === 0 ? 'left' : 'right' } },
-    dendrogram: { semanticType: 'concept_tree', nodeType: 'circle', edgeType: 'cubic-horizontal', usesTree: true, visual: 'dots', layout: { type: 'dendrogram', direction: 'LR', nodeSep: 42, rankSep: 205 } },
-    'compact-box': { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'cubic-horizontal', usesTree: true, visual: 'compact', layout: { type: 'compact-box', direction: 'LR', getWidth: () => 88, getHeight: () => 34, getVGap: () => 12, getHGap: () => 86 } },
+    // Overview maps commonly contain only 8–10 atoms. Give those branches
+    // enough vertical room to use the canvas instead of compressing them into
+    // a thin centre strip that reads like a slide rather than a map.
+    // These three views deliberately own three different graph grammars. The
+    // generated payload often gives every atom the same parent; using a tree
+    // layout for all of them made "different" choices collapse into the same
+    // root-and-list drawing.
+    mindmap: { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'cubic-horizontal', usesTree: false, visual: 'mindmap' },
+    dendrogram: { semanticType: 'concept_tree', nodeType: 'circle', edgeType: 'cubic-horizontal', usesTree: false, visual: 'dendrogram' },
+    'compact-box': { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'compact' },
     // The upstream fishbone layout is fragile when generated knowledge atoms
     // contain cross-links. A fixed fishbone grammar keeps the official visual
     // language while accepting any valid knowledge payload.
@@ -261,7 +275,9 @@ function profileFor(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en'): Graph
     'outline-tree': { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'outline' },
     'dagre-lr': { semanticType: 'process_flow', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'flow', layout: { type: 'antv-dagre', rankdir: 'LR', nodesep: 46, ranksep: 92, align: 'UL', controlPoints: true } },
     'dagre-tb': { semanticType: 'decision_map', nodeType: 'diamond', edgeType: 'polyline', usesTree: false, visual: 'decision', layout: { type: 'dagre', rankdir: 'TB', nodesep: 72, ranksep: 88, align: 'UL' } },
-    snake: { semanticType: 'process_flow', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'flow', layout: { type: 'snake', padding: 72, cols: 4, rowGap: 82, colGap: 92 } },
+    // Keep the snake view on a deterministic two-row path. The third-party
+    // layout can collapse a sparse deep map into one enormous title node.
+    snake: { semanticType: 'process_flow', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'flow' },
     'timeline-river': { semanticType: 'timeline_map', nodeType: 'circle', edgeType: 'cubic-horizontal', usesTree: false, visual: 'timeline' },
     'funnel-flow': { semanticType: 'process_flow', nodeType: 'rect', edgeType: 'cubic-vertical', usesTree: false, visual: 'funnel' },
     'cycle-loop': { semanticType: 'process_flow', nodeType: 'circle', edgeType: 'quadratic', usesTree: false, visual: 'cycle' },
@@ -270,10 +286,13 @@ function profileFor(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en'): Graph
     circular: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'circular', nodeSize: 42, nodeSpacing: 56, ordering: 'topology' } },
     concentric: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'concentric', nodeSize: 52, minNodeSpacing: 42, maxLevelDiff: 0.5, sortBy: 'degree', preventOverlap: true } },
     radial: { semanticType: 'lab_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'radial', nodeSize: 42, unitRadius: 112, linkDistance: 170, preventOverlap: true, strictRadial: true } },
-    force: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'force', preventOverlap: true, linkDistance: 150, nodeStrength: -65, collideStrength: 0.9, animation: false, maxIteration: 120, minMovement: 1.1 } },
-    'd3-bubble': { semanticType: 'lab_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'd3-force', collide: { radius: 54, strength: 0.85 }, manyBody: { strength: 34 }, link: { distance: 140 }, animation: false, alphaDecay: .12, alphaMin: .02 } },
-    fruchterman: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'fruchterman', gravity: 6, speed: 5, clustering: true, nodeClusterBy: 'cluster', clusterGravity: 18, animation: false, maxIteration: 140, minMovement: 1.1 } },
-    atlas2: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'dots', layout: { type: 'force-atlas2', preventOverlap: true, kr: 18, kg: 4, animation: false, maxIteration: 150, minMovement: 1.1 } },
+    // Small generated maps need deterministic spacing. The physics layouts
+    // repeatedly converged into a tight knot with overlapping labels, so the
+    // four relation views below keep their own readable network grammars.
+    force: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens' },
+    'd3-bubble': { semanticType: 'lab_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles' },
+    fruchterman: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles' },
+    atlas2: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'dots' },
     mds: { semanticType: 'comparison_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'dots', layout: { type: 'mds', nodeSize: 34, linkDistance: 125 } },
     orbit: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'orbit' },
     honeycomb: { semanticType: 'lab_map', nodeType: 'diamond', edgeType: 'line', usesTree: false, visual: 'honeycomb' },
@@ -336,18 +355,100 @@ function edgeDataFor(data: KnowledgeMapData, rootId?: string) {
   return baseEdges
 }
 
-function fallbackMapFor(data: KnowledgeMapData, rootId?: string): FallbackMap {
-  const leaves = data.nodes.filter(node => node.id !== rootId).slice(0, 10)
+function hierarchyGroupsFor(
+  nodes: KnowledgeMapNode[],
+  viewId: 'dendrogram' | 'compact-box',
+  language: 'zh-CN' | 'en',
+) {
+  const groupCount = Math.min(3, Math.max(1, Math.ceil(nodes.length / 3)))
+  const labels = language === 'en'
+    ? (viewId === 'dendrogram' ? ['Concept base', 'Key reasoning', 'Application'] : ['Core ideas', 'Reasoning', 'Practice'])
+    : (viewId === 'dendrogram' ? ['概念基底', '关键原理', '应用迁移'] : ['核心概念', '推理连接', '应用练习'])
+  return Array.from({ length: groupCount }, (_value, index) => {
+    const start = Math.floor(index * nodes.length / groupCount)
+    const end = Math.floor((index + 1) * nodes.length / groupCount)
+    return {
+      id: `__${viewId}_group_${index}`,
+      label: labels[index] || labels.at(-1) || (language === 'en' ? 'Knowledge group' : '知识分组'),
+      color: branchPalette[index % branchPalette.length],
+      nodes: nodes.slice(start, end),
+    }
+  })
+}
+
+function fallbackMapFor(
+  data: KnowledgeMapData,
+  rootId: string | undefined,
+  profile: GraphProfile,
+  language: 'zh-CN' | 'en',
+): FallbackMap {
+  const leaves = data.nodes
+    .filter(node => node.id !== rootId)
+    .sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
+    .slice(0, 10)
   const count = Math.max(1, leaves.length)
   const mapType = data.map_type || (data.layout === 'flow' ? 'process_flow' : 'concept_tree')
-  let core = { id: rootId || 'core', label: shortLabel(mapTitle(data, 'zh-CN'), 14), color: '#252c42', x: 50, y: 50 }
-  const coordinates: Array<{ x: number; y: number }> = []
+  let core = { id: rootId || 'core', label: shortLabel(mapTitle(data, language), 14), color: '#252c42', x: 50, y: 50 }
+  const coordinates = new Map<string, { x: number; y: number }>()
+  const guideNodes: FallbackNode[] = []
+  let sourceLinks: Array<{ from: string; to: string; label?: string }> | null = null
 
-  if (['process_flow', 'timeline_map', 'causal_map'].includes(mapType)) {
+  if (profile.id === 'mindmap') {
+    core = { ...core, x: 50, y: 50 }
+    const counts = [Math.ceil(leaves.length / 2), Math.floor(leaves.length / 2)]
+    leaves.forEach((node, index) => {
+      const side = index % 2
+      const slot = Math.floor(index / 2)
+      const spread = counts[side] <= 1 ? 50 : 16 + slot * 68 / (counts[side] - 1)
+      coordinates.set(node.id, { x: side ? 77 : 23, y: spread })
+    })
+  } else if (profile.id === 'dendrogram') {
     core = { ...core, x: 9, y: 50 }
-    leaves.forEach((_node, index) => {
+    const groups = hierarchyGroupsFor(leaves, 'dendrogram', language)
+    sourceLinks = []
+    groups.forEach((group, groupIndex) => {
+      const groupY = groups.length === 1 ? 50 : 16 + groupIndex * 68 / (groups.length - 1)
+      const guide = { id: group.id, label: group.label, color: group.color, x: 40, y: groupY }
+      guideNodes.push(guide)
+      sourceLinks!.push({ from: core.id, to: guide.id })
+      group.nodes.forEach((node, nodeIndex) => {
+        const atomY = group.nodes.length === 1 ? groupY : groupY - 11 + nodeIndex * 22 / (group.nodes.length - 1)
+        coordinates.set(node.id, { x: 80, y: atomY })
+        sourceLinks!.push({ from: guide.id, to: node.id })
+      })
+    })
+  } else if (profile.id === 'compact-box') {
+    core = { ...core, x: 50, y: 13 }
+    const groups = hierarchyGroupsFor(leaves, 'compact-box', language)
+    sourceLinks = []
+    groups.forEach((group, groupIndex) => {
+      const groupX = groups.length === 1 ? 50 : 19 + groupIndex * 62 / (groups.length - 1)
+      const guide = { id: group.id, label: group.label, color: group.color, x: groupX, y: 33 }
+      guideNodes.push(guide)
+      sourceLinks!.push({ from: core.id, to: guide.id })
+      group.nodes.forEach((node, nodeIndex) => {
+        const atomY = 52 + nodeIndex * Math.min(16, 34 / Math.max(1, group.nodes.length - 1))
+        coordinates.set(node.id, { x: groupX, y: atomY })
+        sourceLinks!.push({ from: guide.id, to: node.id })
+      })
+    })
+  } else if (profile.id === 'snake') {
+    core = { ...core, x: 10, y: 24 }
+    const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(leaves.length * 1.6))))
+    leaves.forEach((node, index) => {
+      const row = Math.floor(index / columns)
+      const slot = index % columns
+      const visualSlot = row % 2 ? columns - 1 - slot : slot
+      coordinates.set(node.id, {
+        x: columns === 1 ? 53 : 28 + visualSlot * 62 / (columns - 1),
+        y: row % 2 ? 75 : 34,
+      })
+    })
+  } else if (['process_flow', 'timeline_map', 'causal_map'].includes(mapType)) {
+    core = { ...core, x: 9, y: 50 }
+    leaves.forEach((node, index) => {
       const ratio = count === 1 ? .5 : index / (count - 1)
-      coordinates.push({ x: 23 + ratio * 66, y: mapType === 'timeline_map' ? (index % 2 ? 65 : 35) : (index % 2 ? 58 : 42) })
+      coordinates.set(node.id, { x: 23 + ratio * 66, y: mapType === 'timeline_map' ? (index % 2 ? 65 : 35) : (index % 2 ? 58 : 42) })
     })
   } else if (mapType === 'decision_map') {
     core = { ...core, x: 50, y: 16 }
@@ -355,49 +456,45 @@ function fallbackMapFor(data: KnowledgeMapData, rootId?: string): FallbackMap {
       { x: 29, y: 38 }, { x: 71, y: 38 }, { x: 16, y: 61 }, { x: 40, y: 61 },
       { x: 60, y: 61 }, { x: 84, y: 61 }, { x: 27, y: 84 }, { x: 73, y: 84 },
     ]
-    leaves.forEach((_node, index) => coordinates.push(template[index] || { x: 50, y: 86 }))
+    leaves.forEach((node, index) => coordinates.set(node.id, template[index] || { x: 50, y: 86 }))
   } else if (mapType === 'comparison_map') {
     core = { ...core, x: 50, y: 50 }
-    const left = [22, 38, 58, 76]
-    leaves.forEach((_node, index) => {
-      const row = left[Math.floor(index / 2) % left.length]
-      coordinates.push({ x: index % 2 ? 78 : 22, y: row })
-    })
+    const rows = [22, 38, 58, 76]
+    leaves.forEach((node, index) => coordinates.set(node.id, { x: index % 2 ? 78 : 22, y: rows[Math.floor(index / 2) % rows.length] }))
   } else if (mapType === 'relationship_map' || mapType === 'system_map') {
     const template = [
       { x: 21, y: 26 }, { x: 46, y: 18 }, { x: 78, y: 27 }, { x: 18, y: 57 },
       { x: 80, y: 58 }, { x: 31, y: 82 }, { x: 58, y: 85 }, { x: 74, y: 76 },
     ]
-    leaves.forEach((_node, index) => coordinates.push(template[index] || { x: 50, y: 87 }))
+    leaves.forEach((node, index) => coordinates.set(node.id, template[index] || { x: 50, y: 87 }))
   } else if (mapType === 'lab_map') {
     const template = [
       { x: 50, y: 18 }, { x: 77, y: 32 }, { x: 82, y: 62 }, { x: 62, y: 83 },
       { x: 34, y: 83 }, { x: 17, y: 61 }, { x: 22, y: 32 }, { x: 50, y: 88 },
     ]
-    leaves.forEach((_node, index) => coordinates.push(template[index] || { x: 50, y: 88 }))
+    leaves.forEach((node, index) => coordinates.set(node.id, template[index] || { x: 50, y: 88 }))
   } else {
-    leaves.forEach((_node, index) => {
+    leaves.forEach((node, index) => {
       const angle = -Math.PI / 2 + index / count * Math.PI * 2
       const radius = index % 2 === 0 ? 35 : 39
-      coordinates.push({ x: 50 + Math.cos(angle) * radius, y: 50 + Math.sin(angle) * radius })
+      coordinates.set(node.id, { x: 50 + Math.cos(angle) * radius, y: 50 + Math.sin(angle) * radius })
     })
   }
 
-  const nodes = leaves.map((node, index) => {
-    const position = coordinates[index] || { x: 50, y: 87 }
-    return {
-      id: node.id,
-      label: shortLabel(node.label, 10),
-      color: branchPalette[index % branchPalette.length],
-      ...position,
-    }
-  })
+  const nodes = leaves.map((node, index) => ({
+    id: node.id,
+    label: shortLabel(node.label, 10),
+    color: branchPalette[index % branchPalette.length],
+    ...(coordinates.get(node.id) || { x: 50, y: 87 }),
+  }))
   const positions = new Map<string, { x: number; y: number }>()
   positions.set(core.id, core)
   nodes.forEach(node => positions.set(node.id, node))
+  guideNodes.forEach(node => positions.set(node.id, node))
   const orderedIds = new Map(nodes.map((node, index) => [node.id, index]))
-  const sourceLinks = edgeDataFor(data, rootId)
-  const links = (sourceLinks.length ? sourceLinks : nodes.map(node => ({ from: core.id, to: node.id, label: '' })))
+  const directLinks = edgeDataFor(data, rootId)
+  const resolvedLinks = sourceLinks ?? (directLinks.length ? directLinks : nodes.map(node => ({ from: core.id, to: node.id, label: '' })))
+  const links = resolvedLinks
     .map((edge, index) => {
       const from = positions.get(edge.from)
       const to = positions.get(edge.to)
@@ -406,12 +503,24 @@ function fallbackMapFor(data: KnowledgeMapData, rootId?: string): FallbackMap {
       return { id: `${edge.from}__${edge.to}`, from, to, color: branchPalette[colorIndex % branchPalette.length] }
     })
     .filter((edge): edge is FallbackLink => Boolean(edge))
-  return { core, nodes, links }
+  return { core, nodes, links, guideNodes }
+}
+
+function motionPathFor(segment: MotionSegment) {
+  const { from, to } = segment
+  const horizontal = Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)
+  if (horizontal) {
+    const bend = from.x + (to.x - from.x) * .52
+    return `M ${from.x} ${from.y} C ${bend} ${from.y}, ${bend} ${to.y}, ${to.x} ${to.y}`
+  }
+  const bend = from.y + (to.y - from.y) * .52
+  return `M ${from.x} ${from.y} C ${from.x} ${bend}, ${to.x} ${bend}, ${to.x} ${to.y}`
 }
 
 export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   const language = props.language || 'zh-CN'
   const zh = language !== 'en'
+  const surfaceRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<Graph | null>(null)
   const graphCleanupRef = useRef<Promise<unknown>>(Promise.resolve())
@@ -421,8 +530,10 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [expanding, setExpanding] = useState(false)
   const [expandError, setExpandError] = useState<string | null>(null)
-  const [renderState, setRenderState] = useState<'booting' | 'ready' | 'failed'>('booting')
+  const [renderState, setRenderState] = useState<'booting' | 'ready' | 'failed' | 'empty'>('booting')
   const [mapTypeChoice, setMapTypeChoice] = useState<'auto' | KnowledgeMapViewId>('auto')
+  const [motionSegments, setMotionSegments] = useState<MotionSegment[]>([])
+  const [motionCore, setMotionCore] = useState<MotionPoint | null>(null)
 
   const current = frames.at(-1)?.data || props.data
   const recommendedMapType = (current.map_type || (current.layout === 'flow' ? 'process_flow' : 'concept_tree')) as KnowledgeMapType
@@ -440,9 +551,20 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     nodes: viewData.nodes.map(node => [node.id, node.parent_id || '', node.label, node.kind || '', node.group || '']),
     edges: viewData.edges.map(edge => [edge.from, edge.to, edge.label || '']),
   }), [viewData, currentRoot?.id, profile.id])
-  const fallbackMap = useMemo(() => fallbackMapFor(viewData, currentRoot?.id), [viewData, currentRoot?.id])
+  const fallbackMap = useMemo(
+    () => fallbackMapFor(viewData, currentRoot?.id, profile, language),
+    [viewData, currentRoot?.id, profile, language],
+  )
+  const hasLearnableAtoms = viewData.nodes.some(node => node.id !== currentRoot?.id)
+  // Only near-empty maps need a tight zoom ceiling. Rich relationship maps
+  // must still be able to expand into the canvas instead of becoming a tiny
+  // cluster in the middle of an otherwise blank workspace.
+  const maxCanvasZoom = hasLearnableAtoms && viewData.nodes.length <= 2 ? 1.18 : 3
   const selectedNode = current.nodes.find(node => node.id === selectedId) || null
   const canOpenDeepDive = frames.length === 0 && Boolean(selectedNode && selectedNode.id !== currentRoot?.id && props.onGenerateDeepDive)
+  const surfaceStyle = motionCore
+    ? { '--g6-focus-x': `${motionCore.x}px`, '--g6-focus-y': `${motionCore.y}px` } as CSSProperties
+    : undefined
 
   const graphData = useMemo<any>(() => {
     const indexById = new Map(viewData.nodes.map((node, index) => [node.id, index]))
@@ -561,11 +683,11 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         halo: true, haloFill: color, haloOpacity: isRoot ? 0.16 : 0.07, haloLineWidth: isRoot ? 18 : 12,
       }
       let visualStyle: Record<string, unknown>
-      if (profile.visual === 'dots') {
+      if (profile.visual === 'dendrogram' || profile.visual === 'dots') {
         visualStyle = {
           size: isRoot ? 32 : 16, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 2,
           labelPlacement: 'right', labelFill: '#313744', labelFontSize: isRoot ? 13 : 11, labelFontWeight: isRoot ? 750 : 600,
-          labelBackground: true, labelBackgroundFill: 'rgba(255,255,255,.9)', labelPadding: [3, 5], haloLineWidth: 7,
+          labelBackground: true, labelBackgroundFill: 'rgba(255,255,255,.9)', labelPadding: [3, 5], labelMaxWidth: 148, haloLineWidth: 7,
         }
       } else if (profile.visual === 'compact') {
         visualStyle = { size: isRoot ? [132, 42] : [108, 34], radius: 7, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelMaxWidth: 94, labelLineHeight: 15 }
@@ -667,6 +789,123 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         },
       }
     }
+    const positionedNode = (node: KnowledgeMapNode, branchIndex: number, x: number, y: number, sequenceIndex = branchIndex) => {
+      const entry = nodeData(node, branchIndex, sequenceIndex)
+      return { ...entry, style: { ...entry.style, x, y } }
+    }
+    const hierarchyGuideNode = (id: string, label: string, color: string, x: number, y: number, mode: 'tree' | 'columns') => ({
+      id,
+      type: 'rect',
+      data: { virtual: true },
+      style: {
+        x,
+        y,
+        size: mode === 'columns' ? [168, 38] : [140, 34],
+        radius: mode === 'columns' ? 8 : 17,
+        fill: `${color}12`,
+        stroke: color,
+        lineWidth: 1.5,
+        labelText: label,
+        labelPlacement: 'center',
+        labelFill: '#303746',
+        labelFontSize: 11,
+        labelFontWeight: 720,
+        halo: false,
+        cursor: 'default',
+      },
+    })
+    const hierarchyEdge = (from: string, to: string, color: string, index: number) => {
+      const entry = edgeData(from, to, index, '', index)
+      return { ...entry, style: { ...entry.style, stroke: color, lineWidth: 1.55, opacity: .64 } }
+    }
+    if (currentRoot && profile.id === 'mindmap') {
+      const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
+      const perSide = [Math.ceil(atoms.length / 2), Math.floor(atoms.length / 2)]
+      const nodes = [positionedNode(currentRoot, 0, 500, 300, 0)]
+      const edges: any[] = []
+      atoms.forEach((node, index) => {
+        const side = index % 2
+        const slot = Math.floor(index / 2)
+        const y = perSide[side] <= 1 ? 300 : 118 + slot * 364 / (perSide[side] - 1)
+        nodes.push(positionedNode(node, index, side ? 790 : 210, y, index + 1))
+        edges.push(hierarchyEdge(currentRoot.id, node.id, branchPalette[index % branchPalette.length], index))
+      })
+      return { nodes, edges }
+    }
+    if (currentRoot && profile.id === 'dendrogram') {
+      const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
+      const groups = hierarchyGroupsFor(atoms, 'dendrogram', language)
+      const nodes: any[] = [positionedNode(currentRoot, 0, 104, 300, 0)]
+      const edges: any[] = []
+      groups.forEach((group, groupIndex) => {
+        const groupY = groups.length === 1 ? 300 : 132 + groupIndex * 336 / (groups.length - 1)
+        nodes.push(hierarchyGuideNode(group.id, group.label, group.color, 370, groupY, 'tree'))
+        edges.push(hierarchyEdge(currentRoot.id, group.id, group.color, groupIndex))
+        group.nodes.forEach((node, nodeIndex) => {
+          const branchIndex = atoms.indexOf(node)
+          const y = group.nodes.length === 1 ? groupY : groupY - 58 + nodeIndex * 116 / (group.nodes.length - 1)
+          nodes.push(positionedNode(node, branchIndex, 688, y, branchIndex + 1))
+          edges.push(hierarchyEdge(group.id, node.id, group.color, branchIndex + groups.length))
+        })
+      })
+      return { nodes, edges }
+    }
+    if (currentRoot && profile.id === 'compact-box') {
+      const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
+      const groups = hierarchyGroupsFor(atoms, 'compact-box', language)
+      const nodes: any[] = [positionedNode(currentRoot, 0, 500, 76, 0)]
+      const edges: any[] = []
+      groups.forEach((group, groupIndex) => {
+        const groupX = groups.length === 1 ? 500 : 188 + groupIndex * 624 / (groups.length - 1)
+        nodes.push(hierarchyGuideNode(group.id, group.label, group.color, groupX, 212, 'columns'))
+        edges.push(hierarchyEdge(currentRoot.id, group.id, group.color, groupIndex))
+        group.nodes.forEach((node, nodeIndex) => {
+          const branchIndex = atoms.indexOf(node)
+          nodes.push(positionedNode(node, branchIndex, groupX, 330 + nodeIndex * 78, branchIndex + 1))
+          edges.push(hierarchyEdge(group.id, node.id, group.color, branchIndex + groups.length))
+        })
+      })
+      return { nodes, edges }
+    }
+    if (currentRoot && profile.id === 'snake') {
+      const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
+      const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(atoms.length * 1.6))))
+      const nodes: any[] = [positionedNode(currentRoot, 0, 94, 300, 0)]
+      atoms.forEach((node, index) => {
+        const row = Math.floor(index / columns)
+        const slot = index % columns
+        const visualSlot = row % 2 ? columns - 1 - slot : slot
+        nodes.push(positionedNode(node, index, columns === 1 ? 520 : 248 + visualSlot * 650 / (columns - 1), row % 2 ? 428 : 178, index + 1))
+      })
+      const path = [currentRoot, ...atoms]
+      return {
+        nodes,
+        edges: path.slice(1).map((node, index) => hierarchyEdge(path[index].id, node.id, branchPalette[index % branchPalette.length], index)),
+      }
+    }
+    if (currentRoot && ['force', 'd3-bubble', 'fruchterman', 'atlas2'].includes(profile.id)) {
+      const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
+      const templates: Record<'force' | 'd3-bubble' | 'fruchterman' | 'atlas2', Array<[number, number]>> = {
+        force: [[190, 205], [360, 120], [625, 130], [820, 235], [820, 420], [620, 500], [345, 490], [175, 390], [300, 305], [705, 300]],
+        'd3-bubble': [[295, 150], [520, 118], [735, 168], [846, 322], [700, 492], [415, 500], [190, 385], [185, 245], [410, 260], [685, 370]],
+        fruchterman: [[232, 188], [344, 135], [358, 265], [665, 142], [792, 225], [682, 332], [390, 455], [615, 468], [260, 382], [770, 392]],
+        atlas2: [[294, 182], [455, 120], [662, 148], [812, 264], [752, 438], [542, 505], [328, 448], [178, 320], [364, 300], [682, 316]],
+      }
+      const template = templates[profile.id as 'force' | 'd3-bubble' | 'fruchterman' | 'atlas2']
+      const nodes = [positionedNode(currentRoot, 0, 500, 300, 0)]
+      atoms.forEach((node, index) => {
+        const [x, y] = template[index % template.length]
+        nodes.push(positionedNode(node, index, x, y, index + 1))
+      })
+      const baseEdges = edgeDataFor(viewData, currentRoot.id)
+      const atlasLinks = profile.id === 'atlas2'
+        ? atoms.flatMap((node, index) => atoms[index + 3] ? [{ from: node.id, to: atoms[index + 3].id, label: '' }] : [])
+        : []
+      return {
+        nodes,
+        edges: [...baseEdges, ...atlasLinks].map((edge, index) => edgeData(edge.from, edge.to, index, edge.label || '', index)),
+      }
+    }
     if (profile.visual === 'fishbone' && currentRoot) {
       const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
       const columnCount = Math.max(1, Math.ceil(atoms.length / 2))
@@ -716,7 +955,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     if (profile.visual === 'fishbone' && currentRoot) {
       edgeList = orderedLeaves.map(node => ({ from: node.id, to: currentRoot.id, label: '' }))
     }
-    if (['funnel', 'lanes', 'stairs', 'spectrum'].includes(profile.visual)) edgeList = sequenceEdges
+    if (['funnel', 'lanes', 'stairs', 'spectrum'].includes(profile.visual) || profile.id === 'snake') edgeList = sequenceEdges
     if (profile.visual === 'cycle' && currentRoot && orderedLeaves.length) {
       edgeList = [...sequenceEdges, { from: orderedLeaves.at(-1)!.id, to: currentRoot.id, label: '' }]
     }
@@ -778,20 +1017,77 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
 
   useEffect(() => {
     const container = canvasRef.current
-    if (!container || !currentRoot || !graphData.nodes?.length) {
-      setRenderState('failed')
+    if (!container || !currentRoot || !hasLearnableAtoms || !graphData.nodes?.length) {
+      setRenderState(hasLearnableAtoms ? 'failed' : 'empty')
       return
     }
     let destroyed = false
     let graph: Graph | null = null
     let retryTimer: number | undefined
+    let motionFrame: number | undefined
     setRenderState('booting')
+    setMotionSegments([])
+    setMotionCore(null)
     const restoreCanvasFrame = () => {
       container.style.position = 'absolute'
       container.style.display = 'grid'
       container.style.inset = '0'
       container.style.width = 'auto'
       container.style.height = 'auto'
+    }
+    const toSurfacePoint = (point: [number, number] | Float32Array) => {
+      const surface = surfaceRef.current
+      if (!surface || !graph) return null
+      const clientPoint = graph.getClientByCanvas(point)
+      const bounds = surface.getBoundingClientRect()
+      const x = Number(clientPoint[0]) - bounds.left
+      const y = Number(clientPoint[1]) - bounds.top
+      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+    }
+    const updateMotionLayer = () => {
+      if (destroyed || !graph || !surfaceRef.current) return
+      try {
+        const rootPoint = currentRoot ? toSurfacePoint(graph.getElementPosition(currentRoot.id) as [number, number]) : null
+        const segments = graphData.edges
+          .filter((edge: any) => !String(edge.source).startsWith('__') && !String(edge.target).startsWith('__'))
+          .slice(0, 18)
+          .map((edge: any, index: number) => {
+            const from = toSurfacePoint(graph!.getElementPosition(String(edge.source)) as [number, number])
+            const to = toSurfacePoint(graph!.getElementPosition(String(edge.target)) as [number, number])
+            if (!from || !to) return null
+            return {
+              id: String(edge.id || `${edge.source}__${edge.target}__${index}`),
+              from,
+              to,
+              color: String((edge as any).data?.color || branchPalette[index % branchPalette.length]),
+            }
+          })
+          .filter((segment: MotionSegment | null): segment is MotionSegment => Boolean(segment))
+        setMotionCore(rootPoint)
+        setMotionSegments(segments)
+      } catch {
+        // The graph can be between layout and renderer commits. The next
+        // viewport/layout event will try again without affecting the map.
+      }
+    }
+    const scheduleMotionUpdate = () => {
+      if (destroyed || motionFrame !== undefined) return
+      motionFrame = window.requestAnimationFrame(() => {
+        motionFrame = undefined
+        updateMotionLayer()
+      })
+    }
+    const safelyFitGraph = async () => {
+      if (destroyed || !graph) return
+      await graph.fitView({ when: 'always' })
+      if (destroyed || !graph) return
+      // A sparse response used to be enlarged until a single title occupied
+      // the entire canvas. Keep the page readable while retaining normal fit
+      // behaviour for rich maps.
+      if (graph.getZoom() > maxCanvasZoom) {
+        await graph.zoomTo(maxCanvasZoom, { duration: 0 })
+        if (!destroyed) await graph.fitCenter({ duration: 0 })
+      }
     }
     const createGraph = () => {
       if (destroyed) return
@@ -810,25 +1106,54 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       }
       try {
         graph = new Graph({
-          container, data: graphData, autoResize: true, autoFit: 'view', padding: [58, 62, 64, 62],
-          animation: { duration: 520, easing: 'ease-out' }, node: { type: profile.nodeType as never }, edge: { type: profile.edgeType as never },
+          container, data: graphData, autoResize: true, autoFit: 'view', padding: [58, 62, 64, 62], zoomRange: [0.25, maxCanvasZoom],
+          animation: { duration: 520, easing: 'ease-out' },
+          node: {
+            type: ((datum: any) => datum.data?.virtual ? 'rect' : profile.nodeType) as never,
+            state: {
+              active: { halo: true, haloLineWidth: 24, haloOpacity: .22, lineWidth: 3, labelFontWeight: 760, zIndex: 7 },
+              inactive: { fillOpacity: .3, strokeOpacity: .24, labelFillOpacity: .34, haloOpacity: 0 },
+              selected: { halo: true, haloLineWidth: 27, haloOpacity: .28, lineWidth: 3.2, zIndex: 8 },
+            },
+            animation: { enter: 'fade', update: [{ fields: ['x', 'y', 'fill', 'stroke'], duration: 520, easing: 'ease-out' }] },
+          } as never,
+          edge: {
+            type: profile.edgeType as never,
+            state: {
+              active: { halo: true, haloLineWidth: 8, haloOpacity: .18, lineWidth: 3, strokeOpacity: .96, zIndex: 4 },
+              inactive: { strokeOpacity: .12, labelOpacity: .2 },
+              selected: { halo: true, haloLineWidth: 9, haloOpacity: .22, lineWidth: 3.2, strokeOpacity: .98, zIndex: 5 },
+            },
+            animation: { enter: 'path-in', update: [{ fields: ['sourceNode', 'targetNode', 'stroke'], duration: 520, easing: 'ease-out' }] },
+          } as never,
           layout: profile.layout as never,
           ...(profile.plugins ? { plugins: profile.plugins as never } : {}),
-          behaviors: [{ type: 'drag-canvas' }, { type: 'zoom-canvas', sensitivity: 1.06 }, ...(profile.usesTree ? [{ type: 'collapse-expand', trigger: 'dblclick', animation: true }] : [])],
+          behaviors: [
+            { type: 'drag-canvas' },
+            { type: 'zoom-canvas', sensitivity: 1.06 },
+            { type: 'hover-activate', degree: 1, inactiveState: 'inactive', animation: true },
+            ...(profile.usesTree ? [{ type: 'collapse-expand', trigger: 'dblclick', animation: true }] : []),
+          ],
         })
         restoreCanvasFrame()
         graphRef.current = graph
+        graph.on(GraphEvent.AFTER_TRANSFORM, scheduleMotionUpdate)
+        graph.on(GraphEvent.AFTER_LAYOUT, scheduleMotionUpdate)
+        graph.on(GraphEvent.AFTER_SIZE_CHANGE, scheduleMotionUpdate)
         graph.on(NodeEvent.CLICK, (event: any) => {
-          if (!event?.target?.id) return
+          if (!event?.target?.id || String(event.target.id).startsWith('__')) return
           setExpandError(null)
           setSelectedId(String(event.target.id))
         })
         void graph.render().then(async () => {
           if (destroyed || !graph) return
-          await graph.fitView({ when: 'always' })
+          await safelyFitGraph()
           if (destroyed) return
+          scheduleMotionUpdate()
           setRenderState('ready')
-          window.setTimeout(() => { if (!destroyed) void graph?.fitView({ when: 'always' }) }, 520)
+          window.setTimeout(() => {
+            if (!destroyed) void safelyFitGraph().then(scheduleMotionUpdate)
+          }, 520)
         }).catch(() => { if (!destroyed) setRenderState('failed') })
       } catch {
         if (!destroyed) setRenderState('failed')
@@ -842,7 +1167,11 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       destroyed = true
       if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame)
       if (retryTimer) window.clearTimeout(retryTimer)
+      if (motionFrame !== undefined) window.cancelAnimationFrame(motionFrame)
       if (graph) {
+        graph.off(GraphEvent.AFTER_TRANSFORM, scheduleMotionUpdate)
+        graph.off(GraphEvent.AFTER_LAYOUT, scheduleMotionUpdate)
+        graph.off(GraphEvent.AFTER_SIZE_CHANGE, scheduleMotionUpdate)
         graphCleanupRef.current = Promise.resolve(graph.destroy())
           .catch(() => undefined)
           .then(() => {
@@ -852,7 +1181,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       }
       if (graphRef.current === graph) graphRef.current = null
     }
-  }, [currentRoot?.id, graphData, graphKey, profile])
+  }, [currentRoot?.id, graphData, graphKey, hasLearnableAtoms, maxCanvasZoom, profile])
 
   useEffect(() => { setSelectedId(null); setExpandError(null) }, [graphKey])
 
@@ -888,6 +1217,16 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     setMapTypeChoice('auto')
   }
 
+  async function resetCanvasView() {
+    const graph = graphRef.current
+    if (!graph) return
+    await graph.fitView({ when: 'always' })
+    if (graph.getZoom() > maxCanvasZoom) {
+      await graph.zoomTo(maxCanvasZoom, { duration: 0 })
+      await graph.fitCenter({ duration: 0 })
+    }
+  }
+
   const selectedStatus = selectedNode ? props.progress?.progress[selectedNode.id] || 'new' : 'new'
 
   return <section className={`g6-knowledge-map ${props.workspace ? 'is-workspace' : ''} ${props.reader ? 'is-reader' : ''}`} aria-label={zh ? '知识图解' : 'Knowledge map'}>
@@ -901,7 +1240,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         <label className="g6-map-type-picker">
           <span>{zh ? '图解样式' : 'Map style'}</span>
           <select value={mapTypeChoice} onChange={event => setMapTypeChoice(event.target.value as 'auto' | KnowledgeMapViewId)}>
-            <option value="auto">{zh ? `智能推荐 · ${mapViewLabel(recommendedViewId, language)}` : `Recommended · ${mapViewLabel(recommendedViewId, language)}`}</option>
+            <option value="auto">{zh ? `${knowledgeMapViewCount} 种图解 · 智能推荐：${mapViewLabel(recommendedViewId, language)}` : `${knowledgeMapViewCount} styles · Recommended: ${mapViewLabel(recommendedViewId, language)}`}</option>
             {knowledgeMapViewGroups.map(group => <optgroup key={group.id} label={zh ? group.zh : group.en}>
               {group.views.map(view => <option key={view.id} value={view.id}>{zh ? view.zh : view.en}</option>)}
             </optgroup>)}
@@ -911,12 +1250,29 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       </div>
     </header>
 
-    <div className={`g6-map-surface is-${profile.id}`} data-render-state={renderState}>
-      <div className="g6-map-fallback" aria-hidden={renderState === 'ready'}>
+    <div className={`g6-map-surface is-${profile.id}`} data-render-state={renderState} ref={surfaceRef} style={surfaceStyle}>
+      <div className="g6-map-atmosphere" aria-hidden="true">
+        <span className="g6-map-atmosphere-orb orb-a" />
+        <span className="g6-map-atmosphere-orb orb-b" />
+        <span className="g6-map-atmosphere-arc arc-a" />
+        <span className="g6-map-atmosphere-arc arc-b" />
+        <span className="g6-map-atmosphere-grain" />
+      </div>
+      {renderState === 'empty' ? <div className="g6-map-empty" role="status">
+        <div className="g6-map-empty-icon"><BookOpenRegular /></div>
+        <h2>{zh ? '这张图还没有可展示的知识节点' : 'This map has no learnable nodes yet'}</h2>
+        <p>{zh ? '生成结果目前只有标题，不能把它当作完整图解放大显示。请返回上一级，选择一个知识点重新展开。' : 'The response only contains a title, so it is not shown as a full map. Go back and expand another knowledge point.'}</p>
+        {frames.length > 0 && <button type="button" onClick={goBack}><ArrowLeftRegular />{zh ? '返回上一层图解' : 'Back to the previous map'}</button>}
+      </div> : <div className="g6-map-fallback" aria-hidden={renderState === 'ready'}>
         <svg className="g6-map-fallback-wires" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
           {fallbackMap.links.map(link => <line key={link.id} x1={link.from.x} y1={link.from.y} x2={link.to.x} y2={link.to.y} stroke={link.color} />)}
         </svg>
         <div className="g6-map-fallback-core" style={{ '--fallback-core-x': `${fallbackMap.core.x}%`, '--fallback-core-y': `${fallbackMap.core.y}%` } as CSSProperties}>{shortLabel(currentTitle, 14)}</div>
+        {fallbackMap.guideNodes.map(node => <div
+          key={node.id}
+          className="g6-map-fallback-guide"
+          style={{ '--fallback-x': `${node.x}%`, '--fallback-y': `${node.y}%`, '--fallback-color': node.color } as CSSProperties}
+        >{node.label}</div>)}
         {fallbackMap.nodes.map(node => <button
           key={node.id}
           type="button"
@@ -925,12 +1281,34 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
           onClick={() => setSelectedId(node.id)}
         >{node.label}</button>)}
         <span className="g6-map-fallback-status">{renderState === 'failed' ? (zh ? '已切换为兼容视图' : 'Compatibility view') : (zh ? '正在排布图谱' : 'Arranging map')}</span>
-      </div>
+      </div>}
       <div className="g6-map-canvas" ref={canvasRef} aria-hidden={renderState !== 'ready'} />
+      <svg className="g6-map-motion-layer" aria-hidden="true" data-motion-state={renderState}>
+        {motionSegments.map((segment: MotionSegment, index: number) => {
+          const path = motionPathFor(segment)
+          return <g key={segment.id}>
+            <path className="g6-map-motion-trace" d={path} pathLength="100" stroke={segment.color} />
+            <circle className="g6-map-motion-signal" r={profile.visual === 'bubbles' ? 3 : 2.5} fill={segment.color}>
+              <animateMotion dur={`${2.8 + (index % 3) * .35}s`} begin={`${(index % 4) * .24}s`} repeatCount="indefinite" path={path} />
+            </circle>
+            <circle className="g6-map-motion-endpoint" cx={segment.to.x} cy={segment.to.y} r="4" fill={segment.color}>
+              <animate attributeName="r" values="3;7;3" dur={`${3.4 + (index % 4) * .24}s`} begin={`${(index % 5) * .32}s`} repeatCount="indefinite" />
+              <animate attributeName="opacity" values=".08;.34;.08" dur={`${3.4 + (index % 4) * .24}s`} begin={`${(index % 5) * .32}s`} repeatCount="indefinite" />
+            </circle>
+          </g>
+        })}
+        {motionCore && <g className="g6-map-motion-core-group">
+          <circle className="g6-map-motion-core" cx={motionCore.x} cy={motionCore.y} r="18">
+            <animate attributeName="r" values="18;36;18" dur="3.4s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values=".32;0;.32" dur="3.4s" repeatCount="indefinite" />
+          </circle>
+          <animateTransform attributeName="transform" type="translate" values="0 0; 1 -1; -1 1; 0 0" dur="4.8s" repeatCount="indefinite" />
+        </g>}
+      </svg>
       <div className="g6-map-controls" aria-label={zh ? '画布控制' : 'Canvas controls'}>
         <button type="button" onClick={() => void graphRef.current?.zoomBy(1.16)} aria-label={zh ? '放大' : 'Zoom in'}><ZoomInRegular /></button>
         <button type="button" onClick={() => void graphRef.current?.zoomBy(0.86)} aria-label={zh ? '缩小' : 'Zoom out'}><ZoomOutRegular /></button>
-        <button type="button" onClick={() => void graphRef.current?.fitView({ when: 'always' })} aria-label={zh ? '重置视图' : 'Reset view'}><ArrowResetRegular /></button>
+        <button type="button" onClick={() => void resetCanvasView()} aria-label={zh ? '重置视图' : 'Reset view'}><ArrowResetRegular /></button>
       </div>
       {selectedNode && <aside className="g6-map-inspector" aria-live="polite">
         <button type="button" className="g6-map-inspector-close" onClick={() => setSelectedId(null)} aria-label={zh ? '关闭' : 'Close'}><DismissRegular /></button>

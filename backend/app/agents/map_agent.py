@@ -1153,7 +1153,10 @@ def generate_knowledge_map(
                 "图解目标是帮助学生看懂概念关系和学习顺序，不是罗列整章目录。不要虚构课程事实。\n"
                 "必须只返回一个 JSON 对象，字段严格为 title、summary、highlights、layout、map_type、groups、nodes、edges、learning_path。\n"
                 "layout 只能是 mindmap（概念关系）或 flow（算法、代码、解题步骤）；map_type 只能为 concept_tree、process_flow、comparison_map、system_map、timeline_map、causal_map、relationship_map、decision_map、lab_map 之一。\n"
-                "nodes 必须有 8 到 10 个节点，推荐 9 个；每项字段为 id、parent_id、label、role、kind、group、order、detail、example、mistake、visual。"
+                "必须按知识结构选图形：概念边界或术语体系用 concept_tree；操作、证明或解题步骤用 process_flow；异同用 comparison_map；"
+                "组成部分与协同关系用 system_map；历史演变用 timeline_map；机制与影响用 causal_map；多主体关联用 relationship_map；"
+                "条件选择用 decision_map；输入—操作—结果验证用 lab_map。不要为了省事一律使用 concept_tree。\n"
+                "nodes 必须有 8 到 9 个节点，推荐 8 个；每项字段为 id、parent_id、label、role、kind、group、order、detail、example、mistake、visual。"
                 "role 只能为 core、branch、detail，且只能有一个 core。kind 只能为 core、foundation、principle、process、example、pitfall；"
                 "group 使用核心概念、基础、原理、过程、案例、易错点中的合适中文分类。label 不超过 12 个汉字或等长文字，detail 不超过 72 字。\n"
                 "这是第一张总览图：core 不写 parent_id；其余所有知识原子都直接以 core 为 parent_id，不能再生成第二层或第三层子节点。"
@@ -1195,7 +1198,10 @@ def generate_knowledge_map(
         },
     ]
     try:
-        response = chat_qwen(messages, temperature=0.2, max_tokens=3600, json_mode=True)
+        # Eight focused atoms are enough for the first full-screen map. Keeping
+        # the payload compact lowers cloud latency without sacrificing the
+        # deeper maps, which are generated only when a learner opens a branch.
+        response = chat_qwen(messages, temperature=0.2, max_tokens=2800, json_mode=True)
         result = _parse_json(response.choices[0].message.content or "")
         map_data = _normalize_map(result)
         title = _clean(result.get("title"), 80) or "当前主题知识图解"

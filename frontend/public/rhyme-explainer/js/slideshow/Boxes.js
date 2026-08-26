@@ -132,6 +132,14 @@ function Boxes(){
 		// Add to array
 		self.boxes.push(box);
 
+		// Generated RHYME lessons use a focused stage treatment: prose is moved
+		// into a single caption and any “next” action is mirrored into a stable
+		// control outside the graph. The original box is still retained so the
+		// inherited slideshow logic and all interactions remain intact.
+		if(window.RHYME_STAGE && window.RHYME_STAGE.trackBox){
+			window.RHYME_STAGE.trackBox(box);
+		}
+
 	};
 
 	// Update & Draw... nothing
@@ -153,6 +161,9 @@ function Boxes(){
 			toShow.style.display = "block";
 		}else{
 			fadeIn(self.dom, toShow);
+		}
+		if(window.RHYME_STAGE && window.RHYME_STAGE.trackBox){
+			window.RHYME_STAGE.trackBox(toShow);
 		}
 	};
 	

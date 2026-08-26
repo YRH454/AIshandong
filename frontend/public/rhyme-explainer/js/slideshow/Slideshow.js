@@ -36,6 +36,18 @@ function Slideshow(){
 		self.slideIndex = index;
 		var isFirstSlide = (self.currentSlide==null);
 		var slide = SLIDES[self.slideIndex];
+		var incomingSemanticScene = (slide.add || []).find(function(item){
+			return item.type=="sim" && item.semanticScene;
+		});
+
+		// Semantic RHYME scenes keep narrative controls in a dedicated, stable
+		// stage layer. Clear the previous action before boxes for the next slide
+		// arrive, so old copy never lingers over a new graph.
+		if(window.RHYME_STAGE){
+			window.RHYME_STAGE.clearAction();
+			if(slide.clear || forceClear) window.RHYME_STAGE.deactivate();
+			if(incomingSemanticScene) window.RHYME_STAGE.activate(incomingSemanticScene.semanticScene);
+		}
 
 		// Clear?
 		var _delayNewSlide = 0;

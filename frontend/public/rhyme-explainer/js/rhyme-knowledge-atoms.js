@@ -191,6 +191,61 @@
 		return phaseRoles[phase] || "知识原子";
 	}
 
+	var generatedAtomLenses = [
+		{suffix:"定义", role:"定义辨认", lead:"先说清它是什么："},
+		{suffix:"前提", role:"成立条件", lead:"它能够成立，需要先满足："},
+		{suffix:"机制", role:"作用机制", lead:"沿着过程看它怎样发生："},
+		{suffix:"证据", role:"证据核对", lead:"用事实或例子检查它："},
+		{suffix:"反例", role:"反向检验", lead:"换一个不成立的情况检查："},
+		{suffix:"边界", role:"适用边界", lead:"使用它时不能越过这条边界："},
+		{suffix:"迁移", role:"迁移应用", lead:"把这条关系带到新问题："},
+		{suffix:"自检", role:"理解自检", lead:"不看答案时重新解释一遍："}
+	];
+
+	function enrichGeneratedAtomPool(atoms, lesson, targetCount){
+		var result = atoms.slice();
+		var seen = {};
+		result.forEach(function(item){ seen[textSignature(item.label+" "+item.role)] = true; });
+		if(!atoms.length) return result;
+		var cursor = 0;
+		var guard = targetCount*10;
+		while(result.length<targetCount && cursor<guard){
+			var source = atoms[cursor%atoms.length];
+			var lens = generatedAtomLenses[(cursor+Math.floor(cursor/atoms.length))%generatedAtomLenses.length];
+			var baseLabel = compactText(source.label, 18).replace(/[·：:]$/, "");
+			var label = compactText(baseLabel+"·"+lens.suffix, 28);
+			var signature = textSignature(label+" "+lens.role);
+			if(!seen[signature]){
+				seen[signature] = true;
+				var sourceDetail = compactText(source.detail || lesson.summary, 104) || "把它放回当前主题中，检查它和前后知识的关系。";
+				result.push(atom(label, lens.role, compactText(lens.lead+sourceDetail, 150)));
+			}
+			cursor += 1;
+		}
+		return result.slice(0, 32);
+	}
+
+	function finalizeScenes(sceneMap){
+		Object.keys(sceneMap || {}).forEach(function(sceneID){
+			var scene = sceneMap[sceneID];
+			if(!scene || !Array.isArray(scene.nodes)) return;
+			var seen = {};
+			scene.nodes = scene.nodes.map(function(source, index){
+				var node = copyAtom(source, {sceneIndex:index+1, sceneCount:scene.nodes.length});
+				var signature = textSignature(node.label+" "+node.role+" "+node.detail);
+				if(signature && seen[signature]){
+					var lens = generatedAtomLenses[index%generatedAtomLenses.length];
+					node.label = compactText(node.label+"·"+lens.suffix, 28);
+					node.role = lens.role;
+					node.detail = compactText(lens.lead+(node.detail || "把它和相邻知识连接起来。"), 150);
+				}
+				seen[textSignature(node.label+" "+node.role+" "+node.detail)] = true;
+				return node;
+			});
+		});
+		return sceneMap;
+	}
+
 	function collectGeneratedAtoms(lesson){
 		var atoms = [];
 		var seen = {};
@@ -265,7 +320,7 @@
 			(lesson.highlights || []).forEach(function(item){ add(item, "关键结论", lesson.summary || ""); });
 			(lesson.scenes || []).forEach(function(scene){ add(scene.title, roleForGeneratedScene(scene), scene.key_point || scene.narration); });
 		}
-		return atoms.slice(0, 32);
+		return enrichGeneratedAtomPool(atoms, lesson, 28);
 	}
 
 	function collectGeneratedRelations(lesson){
@@ -362,6 +417,8 @@
 					state:state,
 					activeState:activeState,
 					featured:index<visibleCount,
+					sceneIndex:index+1,
+					sceneCount:count,
 					labelOffset:offsets[index%offsets.length]
 				}));
 			}
@@ -380,7 +437,7 @@
 			});
 		}
 		var g = lesson.guide;
-		return {
+		return finalizeScenes({
 			"network-map":generatedScene(9, 0, "unlinked", "verified", "这张图只放本次讲解真正需要的知识原子。", 9),
 			"condition-gate":generatedScene(4, 1, "unlinked", "verified", "从“"+g.entry+"”出发，沿着“"+g.relationship+"”走向核心判断。", 4),
 			"familiarity-map":generatedScene(9, 3, "unlinked", "familiar", "红色只代表想起来；还需要证据把它变成理解。", 9),
@@ -393,7 +450,7 @@
 			"organization-map":generatedScene(18, 17, "unlinked", "verified", "把零散知识原子组织起来，才不会只剩一串答案。", 8),
 			"transfer-bridge":generatedScene(12, 19, "unlinked", "transfer", "带走的是关系和判断方法，不是上一题的现成结论。", 7),
 			"transfer-world":generatedScene(18, 21, "unlinked", "transfer", "当“"+g.transfer+"”能在新问题中重新成立，理解才真正可迁移。", 8)
-		};
+		});
 	}
 
 	var generatedLesson = buildGeneratedLesson(storedLesson);
@@ -649,7 +706,7 @@
 			r(16,17,"形成新结论","迁移后的理解在新题中再次站稳。",[0,14])
 		], {legend:true, caption:"好理解既有局部组织，也有通向新主题的桥梁"});
 
-		return scene;
+		return finalizeScenes(scene);
 	}
 
 	var vocabulary = getVocabulary();

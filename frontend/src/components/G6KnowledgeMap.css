@@ -90,6 +90,59 @@
 .g6-map-header-meta svg { color: #507ced; }
 .g6-map-header-meta b { color: #3f4350; font-size: 15px; }
 
+.g6-map-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.g6-map-type-picker {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(190px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 4px 8px 4px 11px;
+  border: 1px solid #e3e5ea;
+  border-radius: 11px;
+  color: #747985;
+  background: #fafbfc;
+  font-size: 11px;
+  font-weight: 700;
+  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+
+.g6-map-type-picker:focus-within {
+  border-color: #9bb8f2;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(66, 124, 232, .1);
+}
+
+.g6-map-type-picker > span { white-space: nowrap; }
+
+.g6-map-type-picker select {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #343946;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.g6-map-type-picker small {
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #416fc5;
+  background: #edf3ff;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .g6-map-surface {
   position: relative;
   min-height: min(704px, calc(100vh - 236px));
@@ -98,6 +151,55 @@
     radial-gradient(circle at 50% 50%, rgba(227, 235, 255, .22), transparent 30%),
     #fff;
 }
+
+.g6-map-surface::before {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+}
+
+.g6-map-surface.is-dendrogram,
+.g6-map-surface.is-compact-box,
+.g6-map-surface.is-indented { background: linear-gradient(90deg, #fbfcfe, #fff 45%, #fbfcfe); }
+.g6-map-surface.is-fishbone { background: linear-gradient(180deg, #fffdf8, #fff 44%, #fbfaf6); }
+.g6-map-surface.is-dagre-lr { background: repeating-linear-gradient(90deg, transparent 0 149px, rgba(50, 139, 121, .045) 150px 151px), #fbfefd; }
+.g6-map-surface.is-dagre-tb { background: repeating-linear-gradient(0deg, transparent 0 119px, rgba(187, 90, 90, .045) 120px 121px), #fffdfd; }
+.g6-map-surface.is-snake { background: radial-gradient(circle at 18% 20%, rgba(80, 116, 216, .07), transparent 24%), radial-gradient(circle at 82% 78%, rgba(50, 160, 140, .07), transparent 24%), #fff; }
+.g6-map-surface.is-timeline-river { background: linear-gradient(180deg, #fbfbff, #fff 48%, #fafcff); }
+.g6-map-surface.is-timeline-river::before { top: 50%; right: 7%; bottom: auto; left: 7%; height: 2px; border-radius: 999px; background: linear-gradient(90deg, transparent, #8aa3d9 8% 92%, transparent); box-shadow: 0 0 0 7px rgba(109, 136, 196, .04); }
+.g6-map-surface.is-circular,
+.g6-map-surface.is-concentric,
+.g6-map-surface.is-radial,
+.g6-map-surface.is-edge-bundling { background: radial-gradient(circle at 50% 50%, rgba(231, 237, 255, .54), transparent 37%), #fff; }
+.g6-map-surface.is-force,
+.g6-map-surface.is-fruchterman,
+.g6-map-surface.is-atlas2,
+.g6-map-surface.is-mds { background: radial-gradient(circle at 50% 50%, rgba(229, 242, 238, .5), transparent 42%), #fff; }
+.g6-map-surface.is-d3-bubble { background: radial-gradient(circle at 26% 31%, rgba(255, 221, 180, .18), transparent 25%), radial-gradient(circle at 74% 66%, rgba(190, 224, 255, .2), transparent 26%), #fff; }
+.g6-map-surface.is-grid { background-image: linear-gradient(rgba(52, 65, 92, .045) 1px, transparent 1px), linear-gradient(90deg, rgba(52, 65, 92, .045) 1px, transparent 1px); background-size: 54px 54px; background-color: #fff; }
+.g6-map-surface.is-arc-dependency { background: linear-gradient(180deg, #fff 0 73%, #fbfbfd 73% 100%); }
+.g6-map-surface.is-arc-dependency::before { top: 78%; right: 6%; bottom: auto; left: 6%; height: 1px; background: #d8dbe4; }
+.g6-map-surface.is-split-comparison { background: linear-gradient(90deg, rgba(72, 120, 210, .045) 0 49.9%, rgba(213, 127, 78, .045) 50.1% 100%), #fff; }
+.g6-map-surface.is-split-comparison::before { right: auto; left: 50%; width: 1px; background: linear-gradient(transparent 8%, #e0e2e8 20% 80%, transparent 92%); }
+.g6-map-surface.is-org-chart { background: linear-gradient(180deg, rgba(74, 99, 164, .055), transparent 42%), #fff; }
+.g6-map-surface.is-radial-tree { background: radial-gradient(circle at 50% 50%, transparent 0 20%, rgba(90, 118, 190, .055) 20.2% 20.6%, transparent 20.8% 34%, rgba(90, 118, 190, .04) 34.2% 34.6%, transparent 34.8%), #fff; }
+.g6-map-surface.is-outline-tree { background: repeating-linear-gradient(0deg, transparent 0 53px, rgba(43, 56, 82, .035) 54px 55px), #fff; }
+.g6-map-surface.is-funnel-flow { background: linear-gradient(180deg, rgba(79, 112, 196, .06), rgba(68, 158, 137, .035) 60%, transparent), #fff; }
+.g6-map-surface.is-cycle-loop { background: radial-gradient(circle at 50% 50%, rgba(245, 238, 221, .62), transparent 29%), #fff; }
+.g6-map-surface.is-swimlane { background: linear-gradient(180deg, rgba(67, 111, 190, .045) 0 33.2%, transparent 33.4% 66.4%, rgba(205, 125, 79, .04) 66.6%), #fff; }
+.g6-map-surface.is-swimlane::before { background: linear-gradient(180deg, transparent 33.1%, #e4e7ee 33.2% 33.35%, transparent 33.45% 66.45%, #e4e7ee 66.55% 66.7%, transparent 66.8%); }
+.g6-map-surface.is-staircase { background: linear-gradient(145deg, transparent 0 48%, rgba(75, 117, 204, .045) 48.2% 52%, transparent 52.2%), #fff; }
+.g6-map-surface.is-orbit { background: radial-gradient(ellipse at 50% 50%, transparent 0 24%, rgba(83, 111, 184, .07) 24.2% 24.6%, transparent 24.8% 39%, rgba(83, 111, 184, .045) 39.2% 39.6%, transparent 39.8%), #fff; }
+.g6-map-surface.is-honeycomb { background-color: #fffdf8; background-image: radial-gradient(circle at 50% 50%, rgba(235, 184, 73, .1), transparent 37%); }
+.g6-map-surface.is-bipartite { background: linear-gradient(90deg, rgba(67, 111, 190, .05) 0 46%, transparent 46.2% 53.8%, rgba(205, 125, 79, .05) 54%), #fff; }
+.g6-map-surface.is-chord-ring { background: radial-gradient(circle at 50% 50%, rgba(239, 233, 250, .58), transparent 36%), #fff; }
+.g6-map-surface.is-quadrant { background: linear-gradient(90deg, transparent 49.9%, #e5e7ed 50% 50.1%, transparent 50.2%), linear-gradient(0deg, transparent 49.9%, #e5e7ed 50% 50.1%, transparent 50.2%), #fff; }
+.g6-map-surface.is-pyramid { background: linear-gradient(180deg, rgba(218, 170, 90, .06), transparent 68%), #fffdf9; }
+.g6-map-surface.is-spectrum { background: linear-gradient(180deg, #fff 0 49.7%, rgba(87, 112, 176, .16) 49.8% 50.2%, #fff 50.3%); }
+.g6-map-surface.is-spectrum::before { top: 50%; right: 8%; bottom: auto; left: 8%; width: auto; height: 6px; border-radius: 999px; background: linear-gradient(90deg, #486bd0, #39a592 38%, #d39a45 69%, #cc5e76); opacity: .18; }
+.g6-map-surface.is-matrix-heat { background-color: #fff; background-image: linear-gradient(rgba(53, 65, 90, .03) 1px, transparent 1px), linear-gradient(90deg, rgba(53, 65, 90, .03) 1px, transparent 1px); background-size: 76px 76px; }
 
 .g6-knowledge-map.is-workspace .g6-map-surface { min-height: calc(100vh - 220px); }
 
@@ -286,10 +388,124 @@
   pointer-events: none;
 }
 
+/* The map is the workspace. Its canvas owns every spare pixel instead of
+   inheriting a fixed card height from the older reader surface. */
+.g6-knowledge-map.is-workspace {
+  min-height: calc(100dvh - 110px);
+  height: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.g6-knowledge-map.is-workspace .g6-map-surface {
+  min-height: calc(100dvh - 186px);
+  height: auto;
+}
+
+/* The actual map workspace provides a bounded grid row, while the isolated
+   demo and reader do not. Keep both contexts measurable for G6. */
+.map-studio-frame .g6-knowledge-map.is-workspace {
+  min-height: 0;
+  height: 100%;
+}
+
+.map-studio-frame .g6-knowledge-map.is-workspace .g6-map-surface {
+  min-height: 0;
+  height: 100%;
+}
+
+.g6-map-canvas { z-index: 2; transition: opacity .22s ease; }
+.g6-map-surface[data-render-state='booting'] .g6-map-canvas,
+.g6-map-surface[data-render-state='failed'] .g6-map-canvas { opacity: 0; pointer-events: none; }
+
+.g6-map-fallback {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: auto;
+  background: #fff;
+  opacity: 1;
+  transition: opacity .3s cubic-bezier(.16, 1, .3, 1), visibility .3s step-end;
+}
+
+.g6-map-surface[data-render-state='ready'] .g6-map-fallback {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .22s ease, visibility 0s step-end .22s;
+}
+
+.g6-map-fallback-wires { width: 100%; height: 100%; position: absolute; inset: 0; overflow: visible; }
+.g6-map-fallback-wires line { stroke-width: .22; stroke-linecap: round; opacity: .7; }
+
+.g6-map-fallback-core {
+  width: clamp(104px, 12vw, 154px);
+  aspect-ratio: 1;
+  position: absolute;
+  top: var(--fallback-core-y, 50%);
+  left: var(--fallback-core-x, 50%);
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 18px;
+  border-radius: 50%;
+  color: #fff;
+  background: #252c42;
+  box-shadow: 0 20px 35px rgba(34, 43, 65, .18);
+  font-size: clamp(14px, 1.25vw, 18px);
+  font-weight: 720;
+  line-height: 1.36;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.g6-map-fallback-node {
+  position: absolute;
+  top: var(--fallback-y);
+  left: var(--fallback-x);
+  max-width: min(18vw, 154px);
+  min-height: 36px;
+  padding: 8px 11px;
+  border: 1.5px solid var(--fallback-color);
+  border-radius: 999px;
+  color: #283044;
+  background: #fff;
+  box-shadow: 0 8px 18px rgba(39, 46, 68, .09);
+  font: inherit;
+  font-size: clamp(11px, .86vw, 13px);
+  font-weight: 650;
+  line-height: 1.28;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  transition: background .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.g6-map-fallback-node:hover {
+  background: color-mix(in srgb, var(--fallback-color) 10%, white);
+  box-shadow: 0 12px 22px rgba(39, 46, 68, .14);
+  transform: translate(-50%, -50%) scale(1.04);
+}
+
+.g6-map-fallback-node:focus-visible { outline: 2px solid #252c42; outline-offset: 3px; }
+
+.g6-map-fallback-status {
+  position: absolute;
+  right: 20px;
+  bottom: 18px;
+  color: #7e8493;
+  font-size: 11px;
+  font-weight: 650;
+}
+
 @media (max-width: 760px) {
   .g6-knowledge-map, .g6-knowledge-map.is-workspace { min-height: 620px; }
   .g6-map-header { min-height: 66px; padding: 10px 15px; }
   .g6-map-header-meta small { display: none; }
+  .g6-map-header-actions { gap: 7px; }
+  .g6-map-type-picker { grid-template-columns: minmax(112px, 1fr); min-width: 0; padding: 4px 7px; }
+  .g6-map-type-picker > span, .g6-map-type-picker > small { display: none; }
+  .g6-map-type-picker select { max-width: 144px; }
   .g6-map-heading { gap: 7px; }
   .g6-map-heading > span { display: none; }
   .g6-map-back { padding: 6px; font-size: 0; }

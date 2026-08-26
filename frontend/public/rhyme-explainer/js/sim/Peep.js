@@ -198,12 +198,6 @@ function Peep(config){
 		verified:3,
 		transfer:4
 	};
-	var KNOWLEDGE_STATE_LABELS = {
-		unlinked:"尚未建立关系",
-		familiar:"只记住答案",
-		verified:"经过多重验证",
-		transfer:"能够迁移"
-	};
 	var _glowAnim = 0;
 	var _knowledgePulse = 0;
 	self.conclusionFrame = Math.floor(1+Math.random()*5);
@@ -222,33 +216,87 @@ function Peep(config){
 		ctx.quadraticCurveTo(x, y, x+r, y);
 		ctx.closePath();
 	}
-	function _wrapKnowledgeText(ctx, text, maxWidth){
+	function _compactKnowledgeText(value, limit){
+		var text = String(value || "").replace(/\s+/g, " ").trim();
+		if(limit && text.length>limit) return text.slice(0, Math.max(1, limit-1)).replace(/[，、；;：: ]+$/, "")+"…";
+		return text;
+	}
+	function _wrapKnowledgeText(ctx, text, maxWidth, maxLines){
 		var lines = [];
 		var current = "";
+		text = _compactKnowledgeText(text, 120);
 		for(var i=0; i<text.length; i++){
-			var next = current + text.charAt(i);
+			var next = current+text.charAt(i);
 			if(current && ctx.measureText(next).width>maxWidth){
 				lines.push(current);
 				current = text.charAt(i);
+				if(lines.length===maxLines) break;
 			}else{
 				current = next;
 			}
 		}
-		if(current) lines.push(current);
+		if(current && lines.length<maxLines) lines.push(current);
+		if(lines.length===maxLines && textSignatureForPeep(lines.join(""))!==textSignatureForPeep(text)){
+			lines[maxLines-1] = lines[maxLines-1].slice(0, Math.max(1, lines[maxLines-1].length-1)).replace(/[，、；;：: ]+$/, "")+"…";
+		}
 		return lines;
+	}
+	function textSignatureForPeep(value){
+		return String(value || "").replace(/\s+/g, "");
+	}
+	function _knowledgeRoleToken(role){
+		var value = String(role || "");
+		if(/定义|概念|对象/.test(value)) return "定";
+		if(/条件|前提|限制/.test(value)) return "条";
+		if(/机制|过程|步骤|计算/.test(value)) return "理";
+		if(/证据|数据|观察|检验/.test(value)) return "证";
+		if(/反例|错误|修正/.test(value)) return "反";
+		if(/边界|范围|特殊/.test(value)) return "界";
+		if(/迁移|应用|新题/.test(value)) return "迁";
+		if(/结论|判断|输出/.test(value)) return "结";
+		return "知";
+	}
+	function _drawKnowledgeBadge(ctx, color){
+		if(!self.knowledge) return;
+		var index = Math.max(1, Number(self.knowledge.sceneIndex) || 1);
+		var tick = Math.max(0, Number(self.sim.knowledgeCalloutTick) || 0);
+		var progress = Math.max(0, Math.min(1, (tick-(index-1)*2)/12));
+		var eased = 1-Math.pow(1-progress, 3);
+		var isActive = self.isKnowledgeHovered || self.sim.focusedPeep===self;
+		var width = isActive ? 39 : 34;
+		var height = 16;
+		var label = String(index).padStart(2, "0")+"·"+_knowledgeRoleToken(self.knowledge.role);
+
+		ctx.save();
+		ctx.translate(19, -23);
+		ctx.scale((0.72+eased*0.28)*(isActive ? 1.08 : 1), (0.72+eased*0.28)*(isActive ? 1.08 : 1));
+		ctx.globalAlpha = 0.3+eased*0.68;
+		_roundRect(ctx, -width/2, -height/2, width, height, 8);
+		ctx.fillStyle = "rgba(255,255,255,0.96)";
+		ctx.fill();
+		ctx.strokeStyle = color;
+		ctx.lineWidth = isActive ? 1.8 : 1.25;
+		ctx.stroke();
+		ctx.font = "9px PatrickHand";
+		ctx.textAlign = "center";
+		ctx.textBaseline = "middle";
+		ctx.fillStyle = "#333";
+		ctx.fillText(label, 0, 0.5);
+		ctx.restore();
 	}
 	function _drawKnowledgeTag(ctx, color){
 		if(!self.knowledge) return;
 
 		var knowledge = self.knowledge;
 		var isFocused = (self.sim.focusedPeep===self);
-		if(knowledge.featured===false && !isFocused) return;
 		var isHovered = self.isKnowledgeHovered && !Simulations.IS_RUNNING;
+		// Never label every atom at once. A graph stays readable when the learner
+		// sees a label only for the atom they are inspecting (or hovering).
+		if(!isFocused && !isHovered) return;
 		var offset = knowledge.labelOffset || [0,-48];
-		var title = knowledge.label || "知识原子";
-		var role = knowledge.role || "知识点";
-		var state = self.getKnowledgeState();
-		var stateLabel = KNOWLEDGE_STATE_LABELS[state] || "正在建立关系";
+		var title = _compactKnowledgeText(knowledge.label || "知识原子", 18);
+		var role = _compactKnowledgeText(knowledge.role || "知识点", 13);
+		var detail = knowledge.detail || "点击这张脸，查看它和相邻知识的关系。";
 		var scale = isFocused ? 1.07 : (isHovered ? 1.035 : 1);
 
 		ctx.save();
@@ -258,8 +306,11 @@ function Peep(config){
 		var titleWidth = ctx.measureText(title).width;
 		ctx.font = "10px PatrickHand";
 		var roleWidth = ctx.measureText(role).width;
-		var tagWidth = Math.max(68, titleWidth+24, roleWidth+24);
-		var tagHeight = 35;
+		ctx.font = "11px PatrickHand";
+		var detailLines = _wrapKnowledgeText(ctx, detail, 164, 2);
+		var detailWidth = detailLines.reduce(function(max, line){ return Math.max(max, ctx.measureText(line).width); }, 0);
+		var tagWidth = Math.min(196, Math.max(88, titleWidth+24, roleWidth+24, detailWidth+24));
+		var tagHeight = 43+detailLines.length*13;
 		var left = -tagWidth/2;
 		var top = -tagHeight/2;
 
@@ -291,34 +342,11 @@ function Peep(config){
 		ctx.font = "10px PatrickHand";
 		ctx.fillStyle = "#777";
 		ctx.fillText(role, 3, top+25);
-
-		if(isFocused){
-			var noteWidth = 160;
-			var noteOnLeft = self.x>520;
-			var noteLeft = noteOnLeft ? -noteWidth-40 : 40;
-			var noteTop = -32;
-			ctx.font = "13px PatrickHand";
-			var lines = _wrapKnowledgeText(ctx, knowledge.detail || "这个知识原子正在等待和其他证据连起来。", noteWidth-22);
-			lines = lines.slice(0,4);
-			var noteHeight = 35 + lines.length*16;
-			_roundRect(ctx, noteLeft, noteTop, noteWidth, noteHeight, 11);
-			ctx.fillStyle = "rgba(255,255,255,0.98)";
-			ctx.fill();
-			ctx.strokeStyle = color;
-			ctx.lineWidth = 2;
-			ctx.stroke();
-
-			ctx.textAlign = "left";
-			ctx.textBaseline = "middle";
-			ctx.font = "11px PatrickHand";
-			ctx.fillStyle = color;
-			ctx.fillText(stateLabel, noteLeft+11, noteTop+14);
-			ctx.font = "13px PatrickHand";
-			ctx.fillStyle = "#222";
-			lines.forEach(function(line, index){
-				ctx.fillText(line, noteLeft+11, noteTop+34+index*16);
-			});
-		}
+		ctx.font = "11px PatrickHand";
+		ctx.fillStyle = "#4d4d4d";
+		detailLines.forEach(function(line, index){
+			ctx.fillText(line, 3, top+42+index*13);
+		});
 
 		ctx.restore();
 	}
@@ -416,6 +444,7 @@ function Peep(config){
 			self.propSprite.draw(ctx);
 		}
 
+		_drawKnowledgeBadge(ctx, myColor);
 		_drawKnowledgeTag(ctx, myColor);
 
 		//////////////////////////////////////////////////////////

@@ -81,6 +81,7 @@ function Simulations(){
 		// save for later resetting
 		self.sims.forEach(function(sim){
 			sim.save();
+			if(sim.restartKnowledgeCallouts) sim.restartKnowledgeCallouts();
 		});
 
 	});
@@ -125,7 +126,14 @@ function Sim(config){
 	self.options = config.options || {};
 	self.semanticSceneID = config.semanticScene || null;
 	self.focusedPeep = null;
+	self.focusedConnection = null;
 	self.knowledgeFocusTick = 0;
+	// Semantic scenes use the empty parts of the paper as part of the lesson.
+	// A few hand-drawn notes live away from the network, then point back to the
+	// atoms they explain. This keeps the story visual without labelling every
+	// person at once.
+	self.knowledgeCallouts = [];
+	self.knowledgeCalloutTick = 0;
 
 	self.id = config.id;
 
@@ -146,12 +154,314 @@ function Sim(config){
 		if(fallbackRelations.length===0) return null;
 		return fallbackRelations[Math.abs((fromIndex*17)+toIndex)%fallbackRelations.length];
 	};
+	function _compactKnowledgeText(value, limit){
+		var text = String(value || "").replace(/\s+/g, " ").trim();
+		if(!text) return "";
+		if(limit && text.length>limit){
+			return text.slice(0, Math.max(1, limit-1)).replace(/[，、；;：: ]+$/, "") + "…";
+		}
+		return text;
+	}
+	function _knowledgeLines(value, charactersPerLine, maxLines){
+		var text = _compactKnowledgeText(value, charactersPerLine*maxLines+8);
+		if(!text) return [];
+		var lines = [];
+		while(text.length && lines.length<maxLines){
+			var line = text.slice(0, charactersPerLine);
+			text = text.slice(charactersPerLine);
+			if(text && lines.length===maxLines-1){
+				line = line.slice(0, Math.max(1, charactersPerLine-1)).replace(/[，、；;：: ]+$/, "") + "…";
+				text = "";
+			}
+			lines.push(line);
+		}
+		return lines;
+	}
+	function _roundKnowledgeRect(ctx, x, y, width, height, radius){
+		var r = Math.min(radius, width/2, height/2);
+		ctx.beginPath();
+		ctx.moveTo(x+r, y);
+		ctx.lineTo(x+width-r, y);
+		ctx.quadraticCurveTo(x+width, y, x+width, y+r);
+		ctx.lineTo(x+width, y+height-r);
+		ctx.quadraticCurveTo(x+width, y+height, x+width-r, y+height);
+		ctx.lineTo(x+r, y+height);
+		ctx.quadraticCurveTo(x, y+height, x, y+height-r);
+		ctx.lineTo(x, y+r);
+		ctx.quadraticCurveTo(x, y, x+r, y);
+		ctx.closePath();
+	}
+	function _knowledgeStateColor(peep){
+		var colors = {
+			unlinked:"#979797",
+			familiar:"#d94350",
+			verified:"#148f99",
+			transfer:"#4f9d37"
+		};
+		var state = peep && peep.getKnowledgeState ? peep.getKnowledgeState() : "unlinked";
+		return colors[state] || colors.unlinked;
+	}
+	function _distanceBetween(a, b){
+		var dx = a.x-b.x;
+		var dy = a.y-b.y;
+		return Math.sqrt(dx*dx+dy*dy);
+	}
+	function _calloutAnchor(slot){
+		if(slot.side==="left") return {x:slot.x, y:slot.y+slot.h/2};
+		if(slot.side==="right") return {x:slot.x+slot.w, y:slot.y+slot.h/2};
+		if(slot.side==="bottom") return {x:slot.x+slot.w/2, y:slot.y+slot.h};
+		return {x:slot.x+slot.w/2, y:slot.y};
+	}
+	function _slotContainsPeep(slot, peep){
+		var padding = 42;
+		return peep.x>slot.x-padding && peep.x<slot.x+slot.w+padding &&
+			peep.y>slot.y-padding && peep.y<slot.y+slot.h+padding;
+	}
+	function _getKnowledgeCalloutSlots(){
+		// These deliberately leave the top-left caption, focus inspector and
+		// playback controls alone. They turn the unused margins into a reading
+		// path around the live network instead of another block of UI. The
+		// simulation itself may be positioned inside that stage, so turn the
+		// stage coordinates back into this simulation's local coordinates.
+		var stageOffsetX = config.x || 0;
+		var stageOffsetY = config.y || 0;
+		return [
+			{id:"top-right", x:690-stageOffsetX, y:32-stageOffsetY, w:222, h:77, side:"left", tilt:-0.010},
+			{id:"left-middle", x:30-stageOffsetX, y:173-stageOffsetY, w:202, h:78, side:"right", tilt:0.012},
+			{id:"right-middle", x:714-stageOffsetX, y:258-stageOffsetY, w:214, h:79, side:"left", tilt:-0.008},
+			{id:"bottom-center", x:352-stageOffsetX, y:443-stageOffsetY, w:256, h:73, side:"top", tilt:0.008}
+		];
+	}
+	function _getFeaturedKnowledgePeeps(){
+		var candidates = self.peeps.map(function(peep, index){
+			return {peep:peep, index:index, knowledge:peep.knowledge};
+		}).filter(function(item){
+			return !!item.knowledge;
+		});
+		if(!candidates.length) return [];
+
+		var desiredCount = candidates.length>=7 ? 4 : (candidates.length>=4 ? 3 : Math.min(2, candidates.length));
+		var picked = [];
+		while(picked.length<desiredCount){
+			var best = null;
+			var bestScore = -Infinity;
+			candidates.forEach(function(candidate){
+				if(picked.indexOf(candidate)>=0) return;
+				var degree = self.getFriendsOf(candidate.peep).length;
+				var score = degree*30 + (candidate.knowledge.featured ? 420 : 0);
+				if(picked.length){
+					var nearest = Infinity;
+					picked.forEach(function(chosen){
+						nearest = Math.min(nearest, _distanceBetween(candidate.peep, chosen.peep));
+					});
+					score += nearest*0.45;
+				}
+				if(score>bestScore){
+					best = candidate;
+					bestScore = score;
+				}
+			});
+			if(!best) break;
+			picked.push(best);
+		}
+		return picked;
+	}
+	self.buildKnowledgeCallouts = function(){
+		self.knowledgeCallouts = [];
+		self.knowledgeCalloutTick = 0;
+		if(!self.semanticSceneID) return;
+		var featured = _getFeaturedKnowledgePeeps();
+		var slots = _getKnowledgeCalloutSlots();
+		featured.forEach(function(item, index){
+			var bestSlot = null;
+			var bestScore = -Infinity;
+			slots.forEach(function(slot){
+				if(slot.used) return;
+				var anchor = _calloutAnchor(slot);
+				var score = _distanceBetween(item.peep, anchor);
+				var collisions = self.peeps.filter(function(peep){ return _slotContainsPeep(slot, peep); }).length;
+				score -= collisions*650;
+				if(score>bestScore){
+					bestSlot = slot;
+					bestScore = score;
+				}
+			});
+			if(!bestSlot) return;
+			bestSlot.used = true;
+			var relationship = self.connections.find(function(connection){
+				return connection.from===item.peep || connection.to===item.peep;
+			});
+			var relationshipHint = relationship && relationship.relationship ? relationship.relationship.label : "";
+			var detail = _compactKnowledgeText(item.knowledge.detail, 44) || "沿着这条线，看看它如何参与这一幕。";
+			self.knowledgeCallouts.push({
+				peep:item.peep,
+				slot:bestSlot,
+				anchor:_calloutAnchor(bestSlot),
+				title:_compactKnowledgeText(item.knowledge.label || "知识原子", 20),
+				role:_compactKnowledgeText(item.knowledge.role || relationshipHint || "关键线索", 16),
+				detailLines:_knowledgeLines(detail, bestSlot.w>=240 ? 23 : 18, 2),
+				color:_knowledgeStateColor(item.peep),
+				revealAt:index*13,
+				bend:(index%2===0 ? 1 : -1)*(18+index*5)
+			});
+		});
+	};
+	self.restartKnowledgeCallouts = function(){
+		if(!self.semanticSceneID) return;
+		self.knowledgeCalloutTick = 0;
+	};
+	function _calloutProgress(callout){
+		var progress = (self.knowledgeCalloutTick-callout.revealAt)/24;
+		return Math.max(0, Math.min(1, progress));
+	}
+	function _knowledgeOverlayIsOpen(){
+		var modal = document.getElementById("modal_container");
+		return !!(modal && modal.hasAttribute("show"));
+	}
+	function _easeOutCubic(value){
+		return 1-Math.pow(1-value, 3);
+	}
+	function _drawPartialLeader(ctx, start, bend, end, progress){
+		var points = [start, bend, end];
+		var lengths = [];
+		var total = 0;
+		for(var i=1; i<points.length; i++){
+			var length = _distanceBetween(points[i-1], points[i]);
+			lengths.push(length);
+			total += length;
+		}
+		var remaining = total*progress;
+		ctx.beginPath();
+		ctx.moveTo(start.x, start.y);
+		for(var segment=0; segment<lengths.length; segment++){
+			var from = points[segment];
+			var to = points[segment+1];
+			if(remaining<=0) break;
+			var proportion = Math.min(1, remaining/lengths[segment]);
+			ctx.lineTo(from.x+(to.x-from.x)*proportion, from.y+(to.y-from.y)*proportion);
+			remaining -= lengths[segment];
+			if(proportion<1) break;
+		}
+	}
+	function _drawKnowledgeCalloutLeaders(ctx){
+		if(!self.semanticSceneID || !self.knowledgeCallouts.length || _knowledgeOverlayIsOpen()) return;
+		self.knowledgeCallouts.forEach(function(callout){
+			var reveal = _calloutProgress(callout);
+			if(reveal<=0) return;
+			var lineProgress = _easeOutCubic(Math.min(1, reveal*1.35));
+			var vector = {x:callout.anchor.x-callout.peep.x, y:callout.anchor.y-callout.peep.y};
+			var length = Math.sqrt(vector.x*vector.x+vector.y*vector.y) || 1;
+			var start = {
+				x:callout.peep.x+vector.x/length*31,
+				y:callout.peep.y+vector.y/length*31
+			};
+			var bend = {
+				x:start.x+(callout.anchor.x-start.x)*0.47 + (callout.slot.side==="top" || callout.slot.side==="bottom" ? callout.bend : 0),
+				y:start.y+(callout.anchor.y-start.y)*0.47 + (callout.slot.side==="left" || callout.slot.side==="right" ? callout.bend : 0)
+			};
+			ctx.save();
+			ctx.globalAlpha = 0.58;
+			ctx.strokeStyle = callout.color;
+			ctx.lineWidth = 1.45;
+			ctx.lineCap = "round";
+			ctx.lineJoin = "round";
+			_drawPartialLeader(ctx, start, bend, callout.anchor, lineProgress);
+			ctx.stroke();
+			ctx.globalAlpha = 0.18;
+			ctx.translate(0.7, -0.55);
+			_drawPartialLeader(ctx, start, bend, callout.anchor, Math.max(0, lineProgress-0.025));
+			ctx.stroke();
+			ctx.restore();
+		});
+	}
+	function _drawKnowledgeCalloutCards(ctx){
+		if(!self.semanticSceneID || !self.knowledgeCallouts.length || _knowledgeOverlayIsOpen()) return;
+		self.knowledgeCallouts.forEach(function(callout, index){
+			var reveal = _calloutProgress(callout);
+			if(reveal<0.22) return;
+			var cardProgress = _easeOutCubic(Math.min(1, (reveal-0.22)/0.78));
+			var scale = 0.88 + cardProgress*0.12;
+			var offset = (1-cardProgress)*10;
+			var slot = callout.slot;
+			var height = slot.h;
+			var x = slot.x;
+			var y = slot.y;
+			if(slot.side==="left") x += offset;
+			if(slot.side==="right") x -= offset;
+			if(slot.side==="top") y += offset;
+			if(slot.side==="bottom") y -= offset;
+
+			ctx.save();
+			ctx.globalAlpha = cardProgress;
+			ctx.translate(x+slot.w/2, y+height/2);
+			ctx.rotate(slot.tilt || 0);
+			ctx.scale(scale, scale);
+			ctx.translate(-slot.w/2, -height/2);
+			ctx.shadowColor = "rgba(34,34,34,0.12)";
+			ctx.shadowBlur = 10;
+			ctx.shadowOffsetY = 3;
+			_roundKnowledgeRect(ctx, 0, 0, slot.w, height, 10);
+			ctx.fillStyle = "rgba(255,255,255,0.97)";
+			ctx.fill();
+			ctx.shadowColor = "transparent";
+			ctx.lineWidth = 1.55;
+			ctx.strokeStyle = "rgba(44,44,44,0.62)";
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.moveTo(13, 12);
+			ctx.lineTo(13, height-12);
+			ctx.strokeStyle = callout.color;
+			ctx.lineWidth = 3;
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.arc(23, 16, 3.2, 0, Math.TAU);
+			ctx.fillStyle = callout.color;
+			ctx.fill();
+			ctx.font = "14px PatrickHand";
+			ctx.textAlign = "left";
+			ctx.textBaseline = "middle";
+			ctx.fillStyle = "#222";
+			ctx.fillText(callout.title, 31, 17);
+			ctx.font = "10px PatrickHand";
+			ctx.fillStyle = callout.color;
+			ctx.fillText(callout.role, 23, 34);
+			ctx.font = "11px PatrickHand";
+			ctx.fillStyle = "#595959";
+			callout.detailLines.forEach(function(line, lineIndex){
+				ctx.fillText(line, 23, 50+lineIndex*14);
+			});
+			ctx.font = "9px PatrickHand";
+			ctx.fillStyle = "#a0a0a0";
+			ctx.textAlign = "right";
+			ctx.fillText("线索 " + (index+1), slot.w-14, height-12);
+			ctx.restore();
+		});
+	}
 	self.focusKnowledgeAtom = function(peep){
 		if(!peep || !peep.knowledge) return false;
 		self.focusedPeep = (self.focusedPeep===peep) ? null : peep;
+		self.focusedConnection = self.focusedPeep
+			? self.connections.find(function(connection){
+				return connection.from===self.focusedPeep || connection.to===self.focusedPeep;
+			}) || null
+			: null;
 		self.knowledgeFocusTick = 0;
 		if(self.focusedPeep && window.RHYME_KNOWLEDGE_ATOMS && window.RHYME_KNOWLEDGE_ATOMS.recordAtomFocus){
 			window.RHYME_KNOWLEDGE_ATOMS.recordAtomFocus(self.focusedPeep.knowledge);
+		}
+		if(window.RHYME_STAGE){
+			if(self.focusedPeep){
+				var state = self.focusedPeep.getKnowledgeState && self.focusedPeep.getKnowledgeState();
+				var stateLabels = {
+					unlinked:"尚未建立关系",
+					familiar:"只记住答案",
+					verified:"经过多重验证",
+					transfer:"能够迁移"
+				};
+				window.RHYME_STAGE.focusAtom(self.focusedPeep.knowledge, stateLabels[state]);
+			}else if(window.RHYME_STAGE.clearFocus){
+				window.RHYME_STAGE.clearFocus();
+			}
 		}
 		return true;
 	};
@@ -210,6 +520,10 @@ function Sim(config){
 		self.connections = [];
 		self.contagion = 0;
 		self.focusedPeep = null;
+		self.focusedConnection = null;
+		self.knowledgeCallouts = [];
+		self.knowledgeCalloutTick = 0;
+		if(window.RHYME_STAGE && window.RHYME_STAGE.clearFocus) window.RHYME_STAGE.clearFocus();
 	};
 	self.init = function(){
 
@@ -223,6 +537,10 @@ function Sim(config){
 				y = p[1],
 				infected = p[2];
 			var knowledge = semanticScene && semanticScene.nodes ? semanticScene.nodes[index] : null;
+			if(knowledge){
+				knowledge.sceneIndex = knowledge.sceneIndex || index+1;
+				knowledge.sceneCount = knowledge.sceneCount || self.networkConfig.peeps.length;
+			}
 			self.addPeep(x, y, infected, knowledge);
 		});
 
@@ -237,6 +555,7 @@ function Sim(config){
 
 		// Contagion
 		self.contagion = self.networkConfig.contagion;
+		self.buildKnowledgeCallouts();
 
 	};
 
@@ -272,6 +591,9 @@ function Sim(config){
 		});
 		if(self.focusedPeep){
 			self.knowledgeFocusTick += 1;
+		}
+		if(self.semanticSceneID && self.knowledgeCalloutTick<1000){
+			self.knowledgeCalloutTick += 1;
 		}
 
 		// secret editor...
@@ -328,9 +650,11 @@ function Sim(config){
 		self.connections.forEach(function(connection){
 			connection.draw(ctx);
 		});
+		_drawKnowledgeCalloutLeaders(ctx);
 		self.peeps.forEach(function(peep){
 			peep.draw(ctx);
 		});
+		_drawKnowledgeCalloutCards(ctx);
 
 		ctx.restore();
 

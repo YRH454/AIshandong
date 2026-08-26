@@ -45,8 +45,11 @@ function Connection(config){
 	}
 	self.shouldShowRelationship = function(){
 		if(!self.relationship) return false;
-		if(self.contagionDot) return true;
-		return self.sim.focusedPeep===self.from || self.sim.focusedPeep===self.to;
+		// Relationship labels are intentionally singular. During an animation
+		// several connections may be active at once; showing every sentence turns
+		// the canvas into a subtitle wall. The selected atom reveals one useful
+		// relation instead.
+		return self.sim.focusedConnection===self;
 	};
 	self.drawRelationship = function(ctx){
 		if(!self.shouldShowRelationship()) return;

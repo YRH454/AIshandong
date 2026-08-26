@@ -1080,6 +1080,85 @@ function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
   }
 }
 
+function provisionalMapType(text: string): NonNullable<KnowledgeMapData['map_type']> {
+  if (/比较|区别|异同|不同于|对比/.test(text)) return 'comparison_map'
+  if (/时间|历史|演变|发展历程|阶段/.test(text)) return 'timeline_map'
+  if (/因果|机制|导致|影响|作用于/.test(text)) return 'causal_map'
+  if (/选择|判断|分支|如果.*则|条件/.test(text)) return 'decision_map'
+  if (/关系|关联|网络|相互/.test(text)) return 'relationship_map'
+  if (/步骤|流程|顺序|算法|代码|操作|如何/.test(text)) return 'process_flow'
+  return 'concept_tree'
+}
+
+function provisionalMapLabel(sentence: string, fallback: string) {
+  const clean = sentence
+    .replace(/^\s*(首先|然后|接着|最后|因此|所以|需要|可以|我们)[:：，,、\s]*/u, '')
+    .replace(/[，,。；;：:（(].*$/u, '')
+    .replace(/[*#`>]/g, '')
+    .trim()
+  return (clean || fallback).slice(0, 12)
+}
+
+function createProvisionalKnowledgeMap(question: string, answer: string, topic: string): KnowledgeMapData {
+  const cleanTopic = (topic || question || '当前主题').replace(/\s+/g, ' ').trim().slice(0, 24) || '当前主题'
+  const sentences = answer
+    .replace(/```[\s\S]*?```/g, '')
+    .split(/[。！？!?；;\n]+/u)
+    .map(item => item.replace(/^[-*\d.、\s]+/u, '').trim())
+    .filter(item => item.length >= 6 && item.length <= 120)
+    .slice(0, 8)
+  const fallbackLabels = ['概念边界', '关键术语', '成立机制', '关键关系', '推理路径', '应用验证', '常见误判', '延展线索']
+  const kinds: NonNullable<KnowledgeMapNode['kind']>[] = ['foundation', 'foundation', 'principle', 'principle', 'process', 'example', 'pitfall', 'process']
+  const mapType = provisionalMapType(`${question}\n${answer}`)
+  const rootId = 'preview-core'
+  const nodes: KnowledgeMapNode[] = [
+    {
+      id: rootId,
+      label: cleanTopic,
+      role: 'core',
+      kind: 'core',
+      detail: '根据当前讲解提取的关系骨架；后台会继续校准为完整知识图解。',
+      visual: { kind: 'definition', headline: cleanTopic, items: ['主题', '关系', '学习路径'] },
+    },
+    ...fallbackLabels.map((fallback, index) => {
+      const sentence = sentences[index] || `${fallback}正在依据本次讲解整理。`
+      const kind = kinds[index]
+      const visual = kind === 'process'
+        ? { kind: 'sequence' as const, headline: sentence.slice(0, 48), items: ['识别条件', '连接关系', '完成验证'] }
+        : kind === 'example'
+          ? { kind: 'input_output' as const, headline: sentence.slice(0, 48), input: '当前题目或案例', output: '用这一点进行验证' }
+          : kind === 'pitfall'
+            ? { kind: 'warning' as const, headline: sentence.slice(0, 48), items: ['确认前提', '辨别方向', '回到原题'] }
+            : kind === 'principle'
+              ? { kind: 'comparison' as const, headline: sentence.slice(0, 48), before: '只看表面说法', after: '回到关系与条件' }
+              : { kind: 'definition' as const, headline: sentence.slice(0, 48), items: ['含义', '作用', '边界'] }
+      return {
+        id: `preview-${index + 1}`,
+        parent_id: rootId,
+        label: provisionalMapLabel(sentence, fallback),
+        role: 'branch' as const,
+        kind,
+        group: fallback,
+        order: index + 1,
+        detail: sentence.slice(0, 72),
+        example: kind === 'example' ? sentence.slice(0, 96) : '',
+        mistake: kind === 'pitfall' ? '先确认条件与方向，再判断是否成立。' : '',
+        visual,
+      }
+    }),
+  ]
+  const edges = nodes.slice(1).map(node => ({ from: rootId, to: node.id, label: '' }))
+  return {
+    schema_version: 6,
+    layout: mapType === 'process_flow' ? 'flow' : 'mindmap',
+    map_type: mapType,
+    groups: fallbackLabels,
+    nodes,
+    edges,
+    learning_path: nodes.slice(1).map(node => node.id),
+  }
+}
+
 function parseExternalVideoContent(content?: string): ExternalVideoContent | null {
   if (!content) return null
   try {
@@ -2138,22 +2217,6 @@ function App() {
     : null
   const mapWorkspaceData = mapWorkspaceArtifact ? parseKnowledgeMap(mapWorkspaceArtifact.content) : null
   const mapWorkspaceProgress = mapWorkspaceArtifact ? mapProgressByArtifactId[mapWorkspaceArtifact.id] : undefined
-  const mapWorkspaceAtomIds = mapWorkspaceData?.nodes.filter(node => node.role !== 'core').map(node => node.id) || []
-  const mapWorkspaceExploredCount = new Set(
-    (mapWorkspaceProgress?.exploration?.explored_node_ids || []).filter(nodeId => mapWorkspaceAtomIds.includes(nodeId)),
-  ).size
-  const mapWorkspaceGeneratedCount = mapWorkspaceData
-    ? mapWorkspaceAtomIds.filter(nodeId => Boolean(mapWorkspaceData.deep_maps?.[nodeId])).length
-    : 0
-  const mapWorkspacePackJob = mapWorkspaceArtifact ? mapPackJobs[mapWorkspaceArtifact.id] : undefined
-  const mapWorkspaceReadyCount = Math.max(mapWorkspaceGeneratedCount, mapWorkspacePackJob?.ready || 0)
-  const mapWorkspacePackTotal = Math.max(mapWorkspaceAtomIds.length, mapWorkspacePackJob?.total || 0)
-  const mapWorkspacePackRunning = mapWorkspacePackJob?.status === 'queued' || mapWorkspacePackJob?.status === 'running'
-  const mapWorkspacePackComplete = mapWorkspacePackTotal > 0 && mapWorkspaceReadyCount >= mapWorkspacePackTotal
-  const mapWorkspacePackRemainingCount = Math.max(
-    mapWorkspacePackJob?.failed || 0,
-    mapWorkspacePackTotal - mapWorkspaceReadyCount,
-  )
   const backgroundMapTasks = mapArtifacts
     .map(artifact => {
       const job = mapPackJobs[artifact.id]
@@ -3813,12 +3876,21 @@ function App() {
     // Treat an old guard without an active generating state as stale.
     if (activeLock) knowledgeMapGenerationLock.current = null
     const loadingId = replaceArtifactId || `map-generating-${Date.now()}`
+    // The learner should be able to open a real map immediately. This local
+    // relationship skeleton is deliberately lightweight and is replaced by
+    // the fact-checked cloud map as soon as that job completes.
+    const provisionalMap = createProvisionalKnowledgeMap(
+      turn.prompt,
+      turn.response,
+      learningState.current_topic || learningState.subject || turn.prompt,
+    )
     const loadingArtifact: Artifact = {
       id: loadingId,
       kind: 'map',
-      title: '正在梳理知识图解…',
-      summary: '图解正在后台准备。你可以继续提问或去资料库，完成后这里会自动更新为可打开状态。',
-      details: ['根据当前问答识别核心概念与关联分支', '无需停留等待，任务会在后台继续完成'],
+      title: provisionalMap.nodes[0]?.label || '当前主题知识图解',
+      summary: '先显示本次讲解的关系骨架；后台会自动补全为经过校准的完整图解。',
+      details: ['关系骨架已经可以打开查看', '后台只校准这张主图，不再批量堆叠多张旧图'],
+      content: JSON.stringify(provisionalMap),
       source: turn.prompt,
       course: learningState.subject || '未分类课程',
       topic: learningState.current_topic || '本次学习',
@@ -4964,14 +5036,14 @@ function App() {
         : '任务仍在后台准备中，可稍后从后台任务继续查看。')
       return
     }
+    if (task.kind === 'map' && artifact.status !== 'error') {
+      openMapWorkspace(artifact, 'chat')
+      return
+    }
     if (artifact.status === 'generating' || artifact.status === 'error') {
       window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
         document.getElementById(`artifact-${artifact.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }))
-      return
-    }
-    if (task.kind === 'map') {
-      openMapWorkspace(artifact, 'chat')
       return
     }
     if (task.kind === 'practice') {
@@ -6562,13 +6634,14 @@ function App() {
                               </div>
                             )}
                             <div className="artifact-source"><Icon name="paperclip" size={14} />基于 {artifact.source}</div>
-                            {artifact.status !== 'generating' && (
+                            {(artifact.status !== 'generating' || (artifact.kind === 'map' && mapData)) && (
                               <div className="artifact-actions">
                                 {artifact.kind === 'map' && mapData && (
                                   <button type="button" onClick={() => openMapWorkspace(artifact, 'chat')}>
-                                    <Trees size={15} />打开图解
+                                    <Trees size={15} />{artifact.status === 'generating' ? '查看关系骨架' : '打开图解'}
                                   </button>
                                 )}
+                                {artifact.status !== 'generating' && <>
                                 {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.kind !== 'interactive' && artifact.content && (
                                   <button type="button" onClick={() => setExpandedArtifactId(current => current === artifact.id ? null : artifact.id)}>
                                     {expandedArtifactId === artifact.id ? '收起全文' : '展开全文'}
@@ -6618,6 +6691,7 @@ function App() {
                                     {artifact.saved ? '查看资料库' : '保存到资料库'}
                                   </button>
                                 )}
+                                </>}
                               </div>
                             )}
                           </article>
@@ -6772,7 +6846,7 @@ function App() {
 
           {view === 'map-workspace' && (
             <section className="map-workspace" aria-label={t('知识图解工作台', 'Knowledge map workspace')}>
-              {mapWorkspaceArtifact?.status === 'generating' ? (
+              {mapWorkspaceArtifact?.status === 'generating' && !mapWorkspaceData ? (
                 <div className="map-workspace-generating" role="status" aria-live="polite">
                   <button className="map-workspace-generating-exit" type="button" onClick={closeMapWorkspace}>
                     <Icon name="arrow-left" size={16} />{mapWorkspaceReturnView === 'library' ? t('返回资料库', 'Back to library') : t('返回对话', 'Back to chat')}
@@ -6800,46 +6874,11 @@ function App() {
                       <span>{mapWorkspaceArtifact.course} / {mapWorkspaceArtifact.topic}</span>
                       <h1>{mapWorkspaceArtifact.title}</h1>
                       <p>{mapWorkspaceArtifact.summary}</p>
-                      <div className="map-workspace-package-progress" aria-label={t('知识图解包进度', 'Knowledge map package progress')}>
-                        <span><b>{t(`已探索 ${mapWorkspaceExploredCount}/${mapWorkspaceAtomIds.length}`, `Explored ${mapWorkspaceExploredCount}/${mapWorkspaceAtomIds.length}`)}</b><small>{t('重新打开会回到上次位置', 'Reopens at your last position')}</small></span>
-                        <span aria-live="polite">
-                          <b>{mapWorkspacePackRunning
-                            ? t(`补全中 ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`, `Completing ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`)
-                            : t(`已缓存 ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`, `Cached ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`)}</b>
-                          <small>{mapWorkspacePackRunning && mapWorkspacePackJob?.current_labels?.length
-                            ? t(`正在生成：${mapWorkspacePackJob.current_labels.join('、')}`, `Generating: ${mapWorkspacePackJob.current_labels.join(', ')}`)
-                            : mapWorkspacePackJob?.error
-                              ? mapWorkspacePackJob.error
-                              : t('每完成一张就会自动保存，可以离开此页面', 'Each finished map is saved automatically; you can leave this page')}</small>
-                        </span>
-                        <i aria-hidden="true"><em style={{ width: `${mapWorkspaceAtomIds.length ? mapWorkspaceExploredCount / mapWorkspaceAtomIds.length * 100 : 0}%` }} /></i>
-                      </div>
                     </div>
                     <div className="map-workspace-actions">
-                      <button
-                        className={`map-workspace-package-action${mapWorkspacePackRunning ? ' is-running' : ''}${mapWorkspacePackComplete ? ' map-workspace-package-ready' : ''}`}
-                        type="button"
-                        onClick={() => void startMapPackGeneration(mapWorkspaceArtifact)}
-                        disabled={!mapWorkspaceArtifact.backendId || mapWorkspacePackRunning || mapWorkspacePackComplete}
-                        aria-describedby="map-workspace-package-action-note"
-                      >
-                        <Icon name={mapWorkspacePackComplete ? 'check' : mapWorkspacePackRunning ? 'rotate' : 'spark'} size={15} />
-                        {mapWorkspacePackComplete
-                          ? t('整套图解已就绪', 'Complete map package ready')
-                          : mapWorkspacePackRunning
-                            ? t(`后台补全中 ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`, `Completing in background ${mapWorkspaceReadyCount}/${mapWorkspacePackTotal}`)
-                            : mapWorkspacePackJob && mapWorkspacePackRemainingCount > 0
-                              ? t(`重试剩余 ${mapWorkspacePackRemainingCount} 张`, `Retry ${mapWorkspacePackRemainingCount} remaining`)
-                              : t('后台补全整套图解', 'Complete all maps in background')}
-                      </button>
-                      <span id="map-workspace-package-action-note" className="map-workspace-package-action-note">
-                        {mapWorkspacePackRunning
-                          ? t('任务在后台继续运行', 'The task continues in the background')
-                          : t('同时生成两张，不必停留等待', 'Generates two at a time; no need to wait here')}
-                      </span>
                       {mapWorkspaceArtifact.saved ? (
                         <button type="button" onClick={() => { setLibraryPreviewId(null); setView('library') }}><Icon name="library" size={15} />{t('查看资料库', 'View library')}</button>
-                      ) : mapWorkspaceArtifact.status !== 'error' ? (
+                      ) : mapWorkspaceArtifact.status !== 'error' && mapWorkspaceArtifact.status !== 'generating' ? (
                         <button className="primary" type="button" onClick={() => openSave(mapWorkspaceArtifact)}><Icon name="save" size={15} />{t('保存到资料库', 'Save to library')}</button>
                       ) : null}
                     </div>
@@ -6854,15 +6893,15 @@ function App() {
                       progressLoading={Boolean(mapWorkspaceArtifact.backendId && !mapWorkspaceProgress && mapProgressFetches.current.has(mapWorkspaceArtifact.id))}
                       progressSavingNodeId={mapWorkspaceSavingNodeId}
                       reviewPracticeGenerating={mapReviewPracticeGeneratingArtifactId === mapWorkspaceArtifact.id}
-                      onStatusChange={(nodeId, status) => void updateMapNodeStatus(mapWorkspaceArtifact, nodeId, status)}
-                      onReviewPractice={() => void runMapReviewPractice(mapWorkspaceArtifact, mapWorkspaceData)}
+                      onStatusChange={mapWorkspaceArtifact.status === 'generating' ? undefined : (nodeId, status) => void updateMapNodeStatus(mapWorkspaceArtifact, nodeId, status)}
+                      onReviewPractice={mapWorkspaceArtifact.status === 'generating' ? undefined : () => void runMapReviewPractice(mapWorkspaceArtifact, mapWorkspaceData)}
                       onMapChange={map => persistEditedKnowledgeMap(mapWorkspaceArtifact, map)}
                       mapSaving={mapEditingArtifactId === mapWorkspaceArtifact.id}
                       collaboration={mapCollaborations[mapWorkspaceArtifact.id]}
                       collaborationLoading={mapCollaborationLoadingArtifactId === mapWorkspaceArtifact.id}
                       onCollaboration={() => void runMapCollaboration(mapWorkspaceArtifact)}
                       onDismissSuggestion={suggestion => dismissMapSuggestion(mapWorkspaceArtifact.id, suggestion)}
-                      onGenerateDeepDive={(nodeId, force) => requestKnowledgeMapDeepDive(mapWorkspaceArtifact, nodeId, force)}
+                      onGenerateDeepDive={mapWorkspaceArtifact.status === 'generating' ? undefined : (nodeId, force) => requestKnowledgeMapDeepDive(mapWorkspaceArtifact, nodeId, force)}
                       exploration={mapWorkspaceProgress?.exploration}
                       explorationKey={mapWorkspaceArtifact.id}
                       onExplorationChange={state => updateMapExploration(mapWorkspaceArtifact, state)}

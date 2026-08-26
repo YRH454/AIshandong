@@ -72,7 +72,17 @@ subscribe("START", function(){
 	};
 	_stopPropButton(skippy);
 
-	// Introduction
-	slideshow.next();
+	// Resume a generated lesson from the last meaningful chapter when possible.
+	// Fresh links deliberately start from the beginning, while reopening a saved
+	// lesson takes the learner back to the point they reached.
+	var resumeChapter = window.RHYME_KNOWLEDGE_ATOMS
+		&& window.RHYME_KNOWLEDGE_ATOMS.getResumeChapter
+		&& window.RHYME_KNOWLEDGE_ATOMS.getResumeChapter();
+	if(resumeChapter){
+		slideshow.gotoChapter(resumeChapter, true);
+	}else{
+		// Introduction
+		slideshow.next();
+	}
 
 });

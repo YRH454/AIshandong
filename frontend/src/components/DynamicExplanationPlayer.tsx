@@ -71,6 +71,43 @@ const learningModes: Array<{ id: LearningMode; zh: string; en: string; descripti
   { id: 'challenge', zh: '考前自测', en: 'Exam challenge', descriptionZh: '先预测，再展开讲解验证想法。', descriptionEn: 'Predict first, then reveal the reasoning.' },
 ]
 
+const RHYME_EXPLAINER_LESSON_PREFIX = 'rhyme-explainer:lesson:'
+
+function hashRhymeLesson(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+// The hand-drawn explainer is intentionally a separate, full-screen page.
+// Store a compact, same-origin lesson payload before opening it so the visual
+// world receives the actual generated atoms, relationships, examples and
+// boundaries instead of only a topic title.
+function buildRhymeExplainerPayload(data: DynamicExplanationData) {
+  return {
+    version: 1,
+    title: data.title,
+    summary: data.summary,
+    highlights: data.highlights.slice(0, 8),
+    scenes: data.scenes.slice(0, 12).map(scene => ({
+      id: scene.id,
+      title: scene.title,
+      narration: scene.narration,
+      key_point: scene.key_point,
+      visual: scene.visual,
+      storyboard: scene.storyboard || null,
+      continuity: scene.continuity || null,
+      path_role: scene.path_role || 'main',
+      stage: scene.stage || null,
+      scene_payload: scene.scene_payload || null,
+      check: scene.check ? { prompt: scene.check.prompt } : null,
+    })),
+  }
+}
+
 function formatDuration(seconds: number, language: DynamicExplanationPlayerProps['language']) {
   const minutes = Math.max(1, Math.round(seconds / 60))
   return language === 'en' ? `about ${minutes} min` : `约 ${minutes} 分钟`
@@ -318,6 +355,25 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   // boundary rather than the transient object identity.
   const dataFingerprint = JSON.stringify(data)
   const presentation = presentationDraft || data
+  const rhymeLessonPayload = useMemo(() => buildRhymeExplainerPayload(presentation), [presentation])
+  const rhymeLessonSerialized = useMemo(() => JSON.stringify(rhymeLessonPayload), [rhymeLessonPayload])
+  const rhymeLessonKey = useMemo(
+    () => `lesson-${hashRhymeLesson(rhymeLessonSerialized)}`,
+    [rhymeLessonSerialized],
+  )
+  const rhymeExplainerSource = useMemo(
+    () => `/rhyme-explainer/index.html?topic=${encodeURIComponent(presentation.title)}&lesson=${encodeURIComponent(rhymeLessonKey)}`,
+    [presentation.title, rhymeLessonKey],
+  )
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(`${RHYME_EXPLAINER_LESSON_PREFIX}${rhymeLessonKey}`, rhymeLessonSerialized)
+    } catch {
+      // The explainer still has its topic-aware fallback if browser storage is unavailable.
+    }
+  }, [rhymeLessonKey, rhymeLessonSerialized])
+
   const visibleSceneIndexes = useMemo(() => {
     const all = presentation.scenes.map((_, index) => index)
     if (learningMode !== 'quick' || all.length <= 3) return all
@@ -507,6 +563,41 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     reportProgress(previousIndex, nextHistory)
   }, [presentation.scenes, reportProgress, visitHistory])
 
+  // The full-screen hand-drawn explainer has its own native interaction loop.
+  // It reports chapter milestones back to this player so the saved artifact and
+  // library reader know where the learner reached after closing the frame.
+  const syncExplorableProgress = useCallback((payload: unknown, complete = false) => {
+    if (!payload || typeof payload !== 'object' || !presentation.scenes.length) return
+    const record = payload as { position?: unknown; total?: unknown; completed?: unknown }
+    const position = Math.max(1, Number(record.position) || 1)
+    const total = Math.max(position, Number(record.total) || 6)
+    const index = Math.min(
+      presentation.scenes.length - 1,
+      Math.round(((position - 1) / Math.max(total - 1, 1)) * (presentation.scenes.length - 1)),
+    )
+    const target = presentation.scenes[index]
+    if (!target) return
+    const nextHistory = visitHistory.includes(target.id) ? visitHistory : [...visitHistory, target.id]
+    const isComplete = complete || record.completed === true
+
+    if (isComplete) {
+      presentation.scenes.forEach((_, sceneIndex) => completeScene(sceneIndex))
+    } else {
+      for (let sceneIndex = 0; sceneIndex < index; sceneIndex += 1) completeScene(sceneIndex)
+    }
+
+    setPlaying(false)
+    setCompletionNotice(null)
+    setVisitHistory(nextHistory)
+    setActiveIndex(index)
+    setSelectedVisualItem(0)
+    if (isComplete && !completedExplanation.current) {
+      completedExplanation.current = true
+      onCompleted?.()
+    }
+    reportProgress(index, nextHistory, isComplete || completedExplanation.current)
+  }, [completeScene, onCompleted, presentation.scenes, reportProgress, visitHistory])
+
   useEffect(() => {
     if (!playing || !scene || immersive) return undefined
     const timeout = window.setTimeout(() => advanceTo(), Math.max(9000, (scene.suggested_seconds || 42) * 1000))
@@ -527,7 +618,15 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     }
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return
-      if (event.data?.channel === 'rhyme-explainer' && event.data?.action === 'close') setImmersive(false)
+      if (event.data?.channel !== 'rhyme-explainer') return
+      if (event.data?.action === 'close') {
+        setImmersive(false)
+        return
+      }
+      if (event.data?.lessonKey !== rhymeLessonKey) return
+      if (event.data?.action === 'progress' || event.data?.action === 'complete') {
+        syncExplorableProgress(event.data.payload, event.data.action === 'complete')
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('message', onMessage)
@@ -536,7 +635,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('message', onMessage)
     }
-  }, [advanceTo, immersive, returnToPreviousScene])
+  }, [advanceTo, immersive, rhymeLessonKey, returnToPreviousScene, syncExplorableProgress])
 
   useEffect(() => {
     if (openImmersiveRequest) setImmersive(true)
@@ -646,7 +745,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   const immersiveStage = (
     <section className="rhyme-explorable-frame" aria-label={tr('RHYME 互动知识推演', 'RHYME explorable lesson')}>
       <iframe
-        src={`/rhyme-explainer/index.html?topic=${encodeURIComponent(presentation.title)}`}
+        src={rhymeExplainerSource}
         title={tr(`${presentation.title}：互动知识推演`, `${presentation.title}: explorable lesson`)}
         allow="autoplay"
         data-rhyme-context={JSON.stringify({

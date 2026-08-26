@@ -13,7 +13,8 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import mascot from './assets/xuejing-slime-logo.png'
-import { EditableKnowledgeMap, type KnowledgeMapVisualScene, type KnowledgeMapVisualSceneKind } from './components/EditableKnowledgeMap'
+import type { KnowledgeMapVisualScene, KnowledgeMapVisualSceneKind } from './components/EditableKnowledgeMap'
+import { G6KnowledgeMap } from './components/G6KnowledgeMap'
 import type { KnowledgeMapSemanticRole } from './components/knowledgeMapSemantic'
 
 type KnowledgeMapSceneDirection = NonNullable<KnowledgeMapVisualScene['design']>
@@ -6844,7 +6845,7 @@ function App() {
                     </div>
                   </header>
                   <div className="map-workspace-stage">
-                    <EditableKnowledgeMap
+                    <G6KnowledgeMap
                       data={mapWorkspaceData}
                       reader
                       workspace
@@ -6943,7 +6944,7 @@ function App() {
                   <div className={`library-reader-content ${readerMapData ? 'has-knowledge-map' : ''} ${readerDynamicExplanation ? 'has-dynamic-explanation' : ''} ${readerExternalVideo ? 'has-external-video' : ''} ${readerArtifact?.kind === 'notes' ? `document-template-${readerArtifact.documentTemplate || 'system_guide'}` : ''}`}>
                     {readerArtifact?.kind === 'map'
                       ? readerMapData
-                        ? <EditableKnowledgeMap
+                        ? <G6KnowledgeMap
                             data={readerMapData}
                             reader
                             language={interfaceLanguage}

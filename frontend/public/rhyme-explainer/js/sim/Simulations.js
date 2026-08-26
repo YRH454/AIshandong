@@ -140,12 +140,19 @@ function Sim(config){
 	self.getKnowledgeRelationship = function(fromIndex, toIndex){
 		var scene = self.getKnowledgeScene();
 		if(!scene || !scene.relations) return null;
-		return scene.relations[fromIndex+"-"+toIndex] || null;
+		var exact = scene.relations[fromIndex+"-"+toIndex];
+		if(exact) return exact;
+		var fallbackRelations = scene.fallbackRelations || [];
+		if(fallbackRelations.length===0) return null;
+		return fallbackRelations[Math.abs((fromIndex*17)+toIndex)%fallbackRelations.length];
 	};
 	self.focusKnowledgeAtom = function(peep){
 		if(!peep || !peep.knowledge) return false;
 		self.focusedPeep = (self.focusedPeep===peep) ? null : peep;
 		self.knowledgeFocusTick = 0;
+		if(self.focusedPeep && window.RHYME_KNOWLEDGE_ATOMS && window.RHYME_KNOWLEDGE_ATOMS.recordAtomFocus){
+			window.RHYME_KNOWLEDGE_ATOMS.recordAtomFocus(self.focusedPeep.knowledge);
+		}
 		return true;
 	};
 

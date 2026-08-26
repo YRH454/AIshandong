@@ -15,6 +15,37 @@
 
 	var params = new URLSearchParams(window.location.search);
 	var requestedTopic = (params.get("topic") || "").trim().replace(/\s+/g, " ");
+	var lessonKey = (params.get("lesson") || "").trim();
+	var lessonStorageKey = lessonKey ? "rhyme-explainer:lesson:" + lessonKey : "";
+
+	function compactText(value, limit){
+		var text = String(value || "").replace(/\s+/g, " ").replace(/[\u200b-\u200d\ufeff]/g, "").trim();
+		if(!text) return "";
+		if(limit && text.length>limit) return text.slice(0, Math.max(1, limit-1)).replace(/[，、；;：: ]+$/, "") + "…";
+		return text;
+	}
+
+	function textSignature(value){
+		return compactText(value, 160).toLowerCase().replace(/[^0-9a-z\u4e00-\u9fff]+/g, "");
+	}
+
+	function readStoredLesson(){
+		if(!lessonStorageKey) return null;
+		try{
+			var raw = window.sessionStorage.getItem(lessonStorageKey);
+			if(!raw) return null;
+			var parsed = JSON.parse(raw);
+			if(!parsed || !Array.isArray(parsed.scenes) || parsed.scenes.length===0) return null;
+			return parsed;
+		}catch(error){
+			return null;
+		}
+	}
+
+	var storedLesson = readStoredLesson();
+	if(storedLesson && compactText(storedLesson.title, 80)){
+		requestedTopic = compactText(storedLesson.title, 80);
+	}
 
 	function atom(label, role, detail){
 		return {
@@ -51,6 +82,7 @@
 		return {
 			nodes:nodes,
 			relations:relations,
+			fallbackRelations:(config && config.fallbackRelations) || [],
 			legend: config && config.legend,
 			caption: config && config.caption
 		};
@@ -144,7 +176,230 @@
 		};
 	}
 
+	function roleForGeneratedScene(scene){
+		if(scene && scene.path_role==="remediation") return "易错修正";
+		if(scene && scene.path_role==="advanced") return "迁移挑战";
+		var phase = scene && scene.continuity && scene.continuity.teaching_phase;
+		var phaseRoles = {
+			question:"学习问题",
+			intuition:"直觉入口",
+			mechanism:"作用机制",
+			verification:"验证证据",
+			boundary:"适用边界",
+			synthesis:"迁移结论"
+		};
+		return phaseRoles[phase] || "知识原子";
+	}
+
+	function collectGeneratedAtoms(lesson){
+		var atoms = [];
+		var seen = {};
+		function add(label, role, detail){
+			label = compactText(label, 28).replace(/[“”"'`*_#]/g, "").trim();
+			var signature = textSignature(label);
+			if(!signature || signature.length<2 || seen[signature]) return;
+			seen[signature] = true;
+			atoms.push(atom(label, compactText(role, 16) || "知识原子", compactText(detail, 150) || "这个知识原子需要和其他线索一起判断。"));
+		}
+		function addPayload(scene){
+			var payload = scene && scene.scene_payload;
+			if(!payload || !payload.kind) return;
+			var detail = scene.key_point || scene.narration || "";
+			switch(payload.kind){
+				case "concept-constellation":
+					add(payload.core, "核心概念", payload.core_detail || detail);
+					(payload.branches || []).forEach(function(branch){ add(branch.label, branch.relation || "关键关系", branch.detail || detail); });
+					(payload.boundary_conditions || []).forEach(function(condition){ add(condition, "成立边界", detail); });
+					break;
+				case "causal-chain":
+					add(payload.trigger, "触发条件", detail);
+					(payload.steps || []).forEach(function(step){ add(step.label, "过程步骤", step.mechanism || step.effect || detail); });
+					add(payload.outcome, "结果", detail);
+					(payload.blockers || []).forEach(function(blocker){ add(blocker, "阻断条件", detail); });
+					break;
+				case "timeline-river":
+					(payload.events || []).forEach(function(event){ add(event.title, "阶段变化", event.change || event.impact || detail); });
+					break;
+				case "comparison-studio":
+					add(payload.shared_condition, "共同前提", detail);
+					(payload.dimensions || []).forEach(function(dimension){ add(dimension.label, "比较维度", dimension.deciding_factor || detail); });
+					break;
+				case "system-network":
+					(payload.nodes || []).forEach(function(node){ add(node.label, node.role || "系统节点", node.detail || detail); });
+					(payload.inputs || []).forEach(function(input){ add(input, "输入", detail); });
+					(payload.outputs || []).forEach(function(output){ add(output, "输出", detail); });
+					break;
+				case "state-machine":
+					(payload.states || []).forEach(function(state){ add(state.label, "状态", state.description || detail); });
+					break;
+				case "case-lab":
+					(payload.evidence || []).forEach(function(evidence){ add(evidence.label, "案例证据", evidence.detail || evidence.supports || detail); });
+					(payload.reasoning_steps || []).forEach(function(step){ add(step, "推理步骤", detail); });
+					add(payload.conclusion, "案例结论", detail);
+					(payload.counterevidence || []).forEach(function(item){ add(item, "反向证据", detail); });
+					break;
+				case "parameter-lab":
+					add(payload.parameter_label, "可调参数", detail);
+					(payload.thresholds || []).forEach(function(threshold){ add(threshold.label, "临界变化", threshold.effect || detail); });
+					(payload.response_points || []).forEach(function(point){ add(point.label, "响应结果", point.result || detail); });
+					if(payload.stable_range) add(payload.stable_range.label, "稳定范围", detail);
+					break;
+			}
+		}
+
+		(lesson.scenes || []).forEach(function(scene){
+			var role = roleForGeneratedScene(scene);
+			addPayload(scene);
+			if(scene && scene.storyboard && Array.isArray(scene.storyboard.atoms)){
+				scene.storyboard.atoms.forEach(function(item){ add(item, role, scene.storyboard.knowledge_relation || scene.key_point || scene.narration); });
+			}
+			if(scene && scene.visual && Array.isArray(scene.visual.items)){
+				scene.visual.items.forEach(function(item){ add(item, role, scene.key_point || scene.narration); });
+			}
+			if(scene && scene.stage && Array.isArray(scene.stage.zones)){
+				scene.stage.zones.forEach(function(zone){ add(zone.label, zone.role || role, scene.key_point || scene.narration); });
+			}
+		});
+
+		if(atoms.length<5){
+			(lesson.highlights || []).forEach(function(item){ add(item, "关键结论", lesson.summary || ""); });
+			(lesson.scenes || []).forEach(function(scene){ add(scene.title, roleForGeneratedScene(scene), scene.key_point || scene.narration); });
+		}
+		return atoms.slice(0, 32);
+	}
+
+	function collectGeneratedRelations(lesson){
+		var relations = [];
+		var seen = {};
+		function add(label, detail){
+			label = compactText(label, 22);
+			var signature = textSignature(label + " " + compactText(detail, 48));
+			if(!label || !signature || seen[signature]) return;
+			seen[signature] = true;
+			relations.push(relation(label, compactText(detail, 150) || "沿着这条关系继续检查它为什么成立。", [0, 14]));
+		}
+		function addPayload(scene){
+			var payload = scene && scene.scene_payload;
+			var fallback = scene && (scene.key_point || scene.narration) || "";
+			if(!payload || !payload.kind) return;
+			switch(payload.kind){
+				case "concept-constellation":
+					(payload.branches || []).forEach(function(branch){ add(branch.relation, branch.detail || fallback); });
+					(payload.cross_links || []).forEach(function(link){ add(link.label, fallback); });
+					break;
+				case "causal-chain":
+					(payload.steps || []).forEach(function(step){ add(step.mechanism || step.effect || step.label, step.effect || step.observable || fallback); });
+					break;
+				case "timeline-river":
+					(payload.events || []).forEach(function(event){ add(event.change || event.title, event.impact || fallback); });
+					break;
+				case "comparison-studio":
+					(payload.dimensions || []).forEach(function(dimension){ add(dimension.label, dimension.deciding_factor || fallback); });
+					break;
+				case "system-network":
+					(payload.edges || []).forEach(function(edge){ add(edge.label, fallback); });
+					(payload.feedback_loops || []).forEach(function(loop){ add(loop.label, fallback); });
+					break;
+				case "state-machine":
+					(payload.transitions || []).forEach(function(transition){ add(transition.trigger, transition.effect || fallback); });
+					(payload.exception_paths || []).forEach(function(path){ add(path.trigger, path.effect || fallback); });
+					break;
+				case "case-lab":
+					(payload.evidence || []).forEach(function(evidence){ add(evidence.supports, evidence.detail || fallback); });
+					break;
+				case "parameter-lab":
+					(payload.thresholds || []).forEach(function(threshold){ add(threshold.label, threshold.effect || fallback); });
+					break;
+			}
+		}
+		(lesson.scenes || []).forEach(function(scene){
+			addPayload(scene);
+			if(scene && scene.storyboard) add(scene.storyboard.knowledge_relation, scene.key_point || scene.narration);
+			if(scene && scene.continuity) add(scene.continuity.passes, scene.continuity.next_question || scene.key_point);
+		});
+		return relations.slice(0, 48);
+	}
+
+	function buildGeneratedLesson(lesson){
+		if(!lesson) return null;
+		var atoms = collectGeneratedAtoms(lesson);
+		if(atoms.length<5) return null;
+		var relations = collectGeneratedRelations(lesson);
+		if(relations.length===0) relations.push(relation("建立联系", "把两个知识原子放在一起，再检查它们是否真的相互支持。", [0,14]));
+		function chooseAtom(pattern, fallback){
+			for(var index=0; index<atoms.length; index++){
+				if(pattern.test(atoms[index].label + " " + atoms[index].role + " " + atoms[index].detail)) return atoms[index];
+			}
+			return atoms[fallback % atoms.length];
+		}
+		var evidence = chooseAtom(/证据|数据|例|验证|检验|观察/, 2);
+		var boundary = chooseAtom(/边界|反例|异常|错误|阻断|限制|条件/, 3);
+		var transfer = chooseAtom(/迁移|应用|新题|结论|输出|结果/, atoms.length-1);
+		return {
+			title:compactText(lesson.title, 56) || requestedTopic || "当前主题",
+			summary:compactText(lesson.summary, 160),
+			atoms:atoms,
+			relations:relations,
+			guide:{
+				core:compactText(lesson.title, 28) || atoms[0].label,
+				entry:atoms[0].label,
+				support:atoms[Math.min(1, atoms.length-1)].label,
+				evidence:evidence.label,
+				boundary:boundary.label,
+				transfer:transfer.label,
+				relationship:relations[0].label
+			}
+		};
+	}
+
+	function makeGeneratedLessonScenes(lesson){
+		var offsets = [[0,-50],[0,48],[0,-48],[0,48],[0,-44],[0,44]];
+		function generatedNodes(count, start, state, activeState, visibleCount){
+			var nodes = [];
+			for(var index=0; index<count; index++){
+				var source = lesson.atoms[(start+index)%lesson.atoms.length];
+				nodes.push(copyAtom(source, {
+					state:state,
+					activeState:activeState,
+					featured:index<visibleCount,
+					labelOffset:offsets[index%offsets.length]
+				}));
+			}
+			return nodes;
+		}
+		function generatedRelations(start, count){
+			var result = [];
+			for(var index=0; index<count; index++) result.push(lesson.relations[(start+index)%lesson.relations.length]);
+			return result;
+		}
+		function generatedScene(count, start, state, activeState, caption, visibleCount){
+			return createScene(generatedNodes(count, start, state, activeState, visibleCount), [], {
+				legend:true,
+				caption:caption,
+				fallbackRelations:generatedRelations(start, Math.min(12, lesson.relations.length))
+			});
+		}
+		var g = lesson.guide;
+		return {
+			"network-map":generatedScene(9, 0, "unlinked", "verified", "这张图只放本次讲解真正需要的知识原子。", 9),
+			"condition-gate":generatedScene(4, 1, "unlinked", "verified", "从“"+g.entry+"”出发，沿着“"+g.relationship+"”走向核心判断。", 4),
+			"familiarity-map":generatedScene(9, 3, "unlinked", "familiar", "红色只代表想起来；还需要证据把它变成理解。", 9),
+			"cue-path":generatedScene(10, 5, "unlinked", "familiar", "一条熟悉路径很快，但它还没有经过充分验证。", 7),
+			"cue-cascade":generatedScene(15, 7, "unlinked", "familiar", "先让线索出现，再判断它是否真的能解释问题。", 8),
+			"evidence-gate":generatedScene(6, 9, "unlinked", "verified", "用“"+g.evidence+"”核对核心关系，而不是只凭熟悉感。", 6),
+			"verification-path":generatedScene(6, 11, "unlinked", "verified", "理解需要一条可以被逐步复查的关系链。", 6),
+			"verified-cascade":generatedScene(15, 13, "unlinked", "verified", "蓝色代表不同来源的证据已经共同支持这个判断。", 8),
+			"prevent-gate":generatedScene(10, 15, "unlinked", "verified", "遇到“"+g.boundary+"”时，先停下来检查关系是否仍然成立。", 7),
+			"organization-map":generatedScene(18, 17, "unlinked", "verified", "把零散知识原子组织起来，才不会只剩一串答案。", 8),
+			"transfer-bridge":generatedScene(12, 19, "unlinked", "transfer", "带走的是关系和判断方法，不是上一题的现成结论。", 7),
+			"transfer-world":generatedScene(18, 21, "unlinked", "transfer", "当“"+g.transfer+"”能在新问题中重新成立，理解才真正可迁移。", 8)
+		};
+	}
+
+	var generatedLesson = buildGeneratedLesson(storedLesson);
+
 	function getVocabulary(){
+		if(generatedLesson) return { id:"generated-lesson", atoms:{}, lesson:generatedLesson };
 		if(/条件概率|随机事件|贝叶斯|概率|事件/.test(requestedTopic)) return { id:"conditional-probability", atoms:conditionalVocabulary() };
 		if(/导数|微分|积分|极限|函数/.test(requestedTopic)) return { id:"calculus", atoms:calculusVocabulary() };
 		if(/受力|牛顿|速度|加速度|运动|物理/.test(requestedTopic)) return { id:"physics", atoms:physicsVocabulary() };
@@ -152,6 +407,7 @@
 	}
 
 	function makeScenes(vocabulary){
+		if(vocabulary.lesson) return makeGeneratedLessonScenes(vocabulary.lesson);
 		var a = vocabulary.atoms;
 		var scene = {};
 
@@ -398,17 +654,108 @@
 
 	var vocabulary = getVocabulary();
 	var scenes = makeScenes(vocabulary);
+	var progressStorageKey = lessonKey ? "rhyme-explainer:progress:" + lessonKey : "";
+	var learningChapters = ["Networks", "Simple", "Complex", "BB", "SmallWorld", "Conclusion"];
+
+	function readLessonProgress(){
+		if(!progressStorageKey) return null;
+		try{
+			var raw = window.sessionStorage.getItem(progressStorageKey);
+			return raw ? JSON.parse(raw) : null;
+		}catch(error){
+			return null;
+		}
+	}
+
+	function notifyParent(action, payload){
+		if(window.parent && window.parent!==window){
+			window.parent.postMessage({
+				channel:"rhyme-explainer",
+				action:action,
+				lessonKey:lessonKey,
+				payload:payload || {}
+			}, window.location.origin);
+		}
+	}
+
+	function writeLessonProgress(progress, action){
+		if(!progressStorageKey) return;
+		try{
+			progress.updatedAt = Date.now();
+			window.sessionStorage.setItem(progressStorageKey, JSON.stringify(progress));
+		}catch(error){
+			// Progress tracking is a convenience. The learning experience remains
+			// usable even when a browser blocks session storage.
+		}
+		notifyParent(action || "progress", progress);
+	}
+
+	function recordLessonChapter(chapter){
+		var chapterIndex = learningChapters.indexOf(chapter);
+		if(chapterIndex<0) return;
+		var current = readLessonProgress() || {};
+		var visited = Array.isArray(current.visitedChapters) ? current.visitedChapters : [];
+		if(visited.indexOf(chapter)<0) visited.push(chapter);
+		current.chapter = chapter;
+		current.position = chapterIndex + 1;
+		current.total = learningChapters.length;
+		current.visitedChapters = visited;
+		if(chapter==="Conclusion") current.completed = true;
+		writeLessonProgress(current, current.completed ? "complete" : "progress");
+	}
+
+	function recordAtomFocus(knowledge){
+		if(!knowledge || !progressStorageKey) return;
+		var current = readLessonProgress() || {};
+		var focused = Array.isArray(current.focusedAtoms) ? current.focusedAtoms : [];
+		var label = compactText(knowledge.label, 28);
+		if(label && focused.indexOf(label)<0) focused.push(label);
+		current.focusedAtoms = focused.slice(-32);
+		writeLessonProgress(current, "atom-focus");
+	}
+
+	function getResumeChapter(){
+		if(!lessonKey || params.get("fresh")) return null;
+		var current = readLessonProgress();
+		if(!current || current.completed) return null;
+		return learningChapters.indexOf(current.chapter)>=0 ? current.chapter : null;
+	}
 
 	window.RHYME_KNOWLEDGE_ATOMS = {
 		topic: requestedTopic,
 		profile: vocabulary.id,
+		isGeneratedLesson:!!generatedLesson,
+		lesson: generatedLesson ? {
+			title:generatedLesson.title,
+			summary:generatedLesson.summary,
+			atomCount:generatedLesson.atoms.length,
+			guide:generatedLesson.guide
+		} : {
+			title:requestedTopic,
+			atomCount:0,
+			guide:{
+				core:requestedTopic || "核心判断",
+				entry:"关键问题",
+				support:"关键证据",
+				evidence:"例子与证据",
+				boundary:"适用边界",
+				transfer:"新情境",
+				relationship:"关键关系"
+			}
+		},
 		states: {
 			unlinked:{ label:"尚未建立关系", color:"#B4B4B4" },
 			familiar:{ label:"只记住答案", color:"#F73C50" },
 			verified:{ label:"经过多重验证", color:"#86F5FB" },
 			transfer:{ label:"能够迁移", color:"#7DE74E" }
 		},
-		getScene:function(sceneID){ return scenes[sceneID] || null; }
+		getScene:function(sceneID){ return scenes[sceneID] || null; },
+		getResumeChapter:getResumeChapter,
+		recordAtomFocus:recordAtomFocus
 	};
+
+	if(typeof subscribe==="function"){
+		subscribe("slideshow/goto/", function(chapter){ recordLessonChapter(chapter); });
+	}
 
 })();

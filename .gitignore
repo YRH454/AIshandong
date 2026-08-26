@@ -27,6 +27,7 @@ backend/*.log
 # Local agent/design-review tooling
 .claude/
 .impeccable/
+.reference-demos/
 
 # Editor and operating-system files
 .vscode/

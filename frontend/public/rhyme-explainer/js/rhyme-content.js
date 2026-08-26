@@ -8,10 +8,25 @@
 	}
 
 	var params = new URLSearchParams(window.location.search);
-	var requestedTopic = (params.get("topic") || "").trim().replace(/\s+/g, " ");
+	var atlas = window.RHYME_KNOWLEDGE_ATOMS || {};
+	var lesson = atlas.lesson || {};
+	var guide = lesson.guide || {};
+	var requestedTopic = (lesson.title || params.get("topic") || "").trim().replace(/\s+/g, " ");
 	var topic = requestedTopic.length > 34 ? requestedTopic.slice(0, 34) + "…" : requestedTopic;
 	var safeTopic = escapeHTML(topic);
 	var topicLine = safeTopic ? "当前主题：" + safeTopic : "一场关于理解如何发生的互动推演";
+	function guideText(key, fallback){
+		var value = String(guide[key] || fallback || "").trim();
+		return escapeHTML(value.length>28 ? value.slice(0, 27) + "…" : value);
+	}
+	var guideCore = guideText("core", "核心判断");
+	var guideEntry = guideText("entry", "关键问题");
+	var guideSupport = guideText("support", "关键线索");
+	var guideEvidence = guideText("evidence", "例子与证据");
+	var guideBoundary = guideText("boundary", "适用边界");
+	var guideTransfer = guideText("transfer", "新情境");
+	var guideRelationship = guideText("relationship", "关键关系");
+	var resumeChapter = atlas.getResumeChapter && atlas.getResumeChapter();
 
 	/*
 	 * The simulation and its interaction grammar are intentionally left as the
@@ -33,7 +48,7 @@
 			</div>`,
 		preloader_button: `<next></next>`,
 		preloader_loading: `正在准备画面…`,
-		preloader_play: `开始推演 <div class="rarr"></div>`,
+		preloader_play: `${resumeChapter ? "继续推演" : "开始推演"} <div class="rarr"></div>`,
 
 		intro: `
 			<br><br>
@@ -60,12 +75,12 @@
 			<b>所以，别只看一个概念；也看看它和谁相连。</b>
 			<next>来画一张理解网络 <div class="rarr"></div></next>`,
 
-		networks_tutorial_start: `<b>先看这张由知识原子组成的网络。</b><br><span style="font-size:.78em;color:#777">单击原子看局部说明；从一个原子拖到另一个原子，建立关系。</span>`,
-		networks_tutorial_connect: `拖拽两个原子，补上一条你认为成立的关系。`,
+		networks_tutorial_start: `<b>先看“${guideCore}”这张由知识原子组成的网络。</b><br><span style="font-size:.78em;color:#777">单击原子看局部说明；从一个原子拖到另一个原子，建立关系。</span>`,
+		networks_tutorial_connect: `拖拽两个原子，把“${guideEntry}”和“${guideSupport}”之间的关系补出来。`,
 		networks_tutorial_disconnect: `从空白处拖过一条线，可以擦去不成立的联系。`,
 		networks_tutorial_end: `如果你画好了，<next wiggle>继续看看 <div class="rarr"></div></next>`,
-		networks_threshold: `条件概率的关键不在公式长相。<br>先进入 <b>条件 B</b> 的范围，再在里面观察 <b>事件 A</b>。`,
-		networks_threshold_instruction: `<b>单击原子，看看每一步在做什么；再启动推演。 <div class="rarr"></div></b>`,
+		networks_threshold: `${guideCore} 的关键不在背一句结论。<br>先看清 <b>${guideEntry}</b>，再沿着 <b>${guideRelationship}</b> 走到 <b>${guideSupport}</b>。`,
+		networks_threshold_instruction: `<b>单击原子，看看“${guideEvidence}”如何让关系站得住；再启动推演。 <div class="rarr"></div></b>`,
 		networks_threshold_end: `<next>明白了</next>`,
 		networks_pre_puzzle: `但“连接感”也会骗人。<br>一个概念如果只和熟悉的词挨在一起，很容易让人误以为：我已经懂了。`,
 		optional_reading: ``,
@@ -87,15 +102,15 @@
 			<next>先看看最快的记忆方式 <div class="rarr"></div></next>`,
 
 		simple_simple: `
-			先把条件放得最简单：一个红色线索出现了。
+			先把画面放得最简单：<b>${guideEntry}</b> 这个红色线索出现了。
 			<br>
-			它是一个口诀、一张速记卡，或一道题的标准答案。
+			它可能是一句口诀、一个现象，或一道题里最显眼的答案。
 			<br>
 			它沿着已经存在的连接，很快被反复看见。
 			<br><span style="font-size:.8em;color:#777">红色表示：它被记住了，但还没有被充分验证。</span><br><b>开始推演 <div class="darr"></div></b>`,
-		simple_simple_2: `快速记住不是坏事。关键词、步骤卡、典型例题都很有用。<br>只是它们解决的是“想起来”，不自动解决“为什么成立”。`,
+		simple_simple_2: `快速想起“${guideEntry}”不是坏事。<br>只是“想起来”还不自动等于能解释“${guideRelationship}”为什么成立。`,
 		simple_simple_end: `<next wiggle>继续看</next>`,
-		simple_cascade: `很好。<b>再来一个挑战。</b><br>调整连接并启动推演，让这条速记线索走到每个节点。<br>（有些粗线代表已经很难被忽略的旧经验。）`,
+		simple_cascade: `很好。<b>再来一个挑战。</b><br>调整连接并启动推演，让“${guideRelationship}”沿着不同知识原子走出去。<br>（有些粗线代表已经很难被忽略的旧经验。）`,
 		simple_cascade_end: `<next wiggle>看到了 <div class="rarr"></div></next>`,
 		simple_post_cascade: `
 			这种快速扩散可以叫做<b>记忆级联</b>：一个答案沿着提示一路复制。
@@ -104,9 +119,9 @@
 			<next wiggle>这就是“多重验证” <div class="rarr"></div></next>`,
 
 		complex_complex: `
-			回到刚才的关键判断。这一次，不是看见一个提示就接受它。
+			回到“${guideCore}”这个关键判断。这一次，不是看见一个提示就接受它。
 			<br><br>
-			只有当它同时接到定义、例子或反例等足够多的线索时，它才愿意说：“我理解了。”
+			只有当它同时接到“${guideEvidence}”、例子或边界检查等足够多的线索时，它才愿意说：“我理解了。”
 			<br><br><b>先猜一猜，然后运行推演 <div class="rarr"></div></b>`,
 		complex_complex_2: `
 			<span style="line-height:1.3em; display:block;">
@@ -118,8 +133,8 @@
 			<next>那就让理解继续长出来</next>
 			</span>`,
 		complex_complex_3: `
-			现在有一个蓝色概念。
-			它不想只背一句结论，而想把结论用到新的场景里。
+			现在有一个蓝色知识原子。
+			它不想只背一句结论，而想把“${guideCore}”用到“${guideTransfer}”里。
 			<br><br>
 			给它搭上不同类型的连接：一个定义、一个具体例子、一个反例，或一次回忆。
 			<br><br><b>&larr; 让每个节点获得足够的理解支撑。</b>`,
@@ -137,7 +152,7 @@
 		complex_cascade_end: `<next wiggle>继续 <div class="rarr"></div></next>`,
 		complex_post_cascade: `你可能会想：那我只要不断加连接，理解就一定会更快吗？<br>不一定。连接的质量和方向，同样重要。`,
 		complex_post_cascade_end: `<next wiggle>试一个反向实验 <div class="rarr"></div></next>`,
-		complex_prevent: `如果你直接运行，蓝色理解 <icon name="blue"></icon> 会顺利连到每个节点。<br>现在反过来：<b>画出连接，阻止“只凭一个线索就下结论” <div class="darr"></div></b>`,
+		complex_prevent: `如果你直接运行，蓝色理解 <icon name="blue"></icon> 会顺利连到每个节点。<br>现在反过来：<b>把“${guideBoundary}”接进来，阻止“只凭一个线索就下结论” <div class="darr"></div></b>`,
 		complex_prevent_2: `看见了吗？<br>更多相似的线索，可能强化熟悉感；<br><b>但如果没有对照、反例和解释，它们并不会自动变成理解。</b><br>这也是为什么刷很多同类题，有时依然不会做变式。`,
 		complex_prevent_end: `<next wiggle>继续看看学习小组 <div class="rarr"></div></next>`,
 		complex_groupthink: `
@@ -151,7 +166,7 @@
 		bonding_1: `&larr; 连接太少，概念之间互相托不住。<br>连接只在同一条思路里打转，也会卡住。 <div class="rarr"></div>`,
 		bonding_2: `<b>画出一个刚好的内部网络：<br>让一条需要多重支撑的理解可以在组内站稳。<div class="darr"></div></b>`,
 		bonding_end: `很好。组内把概念、例子和方法织在一起，叫做<b>组织</b>。<br>但如果它只能在这一组里成立呢？<next wiggle>还需要一座桥</next>`,
-		bridging_1: `不同主题之间的连接，就是<b>迁移的桥</b>。<br>它让你把一门课里学到的方法带到新问题里。<br><b>画一座桥，让蓝色理解走到另一组：</b>`,
+		bridging_1: `不同主题之间的连接，就是<b>迁移的桥</b>。<br>它让你把“${guideCore}”带到“${guideTransfer}”里。<br><b>画一座桥，让蓝色理解走到另一组：</b>`,
 		bridging_end: `和组织一样，桥也要刚好。<br>太窄，旧知识带不过去；只有照搬，没有对照，也会误用。<br><next wiggle>现在把两种连接一起画出来</next>`,
 		bb_1: `<b style="font-size:2em">最后一个挑战！</b><br>在组内画出理解支撑，在组间搭出迁移桥梁，<br>让同一个想法能在整张图里走通：`,
 		bb_2: `完成了。你画出了一张很特别的学习网络：<br>它既能稳住细节，也能走向新问题。<next wiggle>这就是可迁移的理解 <div class="rarr"></div></next>`,

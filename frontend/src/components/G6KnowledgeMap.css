@@ -73,22 +73,9 @@
 }
 
 .g6-map-back svg,
-.g6-map-header-meta svg,
 .g6-map-controls svg,
 .g6-map-inspector svg,
 .g6-map-error svg { width: 18px; height: 18px; }
-
-.g6-map-header-meta {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 7px;
-  color: #8b8f98;
-  font-size: 12px;
-}
-
-.g6-map-header-meta svg { color: #507ced; }
-.g6-map-header-meta b { color: #3f4350; font-size: 15px; }
 
 .g6-map-header-actions {
   display: flex;
@@ -378,16 +365,6 @@
 .g6-map-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .g6-map-error button { margin-left: auto; border: 0; color: inherit; background: transparent; font: inherit; font-weight: 700; cursor: pointer; }
 
-.g6-map-hint {
-  position: absolute;
-  z-index: 2;
-  right: 18px;
-  top: 14px;
-  color: #a1a4ac;
-  font-size: 11px;
-  pointer-events: none;
-}
-
 /* The map is the workspace. Its canvas owns every spare pixel instead of
    inheriting a fixed card height from the older reader surface. */
 .g6-knowledge-map.is-workspace {
@@ -501,7 +478,6 @@
 @media (max-width: 760px) {
   .g6-knowledge-map, .g6-knowledge-map.is-workspace { min-height: 620px; }
   .g6-map-header { min-height: 66px; padding: 10px 15px; }
-  .g6-map-header-meta small { display: none; }
   .g6-map-header-actions { gap: 7px; }
   .g6-map-type-picker { grid-template-columns: minmax(112px, 1fr); min-width: 0; padding: 4px 7px; }
   .g6-map-type-picker > span, .g6-map-type-picker > small { display: none; }
@@ -511,5 +487,4 @@
   .g6-map-back { padding: 6px; font-size: 0; }
   .g6-map-surface, .g6-knowledge-map.is-workspace .g6-map-surface { min-height: 554px; }
   .g6-map-inspector { top: 12px; left: 12px; width: min(310px, calc(100% - 76px)); }
-  .g6-map-hint { display: none; }
 }

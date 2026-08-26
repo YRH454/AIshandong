@@ -128,10 +128,9 @@ function Sim(config){
 	self.focusedPeep = null;
 	self.focusedConnection = null;
 	self.knowledgeFocusTick = 0;
-	// Semantic scenes use the empty parts of the paper as part of the lesson.
-	// A few hand-drawn notes live away from the network, then point back to the
-	// atoms they explain. This keeps the story visual without labelling every
-	// person at once.
+	// Semantic scenes use the full sheet as a labelled knowledge network. Every
+	// peep receives one distant card; the live network stays in the middle while
+	// leaders route through the surrounding whitespace.
 	self.knowledgeCallouts = [];
 	self.knowledgeCalloutTick = 0;
 
@@ -217,61 +216,87 @@ function Sim(config){
 		return peep.x>slot.x-padding && peep.x<slot.x+slot.w+padding &&
 			peep.y>slot.y-padding && peep.y<slot.y+slot.h+padding;
 	}
-	function _getKnowledgeCalloutSlots(){
-		// These deliberately leave the top-left caption, focus inspector and
-		// playback controls alone. They turn the unused margins into a reading
-		// path around the live network instead of another block of UI. The
-		// simulation itself may be positioned inside that stage, so turn the
-		// stage coordinates back into this simulation's local coordinates.
+	function _getKnowledgeCalloutSlots(count){
+		// Non-overlapping perimeter positions turn the entire 960 × 540 sheet into
+		// a reading surface. Dense scenes switch to smaller cards, but still keep
+		// one labelled card for every peep instead of silently dropping atoms.
 		var stageOffsetX = config.x || 0;
 		var stageOffsetY = config.y || 0;
-		return [
-			{id:"top-right", x:690-stageOffsetX, y:32-stageOffsetY, w:222, h:77, side:"left", tilt:-0.010},
-			{id:"left-middle", x:30-stageOffsetX, y:173-stageOffsetY, w:202, h:78, side:"right", tilt:0.012},
-			{id:"right-middle", x:714-stageOffsetX, y:258-stageOffsetY, w:214, h:79, side:"left", tilt:-0.008},
-			{id:"bottom-center", x:352-stageOffsetX, y:443-stageOffsetY, w:256, h:73, side:"top", tilt:0.008}
+		var standard = [
+			{id:"top-left", x:18-stageOffsetX, y:82-stageOffsetY, w:184, h:70, side:"bottom", tilt:-0.010},
+			{id:"top-right", x:758-stageOffsetX, y:82-stageOffsetY, w:184, h:70, side:"bottom", tilt:0.008},
+			{id:"left-upper", x:18-stageOffsetX, y:174-stageOffsetY, w:184, h:70, side:"right", tilt:0.009},
+			{id:"right-upper", x:758-stageOffsetX, y:174-stageOffsetY, w:184, h:70, side:"left", tilt:-0.008},
+			{id:"left-lower", x:18-stageOffsetX, y:304-stageOffsetY, w:184, h:70, side:"right", tilt:-0.007},
+			{id:"right-lower", x:758-stageOffsetX, y:304-stageOffsetY, w:184, h:70, side:"left", tilt:0.009},
+			{id:"bottom-left", x:190-stageOffsetX, y:452-stageOffsetY, w:182, h:70, side:"top", tilt:0.008},
+			{id:"bottom-center", x:389-stageOffsetX, y:452-stageOffsetY, w:182, h:70, side:"top", tilt:-0.006},
+			{id:"bottom-right", x:588-stageOffsetX, y:452-stageOffsetY, w:182, h:70, side:"top", tilt:0.007}
 		];
+		if(count<=standard.length) return standard.slice(0, count);
+		if(count>14){
+			var expanded = [];
+			var stageContainer = document.getElementById("container");
+			var availableHeight = Math.max(540, stageContainer ? stageContainer.clientHeight : 540);
+			var expandedBottomY = Math.max(448, Math.min(550, availableHeight-288));
+			for(var expandedRow=0; expandedRow<2; expandedRow++){
+				for(var expandedColumn=0; expandedColumn<5; expandedColumn++){
+					expanded.push({
+						id:"expanded-top-"+expandedRow+"-"+expandedColumn,
+						x:8+expandedColumn*190-stageOffsetX,
+						y:34+expandedRow*120-stageOffsetY,
+						w:184, h:112, side:"bottom",
+						tilt:(expandedColumn%2 ? 0.004 : -0.004), dense:true,
+						titleLineCount:3, detailLineCount:3
+					});
+				}
+			}
+			[286, 414].forEach(function(sideY, sideIndex){
+				expanded.push({id:"expanded-left-"+sideIndex, x:8-stageOffsetX, y:sideY-stageOffsetY, w:188, h:112, side:"right", tilt:(sideIndex ? -0.004 : 0.004), dense:true, titleLineCount:3, detailLineCount:3});
+				expanded.push({id:"expanded-right-"+sideIndex, x:764-stageOffsetX, y:sideY-stageOffsetY, w:188, h:112, side:"left", tilt:(sideIndex ? 0.004 : -0.004), dense:true, titleLineCount:3, detailLineCount:3});
+			});
+			for(var expandedBottom=0; expandedBottom<4; expandedBottom++){
+				expanded.push({id:"expanded-bottom-"+expandedBottom, x:30+expandedBottom*225-stageOffsetX, y:expandedBottomY-stageOffsetY, w:216, h:112, side:"top", tilt:(expandedBottom%2 ? -0.004 : 0.004), dense:true, titleLineCount:3, detailLineCount:3});
+			}
+			return expanded.slice(0, count);
+		}
+
+		var dense = [];
+		var columns = 5;
+		var cardWidth = 150;
+		var cardHeight = 60;
+		var startX = 30;
+		var gapX = 180;
+		for(var topIndex=0; topIndex<columns; topIndex++){
+			dense.push({id:"dense-top-"+topIndex, x:startX+topIndex*gapX-stageOffsetX, y:70-stageOffsetY, w:cardWidth, h:cardHeight, side:"bottom", tilt:(topIndex%2 ? 0.006 : -0.006), dense:true, titleLineCount:1, detailLineCount:1});
+		}
+		for(var bottomIndex=0; bottomIndex<columns; bottomIndex++){
+			dense.push({id:"dense-bottom-"+bottomIndex, x:startX+bottomIndex*gapX-stageOffsetX, y:470-stageOffsetY, w:cardWidth, h:cardHeight, side:"top", tilt:(bottomIndex%2 ? -0.006 : 0.006), dense:true, titleLineCount:1, detailLineCount:1});
+		}
+		var sideRows = Math.ceil(Math.max(0, count-dense.length)/2);
+		var sideGap = sideRows>1 ? 190/Math.max(1, sideRows-1) : 0;
+		for(var sideIndex=0; sideIndex<sideRows; sideIndex++){
+			var sideY = 175+sideIndex*sideGap;
+			dense.push({id:"dense-left-"+sideIndex, x:10-stageOffsetX, y:sideY-stageOffsetY, w:cardWidth, h:cardHeight, side:"right", tilt:(sideIndex%2 ? -0.006 : 0.006), dense:true, titleLineCount:1, detailLineCount:1});
+			dense.push({id:"dense-right-"+sideIndex, x:950-cardWidth-stageOffsetX, y:sideY-stageOffsetY, w:cardWidth, h:cardHeight, side:"left", tilt:(sideIndex%2 ? 0.006 : -0.006), dense:true, titleLineCount:1, detailLineCount:1});
+		}
+		return dense.slice(0, count);
 	}
-	function _getFeaturedKnowledgePeeps(){
-		var candidates = self.peeps.map(function(peep, index){
+	function _getKnowledgePeeps(){
+		return self.peeps.map(function(peep, index){
 			return {peep:peep, index:index, knowledge:peep.knowledge};
 		}).filter(function(item){
 			return !!item.knowledge;
+		}).sort(function(a, b){
+			return (Number(a.knowledge.sceneIndex)||a.index+1) - (Number(b.knowledge.sceneIndex)||b.index+1);
 		});
-		if(!candidates.length) return [];
-
-		var desiredCount = candidates.length>=7 ? 4 : (candidates.length>=4 ? 3 : Math.min(2, candidates.length));
-		var picked = [];
-		while(picked.length<desiredCount){
-			var best = null;
-			var bestScore = -Infinity;
-			candidates.forEach(function(candidate){
-				if(picked.indexOf(candidate)>=0) return;
-				var degree = self.getFriendsOf(candidate.peep).length;
-				var score = degree*30 + (candidate.knowledge.featured ? 420 : 0);
-				if(picked.length){
-					var nearest = Infinity;
-					picked.forEach(function(chosen){
-						nearest = Math.min(nearest, _distanceBetween(candidate.peep, chosen.peep));
-					});
-					score += nearest*0.45;
-				}
-				if(score>bestScore){
-					best = candidate;
-					bestScore = score;
-				}
-			});
-			if(!best) break;
-			picked.push(best);
-		}
-		return picked;
 	}
 	self.buildKnowledgeCallouts = function(){
 		self.knowledgeCallouts = [];
 		self.knowledgeCalloutTick = 0;
 		if(!self.semanticSceneID) return;
-		var featured = _getFeaturedKnowledgePeeps();
-		var slots = _getKnowledgeCalloutSlots();
+		var featured = _getKnowledgePeeps();
+		var slots = _getKnowledgeCalloutSlots(featured.length);
 		featured.forEach(function(item, index){
 			var bestSlot = null;
 			var bestScore = -Infinity;
@@ -292,26 +317,33 @@ function Sim(config){
 				return connection.from===item.peep || connection.to===item.peep;
 			});
 			var relationshipHint = relationship && relationship.relationship ? relationship.relationship.label : "";
-			var detail = _compactKnowledgeText(item.knowledge.detail, 44) || "沿着这条线，看看它如何参与这一幕。";
+			var detailLineCount = bestSlot.detailLineCount===undefined ? 2 : bestSlot.detailLineCount;
+			var titleLineCount = bestSlot.titleLineCount || 1;
+			var detail = _compactKnowledgeText(item.knowledge.detail, bestSlot.dense ? 48 : 38) || "沿着这条线，看看它如何参与这一幕。";
+			var titleLines = _knowledgeLines(item.knowledge.label || "知识原子", bestSlot.dense ? 11 : 15, titleLineCount);
 			self.knowledgeCallouts.push({
 				peep:item.peep,
 				slot:bestSlot,
 				anchor:_calloutAnchor(bestSlot),
-				title:_compactKnowledgeText(item.knowledge.label || "知识原子", 20),
-				role:_compactKnowledgeText(item.knowledge.role || relationshipHint || "关键线索", 16),
-				detailLines:_knowledgeLines(detail, bestSlot.w>=240 ? 23 : 18, 2),
+				titleLines:titleLines.length ? titleLines : ["知识原子"],
+				role:_compactKnowledgeText(item.knowledge.role || relationshipHint || "关键线索", bestSlot.dense ? 12 : 11),
+				detailLines:_knowledgeLines(detail, bestSlot.dense ? 15 : 16, detailLineCount),
 				color:_knowledgeStateColor(item.peep),
-				revealAt:index*13,
-				bend:(index%2===0 ? 1 : -1)*(18+index*5)
+				revealAt:index*3
 			});
 		});
+		var stageContainer = document.getElementById("container");
+		if(stageContainer){
+			stageContainer.setAttribute("data-rhyme-peep-count", String(featured.length));
+			stageContainer.setAttribute("data-rhyme-callout-count", String(self.knowledgeCallouts.length));
+		}
 	};
 	self.restartKnowledgeCallouts = function(){
 		if(!self.semanticSceneID) return;
 		self.knowledgeCalloutTick = 0;
 	};
 	function _calloutProgress(callout){
-		var progress = (self.knowledgeCalloutTick-callout.revealAt)/24;
+		var progress = (self.knowledgeCalloutTick-callout.revealAt)/22;
 		return Math.max(0, Math.min(1, progress));
 	}
 	function _knowledgeOverlayIsOpen(){
@@ -321,8 +353,7 @@ function Sim(config){
 	function _easeOutCubic(value){
 		return 1-Math.pow(1-value, 3);
 	}
-	function _drawPartialLeader(ctx, start, bend, end, progress){
-		var points = [start, bend, end];
+	function _drawPartialLeader(ctx, points, progress){
 		var lengths = [];
 		var total = 0;
 		for(var i=1; i<points.length; i++){
@@ -332,7 +363,7 @@ function Sim(config){
 		}
 		var remaining = total*progress;
 		ctx.beginPath();
-		ctx.moveTo(start.x, start.y);
+		ctx.moveTo(points[0].x, points[0].y);
 		for(var segment=0; segment<lengths.length; segment++){
 			var from = points[segment];
 			var to = points[segment+1];
@@ -342,6 +373,16 @@ function Sim(config){
 			remaining -= lengths[segment];
 			if(proportion<1) break;
 		}
+	}
+	function _knowledgeLeaderPoints(callout, start){
+		var anchor = callout.anchor;
+		var side = callout.slot.side;
+		if(side==="left" || side==="right"){
+			var gutterX = anchor.x + (side==="left" ? -28 : 28);
+			return [start, {x:gutterX, y:start.y}, {x:gutterX, y:anchor.y}, anchor];
+		}
+		var gutterY = anchor.y + (side==="top" ? -25 : 25);
+		return [start, {x:start.x, y:gutterY}, {x:anchor.x, y:gutterY}, anchor];
 	}
 	function _drawKnowledgeCalloutLeaders(ctx){
 		if(!self.semanticSceneID || !self.knowledgeCallouts.length || _knowledgeOverlayIsOpen()) return;
@@ -355,21 +396,18 @@ function Sim(config){
 				x:callout.peep.x+vector.x/length*31,
 				y:callout.peep.y+vector.y/length*31
 			};
-			var bend = {
-				x:start.x+(callout.anchor.x-start.x)*0.47 + (callout.slot.side==="top" || callout.slot.side==="bottom" ? callout.bend : 0),
-				y:start.y+(callout.anchor.y-start.y)*0.47 + (callout.slot.side==="left" || callout.slot.side==="right" ? callout.bend : 0)
-			};
+			var points = _knowledgeLeaderPoints(callout, start);
 			ctx.save();
 			ctx.globalAlpha = 0.58;
 			ctx.strokeStyle = callout.color;
 			ctx.lineWidth = 1.45;
 			ctx.lineCap = "round";
 			ctx.lineJoin = "round";
-			_drawPartialLeader(ctx, start, bend, callout.anchor, lineProgress);
+			_drawPartialLeader(ctx, points, lineProgress);
 			ctx.stroke();
 			ctx.globalAlpha = 0.18;
 			ctx.translate(0.7, -0.55);
-			_drawPartialLeader(ctx, start, bend, callout.anchor, Math.max(0, lineProgress-0.025));
+			_drawPartialLeader(ctx, points, Math.max(0, lineProgress-0.025));
 			ctx.stroke();
 			ctx.restore();
 		});
@@ -380,9 +418,10 @@ function Sim(config){
 			var reveal = _calloutProgress(callout);
 			if(reveal<0.22) return;
 			var cardProgress = _easeOutCubic(Math.min(1, (reveal-0.22)/0.78));
-			var scale = 0.88 + cardProgress*0.12;
+			var scale = 0.92 + cardProgress*0.08;
 			var offset = (1-cardProgress)*10;
 			var slot = callout.slot;
+			var dense = !!slot.dense;
 			var height = slot.h;
 			var x = slot.x;
 			var y = slot.y;
@@ -408,32 +447,34 @@ function Sim(config){
 			ctx.strokeStyle = "rgba(44,44,44,0.62)";
 			ctx.stroke();
 			ctx.beginPath();
-			ctx.moveTo(13, 12);
-			ctx.lineTo(13, height-12);
+			ctx.moveTo(dense ? 10 : 13, dense ? 9 : 12);
+			ctx.lineTo(dense ? 10 : 13, height-(dense ? 9 : 12));
 			ctx.strokeStyle = callout.color;
 			ctx.lineWidth = 3;
 			ctx.stroke();
 			ctx.beginPath();
-			ctx.arc(23, 16, 3.2, 0, Math.TAU);
+			ctx.arc(dense ? 18 : 23, dense ? 14 : 16, dense ? 2.7 : 3.2, 0, Math.TAU);
 			ctx.fillStyle = callout.color;
 			ctx.fill();
-			ctx.font = "14px PatrickHand";
+			ctx.font = (dense ? "14px" : "13px") + " PatrickHand";
 			ctx.textAlign = "left";
 			ctx.textBaseline = "middle";
 			ctx.fillStyle = "#222";
-			ctx.fillText(callout.title, 31, 17);
-			ctx.font = "10px PatrickHand";
+			var titleX = dense ? 25 : 31;
+			var titleStartY = dense ? 14 : 17;
+			var titleStep = dense ? 15 : 14;
+			(callout.titleLines || ["知识原子"]).forEach(function(line, titleIndex){
+				ctx.fillText(line, titleX, titleStartY+titleIndex*titleStep);
+			});
+			var roleY = dense ? titleStartY+(callout.titleLines || ["知识原子"]).length*titleStep+1 : 32;
+			ctx.font = (dense ? "10.5px" : "9px") + " PatrickHand";
 			ctx.fillStyle = callout.color;
-			ctx.fillText(callout.role, 23, 34);
-			ctx.font = "11px PatrickHand";
+			ctx.fillText(callout.role, dense ? 18 : 23, roleY);
+			ctx.font = (dense ? "11.5px" : "10px") + " PatrickHand";
 			ctx.fillStyle = "#595959";
 			callout.detailLines.forEach(function(line, lineIndex){
-				ctx.fillText(line, 23, 50+lineIndex*14);
+				ctx.fillText(line, dense ? 18 : 23, roleY+(dense ? 13 : 13)+lineIndex*(dense ? 12.5 : 12));
 			});
-			ctx.font = "9px PatrickHand";
-			ctx.fillStyle = "#a0a0a0";
-			ctx.textAlign = "right";
-			ctx.fillText("线索 " + (index+1), slot.w-14, height-12);
 			ctx.restore();
 		});
 	}
@@ -525,6 +566,48 @@ function Sim(config){
 		self.knowledgeCalloutTick = 0;
 		if(window.RHYME_STAGE && window.RHYME_STAGE.clearFocus) window.RHYME_STAGE.clearFocus();
 	};
+	function _semanticNetworkLayout(points){
+		if(!self.semanticSceneID || !points || !points.length) return null;
+		var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+		points.forEach(function(point){
+			minX = Math.min(minX, point[0]);
+			maxX = Math.max(maxX, point[0]);
+			minY = Math.min(minY, point[1]);
+			maxY = Math.max(maxY, point[1]);
+		});
+		var sourceWidth = Math.max(1, maxX-minX);
+		var sourceHeight = Math.max(1, maxY-minY);
+		var target = points.length>14
+			? {x:218, y:290, w:524, h:210}
+			: {x:228, y:148, w:504, h:246};
+		var scale = Math.min(target.w/sourceWidth, target.h/sourceHeight, 1);
+		var sourceCenterX = (minX+maxX)/2;
+		var sourceCenterY = (minY+maxY)/2;
+		return function(point){
+			return {
+				x:target.x+target.w/2+(point[0]-sourceCenterX)*scale,
+				y:target.y+target.h/2+(point[1]-sourceCenterY)*scale
+			};
+		};
+	}
+	function _fallbackKnowledge(index){
+		var atoms = [
+			["起始条件", "前提", "先确认这一幕成立所需要的条件。"],
+			["关键变量", "对象", "观察哪个对象正在改变，以及改变了什么。"],
+			["连接规则", "关系", "沿着连线判断两个知识原子如何影响彼此。"],
+			["判断门槛", "机制", "找到触发下一步变化所需要达到的门槛。"],
+			["证据合流", "证据", "把不同来源的信息合并后再作出判断。"],
+			["反例提醒", "反例", "检查是否存在能够推翻当前结论的情况。"],
+			["适用边界", "边界", "明确这个结论在哪些范围内才有效。"],
+			["迁移应用", "应用", "把当前关系迁移到一个新的问题中。"],
+			["自我检验", "自检", "用一个反问确认自己是否真的理解。"],
+			["反馈结果", "反馈", "观察结果如何反过来影响下一轮判断。"],
+			["修正路径", "修正", "当证据不一致时调整原来的推理路线。"],
+			["总结输出", "结论", "把这一幕最终得到的判断表达出来。"]
+		];
+		var atom = atoms[index] || ["补充线索 "+(index+1), "线索", "观察它与相邻节点形成的独特关系。"];
+		return {label:atom[0], role:atom[1], detail:atom[2], sceneIndex:index+1};
+	}
 	self.init = function(){
 
 		// Clear!
@@ -532,11 +615,14 @@ function Sim(config){
 
 		// Peeps
 		var semanticScene = self.getKnowledgeScene();
+		var semanticLayout = _semanticNetworkLayout(self.networkConfig.peeps);
 		self.networkConfig.peeps.forEach(function(p, index){
-			var x = p[0],
-				y = p[1],
+			var semanticPosition = semanticLayout ? semanticLayout(p) : null;
+			var x = semanticPosition ? semanticPosition.x : p[0],
+				y = semanticPosition ? semanticPosition.y : p[1],
 				infected = p[2];
 			var knowledge = semanticScene && semanticScene.nodes ? semanticScene.nodes[index] : null;
+			if(self.semanticSceneID && !knowledge) knowledge = _fallbackKnowledge(index);
 			if(knowledge){
 				knowledge.sceneIndex = knowledge.sceneIndex || index+1;
 				knowledge.sceneCount = knowledge.sceneCount || self.networkConfig.peeps.length;

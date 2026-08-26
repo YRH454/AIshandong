@@ -13,7 +13,6 @@ import {
   DismissRegular,
   FlowRegular,
   LightbulbRegular,
-  TargetRegular,
   WarningRegular,
   ZoomInRegular,
   ZoomOutRegular,
@@ -271,10 +270,10 @@ function profileFor(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en'): Graph
     circular: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'circular', nodeSize: 42, nodeSpacing: 56, ordering: 'topology' } },
     concentric: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'concentric', nodeSize: 52, minNodeSpacing: 42, maxLevelDiff: 0.5, sortBy: 'degree', preventOverlap: true } },
     radial: { semanticType: 'lab_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'radial', nodeSize: 42, unitRadius: 112, linkDistance: 170, preventOverlap: true, strictRadial: true } },
-    force: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'force', preventOverlap: true, linkDistance: 150, nodeStrength: -65, collideStrength: 0.9, alphaDecay: 0.04 } },
-    'd3-bubble': { semanticType: 'lab_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'd3-force', collide: { radius: 54, strength: 0.85 }, manyBody: { strength: 34 }, link: { distance: 140 } } },
-    fruchterman: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'fruchterman', gravity: 6, speed: 5, clustering: true, nodeClusterBy: 'cluster', clusterGravity: 18 } },
-    atlas2: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'dots', layout: { type: 'force-atlas2', preventOverlap: true, kr: 18, kg: 4, maxIteration: 320 } },
+    force: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'force', preventOverlap: true, linkDistance: 150, nodeStrength: -65, collideStrength: 0.9, animation: false, maxIteration: 120, minMovement: 1.1 } },
+    'd3-bubble': { semanticType: 'lab_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'd3-force', collide: { radius: 54, strength: 0.85 }, manyBody: { strength: 34 }, link: { distance: 140 }, animation: false, alphaDecay: .12, alphaMin: .02 } },
+    fruchterman: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'bubbles', layout: { type: 'fruchterman', gravity: 6, speed: 5, clustering: true, nodeClusterBy: 'cluster', clusterGravity: 18, animation: false, maxIteration: 140, minMovement: 1.1 } },
+    atlas2: { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'dots', layout: { type: 'force-atlas2', preventOverlap: true, kr: 18, kg: 4, animation: false, maxIteration: 150, minMovement: 1.1 } },
     mds: { semanticType: 'comparison_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'dots', layout: { type: 'mds', nodeSize: 34, linkDistance: 125 } },
     orbit: { semanticType: 'system_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'orbit' },
     honeycomb: { semanticType: 'lab_map', nodeType: 'diamond', edgeType: 'line', usesTree: false, visual: 'honeycomb' },
@@ -443,8 +442,6 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   }), [viewData, currentRoot?.id, profile.id])
   const fallbackMap = useMemo(() => fallbackMapFor(viewData, currentRoot?.id), [viewData, currentRoot?.id])
   const selectedNode = current.nodes.find(node => node.id === selectedId) || null
-  const total = props.progress?.summary.total ?? Math.max(0, props.data.nodes.filter(node => node.role !== 'core').length)
-  const mastered = props.progress?.summary.mastered ?? 0
   const canOpenDeepDive = frames.length === 0 && Boolean(selectedNode && selectedNode.id !== currentRoot?.id && props.onGenerateDeepDive)
 
   const graphData = useMemo<any>(() => {
@@ -911,7 +908,6 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
           </select>
           <small>{zh ? `${knowledgeMapViewCount} 种` : `${knowledgeMapViewCount} styles`}</small>
         </label>
-        <div className="g6-map-header-meta" aria-label={zh ? '学习进度' : 'Learning progress'}><TargetRegular /><b>{mastered}/{total}</b><small>{zh ? '已理解' : 'understood'}</small></div>
       </div>
     </header>
 
@@ -951,7 +947,6 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         </div>}
       </aside>}
       {expandError && <div className="g6-map-error" role="status"><WarningRegular /><span>{expandError}</span><button type="button" onClick={() => setExpandError(null)}>{zh ? '知道了' : 'Dismiss'}</button></div>}
-      <div className="g6-map-hint"><span>{zh ? '拖拽平移 · 滚轮缩放 · 双击收起或展开分支' : 'Drag to move · Scroll to zoom · Double-click to collapse or expand'}</span></div>
     </div>
   </section>
 }

@@ -86,6 +86,7 @@ import './knowledge-map-worlds.css'
 
 const LearningHouse = lazy(() => import('./components/LearningHouse'))
 const PersonalHouse = lazy(() => import('./components/PersonalHouse'))
+const KnowledgeMapHall = lazy(() => import('./components/KnowledgeMapHall'))
 
 type IconName =
   | 'archive'
@@ -1638,6 +1639,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('rhyme-sidebar-collapsed') === 'true')
   const [learningHouseOpen, setLearningHouseOpen] = useState(false)
   const [personalHouseOpen, setPersonalHouseOpen] = useState(false)
+  const [knowledgeMapHallOpen, setKnowledgeMapHallOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -2267,6 +2269,21 @@ function App() {
     ))
     return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
   }, [libraryItems, mapWorkspaceArtifactId, readerArtifact, trashedItems, turns])
+  const knowledgeHallMaps = useMemo(() => mapArtifacts.flatMap(artifact => {
+    if (artifact.status === 'deleted' || artifact.deletedAt) return []
+    const parsed = parseKnowledgeMap(artifact.content)
+    if (!parsed) return []
+    return [{
+      id: artifact.id,
+      title: artifact.title,
+      topic: artifact.topic,
+      summary: artifact.summary,
+      mapType: parsed.map_type,
+      nodes: parsed.nodes,
+      edges: parsed.edges,
+      learningPath: parsed.learning_path,
+    }]
+  }), [mapArtifacts])
   const interactivePresentationArtifacts = useMemo(() => {
     const candidates = [
       ...turns.flatMap(turn => turn.artifacts),
@@ -8607,8 +8624,27 @@ function App() {
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 3D 学习屋…', 'Opening 3D learning house…')}</div>}>
           <LearningHouse
             language={interfaceLanguage}
-            onExit={() => { setPersonalHouseOpen(false); setLearningHouseOpen(false) }}
+            suspended={knowledgeMapHallOpen}
+            onExit={() => { setKnowledgeMapHallOpen(false); setPersonalHouseOpen(false); setLearningHouseOpen(false) }}
             onOpenPersonalRoom={() => setPersonalHouseOpen(true)}
+            onOpenMapHall={() => setKnowledgeMapHallOpen(true)}
+          />
+        </Suspense>
+      )}
+
+      {knowledgeMapHallOpen && (
+        <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在点亮万象星海…', 'Lighting up life constellations…')}</div>}>
+          <KnowledgeMapHall
+            maps={knowledgeHallMaps}
+            onExit={() => setKnowledgeMapHallOpen(false)}
+            onOpenMap={(id) => {
+              const artifact = mapArtifacts.find(item => item.id === id)
+              if (!artifact) return
+              setKnowledgeMapHallOpen(false)
+              setPersonalHouseOpen(false)
+              setLearningHouseOpen(false)
+              openMapWorkspace(artifact, 'chat')
+            }}
           />
         </Suspense>
       )}

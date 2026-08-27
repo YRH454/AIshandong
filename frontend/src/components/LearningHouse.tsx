@@ -16,6 +16,8 @@ type Props = {
   language?: Language
   onExit: () => void
   onOpenPersonalRoom?: () => void
+  onOpenMapHall?: () => void
+  suspended?: boolean
 }
 
 type Room = {
@@ -37,7 +39,7 @@ const assetBase = '/learning-house-reference'
 const rooms: Room[] = [
   { id: 'document', title: '学习文档室', titleEn: 'Study documents', short: '学习文档', shortEn: 'Documents', empty: '资料生成后会自动放入这一间。', emptyEn: 'Generated documents will move into this room.', color: '#6c9a73', side: 'left', z: -9, icon: FileText },
   { id: 'practice', title: '练习检验室', titleEn: 'Practice studio', short: '练习检验', shortEn: 'Practice', empty: '第一份练习会在这里等你完成。', emptyEn: 'Your first practice set will wait here.', color: '#c4934f', side: 'right', z: -22, icon: ClipboardCheck },
-  { id: 'map', title: '知识图解室', titleEn: 'Knowledge maps', short: '知识图解', shortEn: 'Maps', empty: '生成的图解会挂到这面墙上。', emptyEn: 'Generated maps will appear on this wall.', color: '#628db6', side: 'left', z: -35, icon: BrainCircuit },
+  { id: 'map', title: '万象星海', titleEn: 'Life constellations', short: '万象星海', shortEn: 'Starfield', empty: '这里收纳了可自由漫游的万象知识星海。', emptyEn: 'A free-roaming field of life constellations lives here.', color: '#628db6', side: 'left', z: -35, icon: BrainCircuit },
   { id: 'dynamic', title: '动态讲解室', titleEn: 'Dynamic lessons', short: '动态讲解', shortEn: 'Lessons', empty: '第一段动态讲解会在这里亮起来。', emptyEn: 'Your first dynamic lesson will light up here.', color: '#9173b6', side: 'right', z: -48, icon: Play },
   { id: 'profile', title: '个人档案室', titleEn: 'Personal archive', short: '个人档案', shortEn: 'Archive', empty: 'EGOIST 的个人档案与成长路线收藏在这间小屋。', emptyEn: 'EGOIST’s personal archive and flight route live in this room.', color: '#d6614d', side: 'left', z: -60, icon: Box },
 ]
@@ -363,7 +365,7 @@ function FlatFallback({ language, onEnter }: { language: Language; onEnter: () =
   return <div className="learning-house-flat entrance"><BookOpen size={30} /><h1>RHYME</h1><p>{zh ? '3D 学习屋需要浏览器开启图形加速。' : 'The 3D learning house needs WebGL graphics support.'}</p><button type="button" onClick={onEnter}>{zh ? '进入学习空间' : 'Enter learning space'}</button></div>
 }
 
-export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPersonalRoom }: Props) {
+export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPersonalRoom, onOpenMapHall, suspended = false }: Props) {
   const [canUseWebGL] = useState(() => supportsWebGL())
   const [lowPower] = useState(() => reducedScene())
   const [phase, setPhase] = useState<Phase>('entrance')
@@ -376,13 +378,14 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
   useEffect(() => {
     document.body.classList.add('learning-house-open')
     const key = (event: KeyboardEvent) => {
+      if (suspended) return
       if (event.key !== 'Escape') return
       if (phase === 'corridor') setPhase('entrance')
       else onExit()
     }
     window.addEventListener('keydown', key)
     return () => { document.body.classList.remove('learning-house-open'); window.removeEventListener('keydown', key) }
-  }, [onExit, phase])
+  }, [onExit, phase, suspended])
 
   const enterCorridor = () => setPhase('corridor')
   const status = phase === 'entrance'
@@ -390,6 +393,8 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
     : (activeRoom
       ? (activeRoom.id === 'profile'
         ? (zh ? '个人档案室已开启，点击门进入 EGOIST 的个人空间。' : 'The personal archive is ready. Click its door to enter EGOIST’s space.')
+        : activeRoom.id === 'map'
+          ? (zh ? '万象星海已点亮，点击门进入自由漫游。' : 'The life constellations are lit. Click the door to roam freely.')
         : (zh ? `${activeRoom.title}已预留，生成资料后会自动入住。` : `${activeRoom.titleEn} is ready for generated work.`))
       : (zh ? '滚动或按 W / S 前进，靠近房门后点击。' : 'Scroll or use W / S to walk. Click a nearby door.'))
 
@@ -408,11 +413,17 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
           {canUseWebGL ? <Canvas className="learning-house-canvas" camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
             <color attach="background" args={['#fafafa']} /><fog attach="fog" args={['#fafafa', 20, 62]} /><ambientLight intensity={1.04} /><hemisphereLight args={['#ffffff', '#d7d7d2', .72]} /><directionalLight position={[4, 8, 8]} intensity={.86} color="#fff9e9" />
             <Suspense fallback={null}>
-              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'profile') onOpenPersonalRoom?.() }} />)}</>}
+              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'profile') onOpenPersonalRoom?.(); if (room.id === 'map') onOpenMapHall?.() }} />)}</>}
             </Suspense>
             <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} />
           </Canvas> : <FlatFallback language={language} onEnter={enterCorridor} />}
-          <div className="learning-house-explorer" aria-live="polite"><b>{phase === 'entrance' ? 'EXPLORER' : 'WANDERER'}</b><span>{status}</span></div>
+          <div className="learning-house-explorer" aria-live="polite">
+            <b>{phase === 'entrance' ? 'EXPLORER' : 'WANDERER'}</b>
+            <span>{status}</span>
+            {phase === 'corridor' && activeRoom?.id === 'map' && onOpenMapHall && (
+              <button type="button" onClick={onOpenMapHall}>{zh ? '进入万象星海' : 'Enter starfield'}</button>
+            )}
+          </div>
         </section>
       </main>
     </section>

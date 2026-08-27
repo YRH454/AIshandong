@@ -143,6 +143,14 @@
   animation: personal-flight-card-in .5s cubic-bezier(.16, 1, .3, 1) both;
 }
 
+.personal-flight-card.personal-flight-card-center {
+  right: auto;
+  left: 50%;
+  width: min(420px, calc(100% - 250px));
+  transform: translate(-50%, -50%);
+  animation-name: personal-flight-card-center-in;
+}
+
 .personal-flight-card-order { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 9px; font-weight: 900; letter-spacing: .13em; }
 .personal-flight-card h2 { margin: -1px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp(25px, 2.5vw, 34px); font-weight: 500; letter-spacing: -.055em; line-height: 1.02; }
 .personal-flight-card > strong { color: #48616c; font-size: 11px; font-weight: 750; line-height: 1.42; }
@@ -169,11 +177,12 @@
 
 @keyframes personal-flight-in { from { opacity: 0; transform: scale(.992); } to { opacity: 1; transform: scale(1); } }
 @keyframes personal-flight-card-in { from { opacity: 0; transform: translate(12px, -50%); } to { opacity: 1; transform: translateY(-50%); } }
+@keyframes personal-flight-card-center-in { from { opacity: 0; transform: translate(calc(-50% + 12px), -50%); } to { opacity: 1; transform: translate(-50%, -50%); } }
 @keyframes personal-flight-notice-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 900px) {
-  .personal-flight-card { top: auto; right: 18px; bottom: 66px; width: min(355px, calc(100% - 190px)); max-height: calc(100dvh - 150px); overflow: auto; transform: none; }
-  .personal-flight-card { animation-name: personal-flight-card-mobile-in; }
+  .personal-flight-card { top: auto; right: 18px; bottom: 66px; width: min(355px, calc(100% - 190px)); max-height: calc(100dvh - 150px); overflow: auto; transform: none; animation-name: personal-flight-card-mobile-in; }
+  .personal-flight-card.personal-flight-card-center { top: auto; right: auto; left: 50%; bottom: 66px; width: min(390px, calc(100% - 190px)); transform: translateX(-50%); animation-name: personal-flight-card-mobile-center-in; }
   .personal-flight-card h2 { font-size: 27px; }
 }
 
@@ -196,6 +205,7 @@
   .personal-flight-route button span { display: none; }
   .personal-flight-route button b { width: 9px; height: 9px; }
   .personal-flight-card { right: 12px; bottom: 57px; width: calc(100% - 24px); max-height: min(355px, calc(100dvh - 130px)); padding: 17px 17px 14px; }
+  .personal-flight-card.personal-flight-card-center { right: auto; left: 50%; bottom: 57px; width: calc(100% - 24px); }
   .personal-flight-card h2 { font-size: 24px; }
   .personal-flight-card > p { font-size: 11px; }
   .personal-flight-contact { display: none; }
@@ -203,6 +213,7 @@
 }
 
 @keyframes personal-flight-card-mobile-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes personal-flight-card-mobile-center-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translateX(-50%); } }
 
 @media (prefers-reduced-motion: reduce) {
   .personal-flight-layer, .personal-flight-card, .personal-flight-notice { animation: none; }

@@ -23,13 +23,14 @@ type Milestone = {
   subtitle: string
   story: string
   details: string[]
-  asset: string
-  assetAlt: string
-  imageFrame: [number, number]
-  position: [number, number, number]
+  asset?: string
+  imageFrame?: [number, number]
+  position?: [number, number, number]
   travel: number
   accent: string
 }
+
+type ScenicMilestone = Milestone & Required<Pick<Milestone, 'asset' | 'imageFrame' | 'position'>>
 
 const EMAIL = '3539921167@qq.com'
 const GITHUB_URL = 'https://github.com/YRH454/egosityrh'
@@ -45,7 +46,6 @@ const milestones: Milestone[] = [
     story: 'A personal archive built from code, late-night playlists, animation worlds and quiet obsessions.',
     details: ['Big Data · Shandong Agricultural University', 'EGOIST · the person behind the work'],
     asset: '/egoist-about/avatar.jpg',
-    assetAlt: 'Portrait of Yao Ruihui',
     imageFrame: [5.2, 3.5],
     position: [0, .1, -28],
     travel: 18,
@@ -60,7 +60,6 @@ const milestones: Milestone[] = [
     story: 'Drawn to places with atmosphere: a song after midnight, animation worlds and the stillness of old churches.',
     details: ['Music and anime are part of the everyday rhythm', 'A soft spot for gothic and sacred architecture'],
     asset: '/egoist-about/gothic-stage-design.jpg',
-    assetAlt: 'Public-domain gothic stage design',
     imageFrame: [5.4, 3.5],
     position: [1.1, .1, -70],
     travel: 62,
@@ -73,11 +72,7 @@ const milestones: Milestone[] = [
     title: 'KEEP IN TOUCH',
     subtitle: 'Data curiosity · Practical code · A public corner',
     story: 'A place for projects, small discoveries and the fragments that make a person feel less like a profile card.',
-    details: ['GitHub: YRH454 · repository currently private', 'Douyin: 1190888433'],
-    asset: '/egoist-about/douyin-profile-2026.jpg',
-    assetAlt: 'Douyin account profile',
-    imageFrame: [5.75, 3.43],
-    position: [0, -.05, -112],
+    details: ['GitHub: YRH454 · repository currently private'],
     travel: 102,
     accent: '#4c8b88',
   },
@@ -85,7 +80,10 @@ const milestones: Milestone[] = [
 
 useTexture.preload('/egoist-about/avatar.jpg')
 useTexture.preload('/egoist-about/gothic-stage-design.jpg')
-useTexture.preload('/egoist-about/douyin-profile-2026.jpg')
+
+function hasScenicContent(milestone: Milestone): milestone is ScenicMilestone {
+  return Boolean(milestone.asset && milestone.imageFrame && milestone.position)
+}
 
 function supportsWebGL() {
   try {
@@ -185,7 +183,7 @@ function SkyField() {
   </>
 }
 
-function PhotoFrame({ milestone, onSelect }: { milestone: Milestone; onSelect: (id: MilestoneId) => void }) {
+function PhotoFrame({ milestone, onSelect }: { milestone: ScenicMilestone; onSelect: (id: MilestoneId) => void }) {
   const texture = useTexture(milestone.asset)
   const groupRef = useRef<THREE.Group>(null)
   const [hovered, setHovered] = useState(false)
@@ -227,7 +225,7 @@ function PhotoFrame({ milestone, onSelect }: { milestone: Milestone; onSelect: (
   </group>
 }
 
-function PhotoFramePlaceholder({ milestone }: { milestone: Milestone }) {
+function PhotoFramePlaceholder({ milestone }: { milestone: ScenicMilestone }) {
   const [width, height] = milestone.imageFrame
   return <group>
     <mesh position={[0, 0, -.08]}>
@@ -245,7 +243,7 @@ function PhotoFramePlaceholder({ milestone }: { milestone: Milestone }) {
   </group>
 }
 
-function StoryMilestone({ milestone, onSelect }: { milestone: Milestone; onSelect: (id: MilestoneId) => void }) {
+function StoryMilestone({ milestone, onSelect }: { milestone: ScenicMilestone; onSelect: (id: MilestoneId) => void }) {
   const groupRef = useRef<THREE.Group>(null)
   const contentRef = useRef<THREE.Group>(null)
   const opacityRef = useRef(0)
@@ -381,7 +379,7 @@ function FlightScene({
     <FlightController worldRef={worldRef} planeRef={planeRef} routeTarget={routeTarget} autoFly={autoFly} onProgress={onProgress} onActiveChange={onActiveChange} />
     <group ref={worldRef}>
       <SkyField />
-      {milestones.map(milestone => <StoryMilestone key={milestone.id} milestone={milestone} onSelect={onSelect} />)}
+      {milestones.filter(hasScenicContent).map(milestone => <StoryMilestone key={milestone.id} milestone={milestone} onSelect={onSelect} />)}
     </group>
     <group ref={planeRef} position={[0, -.92, -2.7]}><PaperPlane /></group>
   </>
@@ -487,7 +485,7 @@ export default function PersonalHouse({ onExit, returnTo = 'rhyme' }: Props) {
           </button>)}
         </nav>
 
-        <aside className="personal-flight-card" aria-live="polite">
+        <aside className={`personal-flight-card${active.id === 'motion' ? ' personal-flight-card-center' : ''}`} aria-live="polite">
           <span className="personal-flight-card-order" style={{ color: active.accent }}>{active.order}</span>
           <h2>{active.title}</h2>
           <strong>{active.subtitle}</strong>

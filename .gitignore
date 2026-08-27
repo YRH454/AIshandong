@@ -28,6 +28,7 @@ backend/*.log
 .claude/
 .impeccable/
 .reference-demos/
+.reference-apex/
 .tmp-yashs-room-source/
 .tmp-itom-portfolio/
 

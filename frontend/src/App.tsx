@@ -87,6 +87,8 @@ import './knowledge-map-worlds.css'
 const LearningHouse = lazy(() => import('./components/LearningHouse'))
 const PersonalHouse = lazy(() => import('./components/PersonalHouse'))
 const KnowledgeMapHall = lazy(() => import('./components/KnowledgeMapHall'))
+const ApexLab = lazy(() => import('./components/ApexLab'))
+const SolarExplorer = lazy(() => import('./components/SolarExplorer'))
 
 type IconName =
   | 'archive'
@@ -1640,6 +1642,8 @@ function App() {
   const [learningHouseOpen, setLearningHouseOpen] = useState(false)
   const [personalHouseOpen, setPersonalHouseOpen] = useState(false)
   const [knowledgeMapHallOpen, setKnowledgeMapHallOpen] = useState(false)
+  const [apexLabOpen, setApexLabOpen] = useState(false)
+  const [solarExplorerOpen, setSolarExplorerOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -8624,11 +8628,25 @@ function App() {
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 3D 学习屋…', 'Opening 3D learning house…')}</div>}>
           <LearningHouse
             language={interfaceLanguage}
-            suspended={knowledgeMapHallOpen}
-            onExit={() => { setKnowledgeMapHallOpen(false); setPersonalHouseOpen(false); setLearningHouseOpen(false) }}
+            suspended={knowledgeMapHallOpen || apexLabOpen || solarExplorerOpen}
+            onExit={() => { setKnowledgeMapHallOpen(false); setPersonalHouseOpen(false); setApexLabOpen(false); setSolarExplorerOpen(false); setLearningHouseOpen(false) }}
             onOpenPersonalRoom={() => setPersonalHouseOpen(true)}
             onOpenMapHall={() => setKnowledgeMapHallOpen(true)}
+            onOpenApexLab={() => setApexLabOpen(true)}
+            onOpenSolarExplorer={() => setSolarExplorerOpen(true)}
           />
+        </Suspense>
+      )}
+
+      {apexLabOpen && (
+        <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开系统交互实验馆…', 'Opening systems laboratory…')}</div>}>
+          <ApexLab onExit={() => setApexLabOpen(false)} />
+        </Suspense>
+      )}
+
+      {solarExplorerOpen && (
+        <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在点亮太阳系探索舱…', 'Launching solar explorer…')}</div>}>
+          <SolarExplorer onExit={() => setSolarExplorerOpen(false)} />
         </Suspense>
       )}
 

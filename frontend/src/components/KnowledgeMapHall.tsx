@@ -6,6 +6,15 @@ import R3fForceGraph, { type GraphMethods } from 'r3f-forcegraph'
 import { ArrowLeft, X } from 'lucide-react'
 import largeGraphTopology from '../data/r3f-large-graph-topology.json'
 import './KnowledgeMapHall.css'
+import { SceneRenderPulse } from './SceneRenderPulse'
+
+function reducedScene() {
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  return window.matchMedia('(max-width: 760px)').matches
+    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || (navigator.hardwareConcurrency || 8) <= 4
+    || (nav.deviceMemory || 8) <= 4
+}
 
 export type KnowledgeHallNode = {
   id: string
@@ -30,11 +39,7 @@ export type KnowledgeHallMap = {
 }
 
 type Props = {
-  // Kept for the existing app entry point. This room is intentionally no longer
-  // bound to the current learning topic.
-  maps: KnowledgeHallMap[]
   onExit: () => void
-  onOpenMap?: (id: string) => void
 }
 
 type StarNode = KnowledgeHallNode & {
@@ -197,11 +202,13 @@ function createStarMap() {
         val: (.76 + Math.min(3.15, Math.sqrt(degree.get(sourceNode.id) || 1) * .38)) * (layerIndex === 0 ? 1 : .9),
       })
     })
-    upstreamTopology.links.forEach(({ source, target }) => {
+    upstreamTopology.links.forEach(({ source, target }, linkIndex) => {
       links.push({
         source: `${layer.id}:${source}`,
         target: `${layer.id}:${target}`,
-        particles: layerIndex === 0 ? 1 : 0,
+        // A sparse stream keeps the star field alive without animating a
+        // particle on every one of the thousands of links.
+        particles: layerIndex === 0 && linkIndex % 18 === 0 ? 1 : 0,
       })
     })
   })
@@ -219,10 +226,31 @@ function createStarMap() {
 
 const STAR_MAP = createStarMap()
 
-function GraphViz({ onHover }: { onHover: (node: StarNode | null) => void }) {
+function GraphViz({ onHover, lowPower, onLayoutSettled }: {
+  onHover: (node: StarNode | null) => void
+  lowPower: boolean
+  onLayoutSettled: (settled: boolean) => void
+}) {
   const graphRef = useRef<GraphMethods | undefined>(undefined)
   const graphData = useMemo(() => STAR_MAP, [])
-  useFrame(() => graphRef.current?.tickFrame())
+  const layoutSettledRef = useRef(false)
+  const pulseCountRef = useRef(0)
+  const hoveredIdRef = useRef<string | null>(null)
+
+  useEffect(() => () => {
+    if (hoveredIdRef.current) document.body.style.cursor = ''
+  }, [])
+
+  useFrame(() => {
+    const graph = graphRef.current
+    if (!graph) return
+    // The force layout is expensive with the full upstream topology. Once it
+    // settles, keep only a low-rate particle refresh for ambient motion rather
+    // than traversing every link on every demand frame.
+    pulseCountRef.current += 1
+    const refreshEvery = lowPower ? 5 : 3
+    if (!layoutSettledRef.current || pulseCountRef.current % refreshEvery === 0) graph.tickFrame()
+  })
 
   // Direct adaptation of the r3f-forcegraph large-graph scene: the star-field
   // interaction and visual language stay upstream; only the data is ours.
@@ -232,30 +260,51 @@ function GraphViz({ onHover }: { onHover: (node: StarNode | null) => void }) {
     nodeAutoColorBy="group"
     nodeRelSize={4.8}
     nodeOpacity={.94}
-    linkWidth={.76}
-    linkOpacity={.6}
+    nodeResolution={lowPower ? 3 : 4}
+    linkWidth={.68}
+    linkOpacity={.56}
+    linkResolution={lowPower ? 1 : 3}
     linkDirectionalParticles="particles"
-    linkDirectionalParticleWidth={.9}
+    linkDirectionalParticleWidth={lowPower ? .62 : .74}
+    linkDirectionalParticleResolution={2}
+    warmupTicks={lowPower ? 18 : 36}
+    cooldownTicks={lowPower ? 150 : 280}
+    cooldownTime={lowPower ? 4200 : 6500}
+    d3AlphaDecay={lowPower ? .075 : .055}
+    d3VelocityDecay={lowPower ? .6 : .52}
+    onEngineStop={() => {
+      layoutSettledRef.current = true
+      onLayoutSettled(true)
+    }}
     onNodeHover={node => {
-      document.body.style.cursor = node ? 'pointer' : ''
-      onHover(node ? node as StarNode : null)
+      const nextNode = node ? node as StarNode : null
+      const nextId = nextNode?.id || null
+      if (hoveredIdRef.current === nextId) return
+      hoveredIdRef.current = nextId
+      document.body.style.cursor = nextNode ? 'pointer' : ''
+      onHover(nextNode)
     }}
     onNodeClick={node => onHover(node as StarNode)}
   />
 }
 
-function StarCanvas({ onHover }: { onHover: (node: StarNode | null) => void }) {
-  return <Canvas className="knowledge-hall-canvas" flat camera={{ position: [0, 0, 1180], far: 8000 }} dpr={[1, 1.5]} gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}>
+function StarCanvas({ onHover, lowPower, pageVisible }: { onHover: (node: StarNode | null) => void; lowPower: boolean; pageVisible: boolean }) {
+  const [layoutSettled, setLayoutSettled] = useState(false)
+  const pulseFps = layoutSettled ? (lowPower ? 6 : 10) : (lowPower ? 20 : 30)
+  return <Canvas className="knowledge-hall-canvas" frameloop={pageVisible ? 'demand' : 'never'} flat camera={{ position: [0, 0, 1180], far: 8000 }} dpr={lowPower ? 1 : [1, 1.25]} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
     <TrackballControls />
     <color attach="background" args={[0, 0, .01]} />
     <ambientLight color={0xcccccc} intensity={Math.PI} />
     <directionalLight intensity={.6 * Math.PI} />
-    <GraphViz onHover={onHover} />
+    <GraphViz onHover={onHover} lowPower={lowPower} onLayoutSettled={setLayoutSettled} />
+    <SceneRenderPulse active={pageVisible} fps={pulseFps} />
   </Canvas>
 }
 
 export default function KnowledgeMapHall({ onExit }: Props) {
   const [hovered, setHovered] = useState<StarNode | null>(null)
+  const [lowPower] = useState(reducedScene)
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const focused = hovered
 
   useEffect(() => {
@@ -264,10 +313,16 @@ export default function KnowledgeMapHall({ onExit }: Props) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onExit])
 
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden)
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => document.removeEventListener('visibilitychange', updateVisibility)
+  }, [])
+
   return createPortal(<div className="knowledge-hall-layer" role="dialog" aria-modal="true" aria-label="万象星海">
     <section className="knowledge-hall">
       <div className="knowledge-hall-stage">
-        <StarCanvas onHover={setHovered} />
+        <StarCanvas onHover={setHovered} lowPower={lowPower} pageVisible={pageVisible} />
         <header className="knowledge-hall-topbar">
           <button type="button" className="knowledge-hall-back" onClick={onExit}><ArrowLeft size={15} />返回学习屋</button>
           <span className="knowledge-hall-title">万象星海 · LIFE CONSTELLATIONS</span>

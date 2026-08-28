@@ -99,6 +99,18 @@ type FallbackMap = {
 type MotionPoint = { x: number; y: number }
 type MotionSegment = { id: string; from: MotionPoint; to: MotionPoint; color: string }
 
+function reducedMapMotion() {
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  return window.matchMedia('(max-width: 760px)').matches
+    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || (navigator.hardwareConcurrency || 8) <= 4
+    || (nav.deviceMemory || 8) <= 4
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
 const branchPalette = ['#405ed8', '#5f8ee6', '#2e9f93', '#d17b4b', '#a65bc6', '#d05375', '#7c8b4d', '#7f72d6']
 
 const knowledgeMapViewGroups: Array<{
@@ -534,6 +546,9 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   const [mapTypeChoice, setMapTypeChoice] = useState<'auto' | KnowledgeMapViewId>('auto')
   const [motionSegments, setMotionSegments] = useState<MotionSegment[]>([])
   const [motionCore, setMotionCore] = useState<MotionPoint | null>(null)
+  const [lowMotion] = useState(reducedMapMotion)
+  const [reducedMotion] = useState(prefersReducedMotion)
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
 
   const current = frames.at(-1)?.data || props.data
   const recommendedMapType = (current.map_type || (current.layout === 'flow' ? 'process_flow' : 'concept_tree')) as KnowledgeMapType
@@ -544,7 +559,10 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     return { ...current, map_type: profile.semanticType, layout: layoutForMapType(profile.semanticType) }
   }, [current, profile.semanticType])
   const currentTitle = frames.at(-1)?.title || mapTitle(current, language)
-  const currentRoot = rootFor(viewData)
+  // Keep the root object stable between unrelated UI updates (hover, motion,
+  // visibility). This lets the graph memo/effect depend on the actual root
+  // value without accidentally rebuilding G6 on every parent render.
+  const currentRoot = useMemo(() => rootFor(viewData), [viewData])
   const graphTree = useMemo(() => buildTree(viewData), [viewData])
   const graphKey = useMemo(() => JSON.stringify({
     root: currentRoot?.id || 'empty', view: profile.id, mapType: viewData.map_type, layout: viewData.layout,
@@ -998,7 +1016,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       nodes: viewData.nodes.map((node, index) => nodeData(node, index, index)),
       edges: edgeList.map((edge, index) => edgeData(edge.from, edge.to, indexById.get(edge.to) || 0, edge.label || '', index)),
     }
-  }, [viewData, currentRoot?.id, graphTree, profile])
+  }, [currentRoot, graphTree, language, profile, viewData])
 
   useEffect(() => {
     const nextRootId = rootFor(props.data)?.id
@@ -1035,11 +1053,12 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       container.style.width = 'auto'
       container.style.height = 'auto'
     }
-    const toSurfacePoint = (point: [number, number] | Float32Array) => {
-      const surface = surfaceRef.current
-      if (!surface || !graph) return null
+    const motionEdges = graphData.edges
+      .filter((edge: any) => !String(edge.source).startsWith('__') && !String(edge.target).startsWith('__'))
+      .slice(0, 18)
+    const toSurfacePoint = (point: [number, number] | Float32Array, bounds: DOMRect) => {
+      if (!graph) return null
       const clientPoint = graph.getClientByCanvas(point)
-      const bounds = surface.getBoundingClientRect()
       const x = Number(clientPoint[0]) - bounds.left
       const y = Number(clientPoint[1]) - bounds.top
       return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
@@ -1047,13 +1066,15 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     const updateMotionLayer = () => {
       if (destroyed || !graph || !surfaceRef.current) return
       try {
-        const rootPoint = currentRoot ? toSurfacePoint(graph.getElementPosition(currentRoot.id) as [number, number]) : null
-        const segments = graphData.edges
-          .filter((edge: any) => !String(edge.source).startsWith('__') && !String(edge.target).startsWith('__'))
-          .slice(0, 18)
+        // Read the surface bounds once per update. Calling getBoundingClientRect
+        // for every animated edge can force repeated layout work while G6 is
+        // still settling.
+        const bounds = surfaceRef.current.getBoundingClientRect()
+        const rootPoint = currentRoot ? toSurfacePoint(graph.getElementPosition(currentRoot.id) as [number, number], bounds) : null
+        const segments = motionEdges
           .map((edge: any, index: number) => {
-            const from = toSurfacePoint(graph!.getElementPosition(String(edge.source)) as [number, number])
-            const to = toSurfacePoint(graph!.getElementPosition(String(edge.target)) as [number, number])
+            const from = toSurfacePoint(graph!.getElementPosition(String(edge.source)) as [number, number], bounds)
+            const to = toSurfacePoint(graph!.getElementPosition(String(edge.target)) as [number, number], bounds)
             if (!from || !to) return null
             return {
               id: String(edge.id || `${edge.source}__${edge.target}__${index}`),
@@ -1181,7 +1202,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       }
       if (graphRef.current === graph) graphRef.current = null
     }
-  }, [currentRoot?.id, graphData, graphKey, hasLearnableAtoms, maxCanvasZoom, profile])
+  }, [currentRoot, graphData, graphKey, hasLearnableAtoms, maxCanvasZoom, profile])
 
   useEffect(() => { setSelectedId(null); setExpandError(null) }, [graphKey])
 
@@ -1228,6 +1249,17 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   }
 
   const selectedStatus = selectedNode ? props.progress?.progress[selectedNode.id] || 'new' : 'new'
+  const motionEnabled = pageVisible && !reducedMotion
+  const displayedMotionSegments = useMemo(
+    () => motionSegments.slice(0, lowMotion ? 5 : 10),
+    [lowMotion, motionSegments],
+  )
+
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden)
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => document.removeEventListener('visibilitychange', updateVisibility)
+  }, [])
 
   return <section className={`g6-knowledge-map ${props.workspace ? 'is-workspace' : ''} ${props.reader ? 'is-reader' : ''}`} aria-label={zh ? '知识图解' : 'Knowledge map'}>
     <header className="g6-map-header">
@@ -1283,26 +1315,26 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         <span className="g6-map-fallback-status">{renderState === 'failed' ? (zh ? '已切换为兼容视图' : 'Compatibility view') : (zh ? '正在排布图谱' : 'Arranging map')}</span>
       </div>}
       <div className="g6-map-canvas" ref={canvasRef} aria-hidden={renderState !== 'ready'} />
-      <svg className="g6-map-motion-layer" aria-hidden="true" data-motion-state={renderState}>
-        {motionSegments.map((segment: MotionSegment, index: number) => {
+      <svg className="g6-map-motion-layer" aria-hidden="true" data-motion-state={renderState} data-motion-paused={motionEnabled ? 'false' : 'true'}>
+        {displayedMotionSegments.map((segment: MotionSegment, index: number) => {
           const path = motionPathFor(segment)
           return <g key={segment.id}>
             <path className="g6-map-motion-trace" d={path} pathLength="100" stroke={segment.color} />
             <circle className="g6-map-motion-signal" r={profile.visual === 'bubbles' ? 3 : 2.5} fill={segment.color}>
-              <animateMotion dur={`${2.8 + (index % 3) * .35}s`} begin={`${(index % 4) * .24}s`} repeatCount="indefinite" path={path} />
+              {motionEnabled && <animateMotion dur={`${2.8 + (index % 3) * .35}s`} begin={`${(index % 4) * .24}s`} repeatCount="indefinite" path={path} />}
             </circle>
             <circle className="g6-map-motion-endpoint" cx={segment.to.x} cy={segment.to.y} r="4" fill={segment.color}>
-              <animate attributeName="r" values="3;7;3" dur={`${3.4 + (index % 4) * .24}s`} begin={`${(index % 5) * .32}s`} repeatCount="indefinite" />
-              <animate attributeName="opacity" values=".08;.34;.08" dur={`${3.4 + (index % 4) * .24}s`} begin={`${(index % 5) * .32}s`} repeatCount="indefinite" />
+              {motionEnabled && <animate attributeName="r" values="3;7;3" dur={`${3.4 + (index % 4) * .24}s`} begin={`${(index % 5) * .32}s`} repeatCount="indefinite" />}
+              {motionEnabled && <animate attributeName="opacity" values=".08;.34;.08" dur={`${3.4 + (index % 4) * .24}s`} begin={`${(index % 5) * .32}s`} repeatCount="indefinite" />}
             </circle>
           </g>
         })}
         {motionCore && <g className="g6-map-motion-core-group">
           <circle className="g6-map-motion-core" cx={motionCore.x} cy={motionCore.y} r="18">
-            <animate attributeName="r" values="18;36;18" dur="3.4s" repeatCount="indefinite" />
-            <animate attributeName="opacity" values=".32;0;.32" dur="3.4s" repeatCount="indefinite" />
+            {motionEnabled && <animate attributeName="r" values="18;36;18" dur="3.4s" repeatCount="indefinite" />}
+            {motionEnabled && <animate attributeName="opacity" values=".32;0;.32" dur="3.4s" repeatCount="indefinite" />}
           </circle>
-          <animateTransform attributeName="transform" type="translate" values="0 0; 1 -1; -1 1; 0 0" dur="4.8s" repeatCount="indefinite" />
+          {motionEnabled && <animateTransform attributeName="transform" type="translate" values="0 0; 1 -1; -1 1; 0 0" dur="4.8s" repeatCount="indefinite" />}
         </g>}
       </svg>
       <div className="g6-map-controls" aria-label={zh ? '画布控制' : 'Canvas controls'}>

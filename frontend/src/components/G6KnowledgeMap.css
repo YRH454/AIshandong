@@ -333,6 +333,8 @@
   animation: g6-map-dash-flow 3.6s linear infinite;
 }
 
+.g6-map-motion-layer[data-motion-paused='true'] .g6-map-motion-trace { animation-play-state: paused; }
+
 .g6-map-motion-signal {
   opacity: .72;
   filter: drop-shadow(0 0 4px currentColor);

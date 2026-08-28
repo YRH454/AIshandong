@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Edges, useTexture } from '@react-three/drei'
@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import * as THREE from 'three'
 import './PersonalHouse.css'
+import { SceneRenderPulse } from './SceneRenderPulse'
 
 type Props = {
   onExit: () => void
@@ -94,6 +95,14 @@ function supportsWebGL() {
   }
 }
 
+function reducedScene() {
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  return window.matchMedia('(max-width: 760px)').matches
+    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || (navigator.hardwareConcurrency || 8) <= 4
+    || (nav.deviceMemory || 8) <= 4
+}
+
 function getMilestoneForTravel(travel: number): MilestoneId {
   if (travel < 41) return 'origin'
   if (travel < 84) return 'inner-map'
@@ -132,6 +141,12 @@ function createPaperPlaneGeometry() {
 
 function PaperPlane() {
   const geometry = useMemo(createPaperPlaneGeometry, [])
+  const trailPositions = useMemo(() => new Float32Array([
+    0, 0, -1.45,
+    0, .16, -.45,
+    0, .12, .54,
+    0, .1, .63,
+  ]), [])
   return <group scale={.34} rotation={[.08, 0, 0]}>
     <mesh geometry={geometry}>
       <meshStandardMaterial color="#fff9ef" roughness={.82} metalness={0} side={THREE.DoubleSide} />
@@ -141,7 +156,7 @@ function PaperPlane() {
       <bufferGeometry>
         <bufferAttribute
           attach="attributes-position"
-          args={[new Float32Array([0, 0, -1.45, 0, .16, -.45, 0, .12, .54, 0, .1, .63]), 3]}
+          args={[trailPositions, 3]}
         />
       </bufferGeometry>
       <lineBasicMaterial color="#8f9aa3" />
@@ -149,24 +164,27 @@ function PaperPlane() {
   </group>
 }
 
-function CloudCluster({ position, scale = 1, opacity = .88 }: {
+const cloudPuffs: Array<[number, number, number, number]> = [
+  [-1.1, -.05, .1, .72], [-.55, .36, -.08, .95], [0, .12, 0, 1.15],
+  [.72, .3, .1, .9], [1.2, -.05, .12, .62], [.25, -.35, .02, .76],
+]
+
+function CloudCluster({ position, scale = 1, opacity = .88, lowPower = false }: {
   position: [number, number, number]
   scale?: number
   opacity?: number
+  lowPower?: boolean
 }) {
-  const puffs: Array<[number, number, number, number]> = [
-    [-1.1, -.05, .1, .72], [-.55, .36, -.08, .95], [0, .12, 0, 1.15],
-    [.72, .3, .1, .9], [1.2, -.05, .12, .62], [.25, -.35, .02, .76],
-  ]
+  const puffs = lowPower ? cloudPuffs.slice(0, 3) : cloudPuffs
   return <group position={position} scale={scale}>
     {puffs.map(([x, y, z, size], index) => <mesh key={`${x}-${y}-${index}`} position={[x, y, z]}>
-      <sphereGeometry args={[size, 22, 16]} />
+      <sphereGeometry args={[size, lowPower ? 10 : 22, lowPower ? 8 : 16]} />
       <meshStandardMaterial color="#fff9f1" transparent opacity={opacity} roughness={1} depthWrite={false} />
     </mesh>)}
   </group>
 }
 
-function SkyField() {
+function SkyField({ lowPower = false }: { lowPower?: boolean }) {
   const clouds = useMemo(() => [
     [-6.6, 3.6, -12, 1.4, .46], [7.2, 2.2, -17, 1.2, .55], [-5.3, -3.4, -23, 1.8, .58],
     [6.1, -2.8, -32, 1.28, .55], [-7.7, .5, -39, 1.5, .52], [5.2, 3.7, -48, 1.8, .62],
@@ -175,9 +193,9 @@ function SkyField() {
     [-7.1, 3.4, -122, 1.8, .57], [7.6, .1, -141, 1.45, .53], [-5.8, -3.6, -151, 1.75, .6],
   ] as Array<[number, number, number, number, number]>, [])
   return <>
-    {clouds.map(([x, y, z, scale, opacity], index) => <CloudCluster key={`${x}-${z}-${index}`} position={[x, y, z]} scale={scale} opacity={opacity} />)}
+    {clouds.map(([x, y, z, scale, opacity], index) => <CloudCluster key={`${x}-${z}-${index}`} position={[x, y, z]} scale={scale} opacity={opacity} lowPower={lowPower} />)}
     <mesh position={[-10, 6, -88]} rotation={[0, .1, -.35]}>
-      <circleGeometry args={[2.9, 40]} />
+      <circleGeometry args={[2.9, lowPower ? 24 : 40]} />
       <meshBasicMaterial color="#fff2cd" transparent opacity={.64} />
     </mesh>
   </>
@@ -250,7 +268,10 @@ function StoryMilestone({ milestone, onSelect }: { milestone: ScenicMilestone; o
 
   useFrame((_, delta) => {
     if (!groupRef.current || !contentRef.current) return
-    const worldZ = groupRef.current.getWorldPosition(new THREE.Vector3()).z
+    // The milestone only sits under the translating route group. Reading the
+    // two local z offsets avoids a full matrix/world-position traversal on
+    // every frame while preserving the exact fade thresholds.
+    const worldZ = groupRef.current.position.z + (groupRef.current.parent?.position.z || 0)
     let targetOpacity = 0
     if (worldZ >= -54 && worldZ < -29) targetOpacity = (worldZ + 54) / 25
     else if (worldZ >= -29 && worldZ < -7) targetOpacity = 1
@@ -312,6 +333,7 @@ function FlightController({
   const targetRef = useRef(routeTarget)
   const currentRef = useRef(0)
   const lastPublished = useRef(-1)
+  const lastPublishedAt = useRef(-Infinity)
   const activeRef = useRef<MilestoneId>('origin')
 
   useEffect(() => { targetRef.current = routeTarget }, [routeTarget])
@@ -343,8 +365,12 @@ function FlightController({
       planeRef.current.position.y = -.92 + Math.sin(state.clock.elapsedTime * 1.4) * .035
     }
 
-    if (Math.abs(current - lastPublished.current) > .3) {
+    // The route bar already interpolates its visual progress in CSS. Publishing
+    // this value at roughly 8 fps keeps it smooth while avoiding a full portal
+    // UI reconciliation on nearly every 3D frame during auto-flight.
+    if (Math.abs(current - lastPublished.current) > .65 && state.clock.elapsedTime - lastPublishedAt.current >= .12) {
       lastPublished.current = current
+      lastPublishedAt.current = state.clock.elapsedTime
       onProgress(current)
     }
     const nextActive = getMilestoneForTravel(current)
@@ -356,15 +382,17 @@ function FlightController({
   return null
 }
 
-function FlightScene({
+const FlightScene = memo(function FlightScene({
   routeTarget,
   autoFly,
+  lowPower,
   onProgress,
   onSelect,
   onActiveChange,
 }: {
   routeTarget: number
   autoFly: boolean
+  lowPower: boolean
   onProgress: (travel: number) => void
   onSelect: (id: MilestoneId) => void
   onActiveChange: (id: MilestoneId) => void
@@ -378,12 +406,12 @@ function FlightScene({
     <directionalLight position={[4, 7, 3]} intensity={1.75} color="#fff8e8" />
     <FlightController worldRef={worldRef} planeRef={planeRef} routeTarget={routeTarget} autoFly={autoFly} onProgress={onProgress} onActiveChange={onActiveChange} />
     <group ref={worldRef}>
-      <SkyField />
+      <SkyField lowPower={lowPower} />
       {milestones.filter(hasScenicContent).map(milestone => <StoryMilestone key={milestone.id} milestone={milestone} onSelect={onSelect} />)}
     </group>
     <group ref={planeRef} position={[0, -.92, -2.7]}><PaperPlane /></group>
   </>
-}
+})
 
 function Fallback({ onSelect }: { onSelect: (id: MilestoneId) => void }) {
   return <div className="personal-flight-fallback">
@@ -396,11 +424,19 @@ function Fallback({ onSelect }: { onSelect: (id: MilestoneId) => void }) {
 
 export default function PersonalHouse({ onExit, returnTo = 'rhyme' }: Props) {
   const [canUseWebGL] = useState(supportsWebGL)
+  const [lowPower] = useState(reducedScene)
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const [activeId, setActiveId] = useState<MilestoneId>('origin')
   const [routeTarget, setRouteTarget] = useState(0)
   const [travel, setTravel] = useState(0)
   const [autoFly, setAutoFly] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden)
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => document.removeEventListener('visibilitychange', updateVisibility)
+  }, [])
   const active = milestones.find(milestone => milestone.id === activeId) ?? milestones[0]
 
   const selectMilestone = useCallback((id: MilestoneId) => {
@@ -462,14 +498,16 @@ export default function PersonalHouse({ onExit, returnTo = 'rhyme' }: Props) {
       <main className="personal-flight-stage">
         {canUseWebGL ? <Canvas
           className="personal-flight-canvas"
+          frameloop={pageVisible ? 'demand' : 'never'}
           camera={{ position: [0, 0, 0], fov: 51, near: .1, far: 220 }}
-          dpr={[1, 1.6]}
-          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+          dpr={lowPower ? 1 : [1, 1.3]}
+          gl={{ antialias: !lowPower, alpha: true, powerPreference: 'high-performance' }}
           onCreated={({ gl }) => gl.setClearColor(new THREE.Color('#9fcbe2'), 0)}
         >
           <Suspense fallback={null}>
-            <FlightScene routeTarget={routeTarget} autoFly={autoFly} onProgress={setTravel} onSelect={selectMilestone} onActiveChange={setActiveId} />
+            <FlightScene routeTarget={routeTarget} autoFly={autoFly} lowPower={lowPower} onProgress={setTravel} onSelect={selectMilestone} onActiveChange={setActiveId} />
           </Suspense>
+          <SceneRenderPulse active={pageVisible} fps={lowPower ? 24 : 40} />
         </Canvas> : <Fallback onSelect={selectMilestone} />}
 
         <div className="personal-flight-hero" aria-hidden={travel > 8}>

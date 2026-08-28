@@ -8,6 +8,7 @@ import {
   Volume2, VolumeX, X,
 } from 'lucide-react'
 import * as THREE from 'three'
+import { SceneRenderPulse } from './SceneRenderPulse'
 
 type Language = 'zh-CN' | 'en'
 type RoomId = 'document' | 'practice' | 'map' | 'dynamic' | 'profile'
@@ -85,7 +86,7 @@ function useBackgroundMusic(enabled: boolean, isInside: boolean) {
     if (!instance) return
     instance.muted = !enabled
     if (isInside && enabled) void instance.play().catch(() => undefined)
-    if (!enabled) instance.pause()
+    else instance.pause()
   }, [enabled, isInside])
   return {
     start: () => {
@@ -119,6 +120,11 @@ function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; active
   const targetPosition = useRef(new THREE.Vector3(0, .05, 5.6))
   const targetLook = useRef(new THREE.Vector3(0, .02, -1.5))
   const currentLook = useRef(new THREE.Vector3(0, .02, -1.5))
+  const lastNearRoomRef = useRef<RoomId | null>(activeRoomId)
+
+  useEffect(() => {
+    lastNearRoomRef.current = activeRoomId
+  }, [activeRoomId])
 
   useEffect(() => {
     if (phase === 'entrance') {
@@ -156,7 +162,10 @@ function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; active
       const isNear = Math.abs(nearest.z - camera.position.z) < 7
       const glance = isNear ? (nearest.side === 'left' ? -.68 : .68) : 0
       targetLook.current.set(pointer.x * .17 + glance, .03 - pointer.y * .045, targetPosition.current.z - 8)
-      if (nearest.id !== activeRoomId) onNearRoom(nearest.id)
+      if (nearest.id !== lastNearRoomRef.current) {
+        lastNearRoomRef.current = nearest.id
+        if (nearest.id !== activeRoomId) onNearRoom(nearest.id)
+      }
     }
     lerpVector(camera.position, targetPosition.current, 3.9, delta)
     lerpVector(currentLook.current, targetLook.current, 4.8, delta)
@@ -241,6 +250,7 @@ function CorridorMascot({ soundOn }: { soundOn: boolean }) {
   const mascot = useRef<THREE.Group>(null)
   const orbit = useRef<THREE.Group>(null)
   const greeting = useRef<THREE.Group>(null)
+  const mascotAnchor = useRef(new THREE.Vector3(0, .26, -2.65))
   const { camera } = useThree()
   const [welcoming, setWelcoming] = useState(false)
   const closeTimer = useRef<number | null>(null)
@@ -251,7 +261,7 @@ function CorridorMascot({ soundOn }: { soundOn: boolean }) {
 
   useFrame((state, delta) => {
     if (!mascot.current) return
-    const distance = camera.position.distanceTo(new THREE.Vector3(0, .26, -2.65))
+    const distance = camera.position.distanceTo(mascotAnchor.current)
     const near = distance < 8
     const targetX = near ? -.16 : 0
     mascot.current.position.x = THREE.MathUtils.damp(mascot.current.position.x, targetX, 2.8, delta)
@@ -371,12 +381,16 @@ function FlatFallback({ language, onEnter }: { language: Language; onEnter: () =
 export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPersonalRoom, onOpenMapHall, onOpenApexLab, onOpenSolarExplorer, onOpenStudyArchive, suspended = false }: Props) {
   const [canUseWebGL] = useState(() => supportsWebGL())
   const [lowPower] = useState(() => reducedScene())
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const [phase, setPhase] = useState<Phase>('entrance')
   const [activeRoomId, setActiveRoomId] = useState<RoomId | null>('document')
   const [soundOn, setSoundOn] = useState(true)
-  const music = useBackgroundMusic(soundOn, phase === 'corridor')
+  // A room opened above the corridor already has its own soundscape. Pause
+  // the corridor loop while it is covered so it does not keep decoding audio.
+  const music = useBackgroundMusic(soundOn, phase === 'corridor' && !suspended)
   const zh = language !== 'en'
   const activeRoom = rooms.find(room => room.id === activeRoomId)
+  const canvasActive = !suspended && pageVisible
 
   useEffect(() => {
     document.body.classList.add('learning-house-open')
@@ -389,6 +403,12 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
     window.addEventListener('keydown', key)
     return () => { document.body.classList.remove('learning-house-open'); window.removeEventListener('keydown', key) }
   }, [onExit, phase, suspended])
+
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden)
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => document.removeEventListener('visibilitychange', updateVisibility)
+  }, [])
 
   const enterCorridor = () => setPhase('corridor')
   const status = phase === 'entrance'
@@ -419,12 +439,13 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
       </header>
       <main className="learning-house-main">
         <section className="learning-house-stage">
-          {canUseWebGL ? <Canvas className="learning-house-canvas" frameloop={suspended ? 'never' : 'always'} camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
+          {canUseWebGL ? <Canvas className="learning-house-canvas" frameloop={canvasActive ? 'demand' : 'never'} camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
             <color attach="background" args={['#fafafa']} /><fog attach="fog" args={['#fafafa', 20, 62]} /><ambientLight intensity={1.04} /><hemisphereLight args={['#ffffff', '#d7d7d2', .72]} /><directionalLight position={[4, 8, 8]} intensity={.86} color="#fff9e9" />
             <Suspense fallback={null}>
               {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'document') onOpenStudyArchive?.(); if (room.id === 'profile') onOpenPersonalRoom?.(); if (room.id === 'map') onOpenMapHall?.(); if (room.id === 'practice') onOpenApexLab?.(); if (room.id === 'dynamic') onOpenSolarExplorer?.() }} />)}</>}
             </Suspense>
             <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} />
+            <SceneRenderPulse active={canvasActive} fps={lowPower ? 24 : 42} />
           </Canvas> : <FlatFallback language={language} onEnter={enterCorridor} />}
           <div className="learning-house-explorer" aria-live="polite">
             <b>{phase === 'entrance' ? 'EXPLORER' : 'WANDERER'}</b>

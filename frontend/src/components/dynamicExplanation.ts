@@ -347,8 +347,7 @@ export type DynamicExplanationData = {
   scenes: DynamicExplanationScene[]
 }
 
-export function parseDynamicExplanation(content?: string): DynamicExplanationData | null {
-  if (!content) return null
+function parseDynamicExplanationUncached(content: string): DynamicExplanationData | null {
   try {
     const parsed = JSON.parse(content) as Partial<DynamicExplanationData>
     if (!Array.isArray(parsed.scenes) || parsed.scenes.length < 1 || !parsed.scenes.every(scene => (
@@ -358,4 +357,21 @@ export function parseDynamicExplanation(content?: string): DynamicExplanationDat
   } catch {
     return null
   }
+}
+
+// The same saved presentation can be rendered in the chat card, reader and
+// immersive entry point. Avoid reparsing its JSON on every parent keystroke.
+const DYNAMIC_EXPLANATION_PARSE_CACHE_LIMIT = 32
+const dynamicExplanationParseCache = new Map<string, DynamicExplanationData | null>()
+
+export function parseDynamicExplanation(content?: string): DynamicExplanationData | null {
+  if (!content) return null
+  if (dynamicExplanationParseCache.has(content)) return dynamicExplanationParseCache.get(content) || null
+  const parsed = parseDynamicExplanationUncached(content)
+  if (dynamicExplanationParseCache.size >= DYNAMIC_EXPLANATION_PARSE_CACHE_LIMIT) {
+    const oldest = dynamicExplanationParseCache.keys().next().value
+    if (typeof oldest === 'string') dynamicExplanationParseCache.delete(oldest)
+  }
+  dynamicExplanationParseCache.set(content, parsed)
+  return parsed
 }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
@@ -14,7 +14,6 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import mascot from './assets/xuejing-slime-logo.png'
 import type { KnowledgeMapVisualScene, KnowledgeMapVisualSceneKind } from './components/EditableKnowledgeMap'
-import { G6KnowledgeMap } from './components/G6KnowledgeMap'
 import type { KnowledgeMapSemanticRole } from './components/knowledgeMapSemantic'
 
 type KnowledgeMapSceneDirection = NonNullable<KnowledgeMapVisualScene['design']>
@@ -54,6 +53,7 @@ import {
   recordLearningActivity,
   restoreLearningArtifact,
   restoreLearningArtifactVersion,
+  resolveApiAssetUrl,
   saveExternalVideoResource,
   saveLearningArtifact,
   saveDocumentPack,
@@ -61,6 +61,7 @@ import {
   saveLearningLoop,
   searchExternalVideos,
   speechToText,
+  textToSpeech,
   startTopicStudyPlan,
   submitPracticeAttempt,
   streamTutorChat,
@@ -90,6 +91,16 @@ const KnowledgeMapHall = lazy(() => import('./components/KnowledgeMapHall'))
 const ApexLab = lazy(() => import('./components/ApexLab'))
 const SolarExplorer = lazy(() => import('./components/SolarExplorer'))
 const StudyArchiveRoom = lazy(() => import('./components/StudyArchiveRoom'))
+const G6KnowledgeMap = lazy(() => import('./components/G6KnowledgeMap').then(module => ({ default: module.G6KnowledgeMap })))
+
+// Markdown parsing (especially math typesetting) is relatively expensive for
+// long learning replies. Chat-level state such as typing or background-task
+// progress should not reparse every completed response.
+const markdownRemarkPlugins = [remarkGfm, remarkMath]
+const markdownRehypePlugins = [rehypeKatex]
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+  return <ReactMarkdown remarkPlugins={markdownRemarkPlugins} rehypePlugins={markdownRehypePlugins}>{content}</ReactMarkdown>
+})
 
 type IconName =
   | 'archive'
@@ -290,6 +301,20 @@ type KnowledgeMapPackJobState = KnowledgeMapPackProgress & {
   jobId: string
   status: 'queued' | 'running' | 'completed' | 'failed'
   error?: string
+}
+
+type VoiceDraft = {
+  dataUrl: string
+  durationSeconds: number
+  mimeType: string
+}
+
+type AudioNarration = {
+  status: 'generating' | 'ready' | 'fallback'
+  script: string
+  audioUrl?: string
+  error?: string
+  createdAt: number
 }
 
 const MAP_PACK_JOBS_STORAGE_KEY = 'rhyme-map-pack-jobs'
@@ -546,6 +571,7 @@ type PracticeRun = {
   codeTestChecks: Record<string, string[]>
   oralRecordingQuestionId: string | null
   remainingSeconds?: number
+  mockTimerStartedAt?: number
 }
 
 type PracticePackSaveTarget = {
@@ -605,6 +631,7 @@ function createPracticeRun(
     codeTestChecks: {},
     oralRecordingQuestionId: null,
     remainingSeconds: practice.practice_mode === 'mock' ? practice.estimated_minutes * 60 : undefined,
+    mockTimerStartedAt: practice.practice_mode === 'mock' ? Date.now() : undefined,
   }
 }
 
@@ -662,6 +689,58 @@ async function copyPlainText(text: string) {
   if (!copied) throw new Error('浏览器阻止了复制，请允许剪贴板权限后重试。')
 }
 
+const VOICE_RECORDING_MAX_SECONDS = 90
+
+function formatRecordingDuration(seconds: number) {
+  const safeSeconds = Math.max(0, Math.min(VOICE_RECORDING_MAX_SECONDS, Math.floor(seconds)))
+  return `${String(Math.floor(safeSeconds / 60)).padStart(2, '0')}:${String(safeSeconds % 60).padStart(2, '0')}`
+}
+
+function readBlobAsDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('录音读取失败'))
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('录音格式无法读取'))
+    }
+    reader.readAsDataURL(blob)
+  })
+}
+
+function buildAudioNarrationScript(prompt: string, response: string) {
+  const source = response
+    .replace(/```[\s\S]*?```/g, '（代码示例略）')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/[>*_~`|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const promptPart = prompt.trim() ? `问题是：${prompt.trim().slice(0, 180)}。` : ''
+  const full = `${promptPart}${source || '这份资料暂时没有可朗读的正文。'}`
+  if (full.length <= 980) return full
+  const clipped = full.slice(0, 980)
+  const boundary = Math.max(
+    clipped.lastIndexOf('。'),
+    clipped.lastIndexOf('！'),
+    clipped.lastIndexOf('？'),
+    clipped.lastIndexOf('. '),
+  )
+  return `${clipped.slice(0, boundary > 420 ? boundary + 1 : 980)}（后续内容可回到页面继续阅读。）`
+}
+
+function preferredVoiceMimeType() {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return ''
+  return [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+  ].find(type => MediaRecorder.isTypeSupported(type)) || ''
+}
+
 function sortTutorSessions(sessions: TutorSessionSummary[]) {
   return [...sessions].sort((left, right) => {
     if (left.is_pinned !== right.is_pinned) return Number(right.is_pinned) - Number(left.is_pinned)
@@ -698,6 +777,39 @@ const documentTemplateGroups = [
 const documentTemplateById = Object.fromEntries(
   documentTemplates.map(template => [template.id, template]),
 ) as Record<DocumentTemplateId, DocumentTemplateDefinition>
+
+// The catalog intentionally offers several ways to frame the same answer.
+// They all land on a real document template instead of ending in a dead-end
+// "coming soon" message.
+const documentTemplateByArtifactKind: Partial<Record<ArtifactKind, DocumentTemplateId>> = {
+  summary: 'quick_overview',
+  question: 'problem_walkthrough',
+  compare: 'concept_comparison',
+  chapter: 'system_guide',
+  'page-guide': 'system_guide',
+  formula: 'formula_handbook',
+  glossary: 'glossary',
+  plan: 'system_guide',
+  cards: 'exam_cram',
+  review: 'exam_cram',
+  mistakes: 'exam_cram',
+  cram: 'exam_cram',
+  checklist: 'exam_cram',
+  report: 'system_guide',
+  slides: 'system_guide',
+  infographic: 'quick_overview',
+  webpage: 'system_guide',
+}
+
+const practiceModeByArtifactKind: Partial<Record<ArtifactKind, PracticeMode>> = {
+  practice: 'standard',
+  similar: 'similar',
+  variants: 'variants',
+  special: 'special',
+  mock: 'mock',
+  coding: 'coding',
+  oral: 'oral',
+}
 
 function recommendDocumentTemplate(prompt = '', response = ''): DocumentTemplateId {
   const source = `${prompt}\n${response}`.toLowerCase()
@@ -860,7 +972,7 @@ const artifactOptions: GeneratorOption[] = [
   { kind: 'summary', label: '一页速览', description: '快速抓住核心内容', icon: 'file', category: 'quick', format: '在线 · PDF', title: '一页速览', summary: '核心结论 · 阅读顺序 · 约 2 分钟', details: ['压缩为一页重点', '标出必须先懂的概念', '给出下一步阅读建议'] },
   { kind: 'question', label: '题目讲解单', description: '从题意到反思完整拆解', icon: 'file-question', category: 'quick', format: '在线 · Word · PDF', title: '题目讲解单', summary: '题意 · 思路 · 步骤 · 反思', details: ['定位考查知识点', '分步解释关键推理', '补充常见错误与自检问题'] },
   { kind: 'compare', label: '概念对比', description: '分清相近概念和使用条件', icon: 'layout', category: 'quick', format: '表格 · 图片', title: '概念对比表', summary: '定义 · 差异 · 适用场景', details: ['对齐比较维度', '突出易混点', '附带判断示例'] },
-  { kind: 'audio', label: '音频讲解', description: '把当前内容变成可听笔记', icon: 'audio', category: 'quick', format: 'MP3', title: '音频讲解', summary: 'MP3 · 章节播报 · 重点回顾', details: ['生成自然口语讲稿', '重点处加入停顿和提示', '适合通勤或睡前复习'] },
+  { kind: 'audio', label: '音频讲解', description: '把当前回答变成可播放的听力笔记', icon: 'audio', category: 'quick', format: '在线音频 · MP3', title: '音频讲解', summary: '可播放 · 可下载 · 支持浏览器朗读', details: ['从当前回答整理自然口语讲稿', '云端音频完成后可直接播放或下载', '云端不可用时保留讲稿并支持浏览器朗读'] },
 
   { kind: 'chapter', label: '完整章节讲义', description: '系统整理知识、例题和易错点', icon: 'notebook', category: 'deep', format: 'Word · PDF', title: '完整章节讲义', summary: '知识结构 · 例题 · 易错点 · 自检', details: ['建立完整章节结构', '加入典型例题和解析', '结尾提供掌握检查'] },
   { kind: 'page-guide', label: '逐页讲解', description: '沿着原资料逐页说明', icon: 'book', category: 'deep', format: '在线 · PDF', title: '逐页讲解', summary: '保留页码 · 原文引用 · 补充解释', details: ['按原资料顺序讲解', '保留页码和引用位置', '对难点补充通俗解释'] },
@@ -904,6 +1016,28 @@ function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
 
 function BrandSymbol() {
   return <img className="brand-mascot" src={mascot} alt="" aria-hidden="true" />
+}
+
+function MockPracticeTimer({ initialSeconds }: { initialSeconds: number }) {
+  const [remainingSeconds, setRemainingSeconds] = useState(initialSeconds)
+
+  useEffect(() => {
+    const startedAt = Date.now()
+    const updateRemaining = () => {
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000)
+      setRemainingSeconds(current => {
+        const next = Math.max(0, initialSeconds - elapsedSeconds)
+        return current === next ? current : next
+      })
+    }
+    updateRemaining()
+    const timer = window.setInterval(updateRemaining, 1000)
+    return () => window.clearInterval(timer)
+  }, [initialSeconds])
+
+  return <b className={`practice-timer ${remainingSeconds <= 60 ? 'urgent' : ''}`} aria-live="off">
+    剩余 {Math.floor(remainingSeconds / 60)}:{String(remainingSeconds % 60).padStart(2, '0')}
+  </b>
 }
 
 function formatFileSize(bytes: number) {
@@ -997,8 +1131,7 @@ function expandLegacyKnowledgeMap(nodes: KnowledgeMapNode[], edges: KnowledgeMap
   }
 }
 
-function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
-  if (!content) return null
+function parseKnowledgeMapUncached(content: string): KnowledgeMapData | null {
   try {
     const raw = JSON.parse(content) as Partial<KnowledgeMapData>
     if (!Array.isArray(raw.nodes) || raw.nodes.length < 3) return null
@@ -1133,6 +1266,24 @@ function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
   } catch {
     return null
   }
+}
+
+// Chat rerenders frequently (typing, progress, background jobs), while the
+// same artifact JSON is read by several surfaces. Keep a small bounded cache
+// so those rerenders do not repeatedly parse the same large map payload.
+const KNOWLEDGE_MAP_PARSE_CACHE_LIMIT = 48
+const knowledgeMapParseCache = new Map<string, KnowledgeMapData | null>()
+
+function parseKnowledgeMap(content?: string): KnowledgeMapData | null {
+  if (!content) return null
+  if (knowledgeMapParseCache.has(content)) return knowledgeMapParseCache.get(content) || null
+  const parsed = parseKnowledgeMapUncached(content)
+  if (knowledgeMapParseCache.size >= KNOWLEDGE_MAP_PARSE_CACHE_LIMIT) {
+    const oldest = knowledgeMapParseCache.keys().next().value
+    if (typeof oldest === 'string') knowledgeMapParseCache.delete(oldest)
+  }
+  knowledgeMapParseCache.set(content, parsed)
+  return parsed
 }
 
 function provisionalMapType(text: string): NonNullable<KnowledgeMapData['map_type']> {
@@ -1533,7 +1684,21 @@ function legacyPracticeMode(artifact: Artifact): Exclude<PracticeMode, 'standard
   return undefined
 }
 
+type ResolvedPackArtifactCacheEntry = {
+  turnId: string
+  resolved: Artifact[]
+}
+
+// A turn may render its pack in the chat card and again in an open booklet.
+// Grouping legacy documents/practice sets is deterministic for a given source
+// array, so retain that result instead of doing the same sort and map work on
+// every parent update (especially while a new reply is streaming).
+const resolvedPackArtifactCache = new WeakMap<Artifact[], ResolvedPackArtifactCacheEntry>()
+
 function resolvedPackArtifacts(turn: ChatTurn): Artifact[] {
+  const cached = resolvedPackArtifactCache.get(turn.artifacts)
+  if (cached?.turnId === turn.id) return cached.resolved
+
   let artifacts = turn.artifacts
   const newestFirst = (left: Artifact, right: Artifact) => {
     const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime() || 0
@@ -1577,6 +1742,7 @@ function resolvedPackArtifacts(turn: ChatTurn): Artifact[] {
     })
   }
 
+  resolvedPackArtifactCache.set(turn.artifacts, { turnId: turn.id, resolved: artifacts })
   return artifacts
 }
 
@@ -1618,6 +1784,50 @@ function App() {
   const [view, setView] = useState<View>('welcome')
   const [input, setInput] = useState('')
   const [turns, setTurns] = useState<ChatTurn[]>([])
+  const resolvedPackArtifactsByTurnId = useMemo(() => (
+    new Map(turns.map(turn => [turn.id, resolvedPackArtifacts(turn)]))
+  ), [turns])
+  // Some providers emit very small text chunks. Applying every chunk directly
+  // makes the entire conversation tree reconcile repeatedly, which becomes
+  // noticeable once a session has maps, documents and other rich cards.
+  // Keep the text responsive, but commit it in short visual batches.
+  const streamChunkBuffersRef = useRef<Record<string, string>>({})
+  const streamChunkFlushTimerRef = useRef<number | null>(null)
+  const streamResponseByTurnRef = useRef<Record<string, string>>({})
+  const flushStreamChunks = useCallback(() => {
+    if (streamChunkFlushTimerRef.current !== null) {
+      window.clearTimeout(streamChunkFlushTimerRef.current)
+      streamChunkFlushTimerRef.current = null
+    }
+    const bufferedChunks = streamChunkBuffersRef.current
+    if (Object.keys(bufferedChunks).length === 0) return
+    streamChunkBuffersRef.current = {}
+    setTurns(current => {
+      let changed = false
+      const next = current.map(turn => {
+        const chunk = bufferedChunks[turn.id]
+        if (!chunk) return turn
+        changed = true
+        return { ...turn, response: turn.response + chunk }
+      })
+      return changed ? next : current
+    })
+  }, [])
+  const queueStreamChunk = useCallback((turnId: string, content: string) => {
+    if (!content) return
+    streamChunkBuffersRef.current[turnId] = `${streamChunkBuffersRef.current[turnId] || ''}${content}`
+    streamResponseByTurnRef.current[turnId] = `${streamResponseByTurnRef.current[turnId] || ''}${content}`
+    if (streamChunkFlushTimerRef.current !== null) return
+    streamChunkFlushTimerRef.current = window.setTimeout(() => {
+      streamChunkFlushTimerRef.current = null
+      flushStreamChunks()
+    }, 48)
+  }, [flushStreamChunks])
+  useEffect(() => () => {
+    if (streamChunkFlushTimerRef.current !== null) window.clearTimeout(streamChunkFlushTimerRef.current)
+    streamChunkFlushTimerRef.current = null
+    streamChunkBuffersRef.current = {}
+  }, [])
   const [sessionId, setSessionId] = useState<number | null>(null)
   const [sessions, setSessions] = useState<TutorSessionSummary[]>([])
   const [learningState, setLearningState] = useState<LearningState>(emptyLearningState)
@@ -1638,6 +1848,22 @@ function App() {
   const [generatorSearch, setGeneratorSearch] = useState('')
   const [inlineVideoSearches, setInlineVideoSearches] = useState<Record<string, InlineVideoSearch>>({})
   const [recording, setRecording] = useState(false)
+  const [voicePreparing, setVoicePreparing] = useState(false)
+  const [voiceTranscribing, setVoiceTranscribing] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [voiceDraft, setVoiceDraft] = useState<VoiceDraft | null>(null)
+  const [voiceTranscriptionError, setVoiceTranscriptionError] = useState('')
+  const voiceMediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const voiceMediaStreamRef = useRef<MediaStream | null>(null)
+  const voiceAudioChunksRef = useRef<Blob[]>([])
+  const voiceCaptureIdRef = useRef(0)
+  const voiceStopRequestedRef = useRef(false)
+  const voiceStartedAtRef = useRef<number | null>(null)
+  const voiceRequestAbortRef = useRef<AbortController | null>(null)
+  const [audioNarrationsByTurnId, setAudioNarrationsByTurnId] = useState<Record<string, AudioNarration>>({})
+  const [audioSpeechTurnId, setAudioSpeechTurnId] = useState<string | null>(null)
+  const audioGenerationRequestRef = useRef(0)
+  const audioGenerationAbortRef = useRef<AbortController | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('rhyme-sidebar-collapsed') === 'true')
   const [learningHouseOpen, setLearningHouseOpen] = useState(false)
@@ -1772,6 +1998,18 @@ function App() {
     const saved = Number(localStorage.getItem('rhyme-interface-scale'))
     return interfaceScales.some(item => item.value === saved) ? saved as InterfaceScale : 100
   })
+
+  useEffect(() => {
+    const syncPageVisibility = () => {
+      document.documentElement.toggleAttribute('data-page-hidden', document.hidden)
+    }
+    syncPageVisibility()
+    document.addEventListener('visibilitychange', syncPageVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', syncPageVisibility)
+      document.documentElement.removeAttribute('data-page-hidden')
+    }
+  }, [])
 
   const exitPracticeWorkspace = useCallback(() => {
     const returnTarget = practiceReturnBooklet
@@ -1967,6 +2205,26 @@ function App() {
   }, [sessionMenuId])
 
   useEffect(() => {
+    if (!generateOpen && !generatorCatalogOpen) return
+    const closeWhenOutside = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('.composer-wrap, .generator-panel')) return
+      setGenerateOpen(false)
+      setGeneratorCatalogOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setGenerateOpen(false)
+      setGeneratorCatalogOpen(false)
+    }
+    document.addEventListener('pointerdown', closeWhenOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeWhenOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [generateOpen, generatorCatalogOpen])
+
+  useEffect(() => {
     knowledgeMapRunnerRef.current = runKnowledgeMapGeneration
   })
 
@@ -2115,18 +2373,51 @@ function App() {
   }, [practiceSetupTurnId])
 
   useEffect(() => {
-    if (!practiceRun || practiceRun.result || practiceRun.practice.practice_mode !== 'mock' || !practiceRun.remainingSeconds) return
-    const timer = window.setInterval(() => {
-      setPracticeRun(current => current && current.practice.practice_mode === 'mock' && !current.result
-        ? { ...current, remainingSeconds: Math.max(0, (current.remainingSeconds || 0) - 1) }
-        : current)
-    }, 1000)
+    if (!recording) return
+    const startedAt = voiceStartedAtRef.current || Date.now()
+    const updateDuration = () => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+      setRecordingSeconds(current => current === elapsed ? current : elapsed)
+      if (elapsed >= VOICE_RECORDING_MAX_SECONDS && !voiceStopRequestedRef.current) {
+        voiceStopRequestedRef.current = true
+        setNotice('录音已达到 90 秒上限，正在结束并识别…')
+        const recorder = voiceMediaRecorderRef.current
+        if (recorder && recorder.state !== 'inactive') recorder.stop()
+      }
+    }
+    updateDuration()
+    const timer = window.setInterval(updateDuration, 250)
     return () => window.clearInterval(timer)
-  }, [practiceRun?.practice.id, practiceRun?.practice.practice_mode, practiceRun?.remainingSeconds, practiceRun?.result])
+  }, [recording])
 
   useEffect(() => () => {
     oralMediaRecorderRef.current?.stop()
     oralMediaStreamRef.current?.getTracks().forEach(track => track.stop())
+  }, [])
+
+  useEffect(() => () => {
+    voiceCaptureIdRef.current += 1
+    voiceRequestAbortRef.current?.abort()
+    voiceRequestAbortRef.current = null
+    const recorder = voiceMediaRecorderRef.current
+    if (recorder) {
+      recorder.ondataavailable = null
+      recorder.onerror = null
+      recorder.onstop = null
+      if (recorder.state !== 'inactive') {
+        try { recorder.stop() } catch { /* the page is already closing */ }
+      }
+    }
+    voiceMediaStreamRef.current?.getTracks().forEach(track => track.stop())
+    voiceMediaStreamRef.current = null
+    voiceMediaRecorderRef.current = null
+    voiceAudioChunksRef.current = []
+    voiceStartedAtRef.current = null
+  }, [])
+
+  useEffect(() => () => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
+    audioGenerationAbortRef.current?.abort()
   }, [])
 
   useEffect(() => {
@@ -2202,8 +2493,22 @@ function App() {
   }, [])
 
   const selectedOption = artifactOptions.find(item => item.kind === selectedKind)
+  const latestReadyTurn = [...turns].reverse().find(turn => !turn.loading && !turn.error && turn.response.trim() && !turn.id.startsWith('pending-'))
+  const composerHasReadyContext = Boolean(latestReadyTurn && !input.trim() && !attachment)
+  const voiceBusy = voicePreparing || voiceTranscribing
+  const voiceButtonLabel = voicePreparing
+    ? interfaceLanguage === 'en' ? 'Preparing…' : '准备中…'
+    : voiceTranscribing
+      ? interfaceLanguage === 'en' ? 'Transcribing…' : '识别中…'
+      : recording
+        ? interfaceLanguage === 'en' ? 'Stop' : '结束'
+        : interfaceLanguage === 'en' ? 'Voice' : '语音'
   const canSend = Boolean(input.trim() || attachment?.status === 'ready')
-    && attachment?.status !== 'reading' && !sending
+    && attachment?.status !== 'reading'
+    && !sending
+    && !recording
+    && !voicePreparing
+    && !voiceTranscribing
   const activeSession = sessions.find(item => item.id === sessionId)
   const conversationTitle = activeSession?.title || turns[0]?.prompt || '学习对话'
   const hasLearningState = Boolean(
@@ -2212,7 +2517,7 @@ function App() {
   )
   const generatorContext = generatorTurnId
     ? turns.find(turn => turn.id === generatorTurnId)?.prompt || '当前对话内容'
-    : input.trim() || attachment?.name || '当前对话内容'
+    : input.trim() || attachment?.name || (latestReadyTurn ? `最近回答：${latestReadyTurn.prompt}` : '当前对话内容')
   const generatorResults = useMemo(() => {
     const query = generatorSearch.trim().toLowerCase()
     const candidates = artifactOptions.filter(item => item.category !== 'universal')
@@ -2281,21 +2586,6 @@ function App() {
     ))
     return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
   }, [libraryItems, mapWorkspaceArtifactId, readerArtifact, trashedItems, turns])
-  const knowledgeHallMaps = useMemo(() => mapArtifacts.flatMap(artifact => {
-    if (artifact.status === 'deleted' || artifact.deletedAt) return []
-    const parsed = parseKnowledgeMap(artifact.content)
-    if (!parsed) return []
-    return [{
-      id: artifact.id,
-      title: artifact.title,
-      topic: artifact.topic,
-      summary: artifact.summary,
-      mapType: parsed.map_type,
-      nodes: parsed.nodes,
-      edges: parsed.edges,
-      learningPath: parsed.learning_path,
-    }]
-  }), [mapArtifacts])
   const interactivePresentationArtifacts = useMemo(() => {
     const candidates = [
       ...turns.flatMap(turn => turn.artifacts),
@@ -2630,6 +2920,7 @@ function App() {
     practice: 'Practice quiz',
     map: 'Knowledge map',
     interactive: 'Interactive explanation',
+    audio: 'Audio lesson',
     video: 'Video lesson',
     external_video: 'Course video',
   } as Partial<Record<ArtifactKind, string>>)[kind] || chinese)
@@ -2975,6 +3266,7 @@ function App() {
       setNotice('请等待当前回答完成后再新建对话。')
       return
     }
+    discardVoiceCapture()
     setView('welcome')
     setTurns([])
     setSessionId(null)
@@ -3000,6 +3292,7 @@ function App() {
       setNotice('请等待当前回答完成后再切换对话。')
       return
     }
+    discardVoiceCapture()
     setHistoryLoading(true)
     setSessionMenuId(null)
     setSessionMenuMode('menu')
@@ -3253,15 +3546,23 @@ function App() {
 
   function chooseArtifact(kind: ArtifactKind) {
     if (kind === 'external_video') {
-      openVideoSearch()
+      setGenerateOpen(false)
+      openVideoSearch(composerHasReadyContext ? latestReadyTurn?.id : undefined)
+      return
+    }
+    if (composerHasReadyContext && latestReadyTurn) {
+      setSelectedKind(null)
+      setGenerateOpen(false)
+      generateForTurn(latestReadyTurn.id, kind)
       return
     }
     setSelectedKind(kind)
     setGenerateOpen(false)
+    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-wrap > textarea')?.focus())
   }
 
   function openGeneratorCatalog(turnId: string | null = null) {
-    setGeneratorTurnId(turnId)
+    setGeneratorTurnId(turnId || (composerHasReadyContext ? latestReadyTurn?.id || null : null))
     setGeneratorSearch('')
     setGeneratorCategory('quick')
     setGenerateOpen(false)
@@ -3269,8 +3570,10 @@ function App() {
   }
 
   function chooseFromCatalog(kind: ArtifactKind) {
-    if (generatorTurnId) generateForTurn(generatorTurnId, kind)
-    else chooseArtifact(kind)
+    if (generatorTurnId) {
+      generateForTurn(generatorTurnId, kind)
+      setSelectedKind(null)
+    } else chooseArtifact(kind)
     setGeneratorCatalogOpen(false)
   }
 
@@ -3526,6 +3829,7 @@ function App() {
     const requestedKind = selectedKind
     const turnId = `pending-${Date.now()}`
     const previousSessionId = sessionId
+    streamResponseByTurnRef.current[turnId] = ''
     setTurns(current => [...current, {
       id: turnId,
       prompt,
@@ -3588,30 +3892,49 @@ function App() {
             : turn))
         }
         if (streamEvent.type === 'chunk') {
-          setTurns(current => current.map(turn => turn.id === turnId
-            ? { ...turn, response: turn.response + streamEvent.content }
-            : turn))
+          queueStreamChunk(turnId, streamEvent.content)
         }
         if (streamEvent.type === 'done') {
+          flushStreamChunks()
+          const completedResponse = streamResponseByTurnRef.current[turnId] || ''
+          delete streamResponseByTurnRef.current[turnId]
           setSessionId(streamEvent.session_id)
           setLearningState(streamEvent.learning_state || emptyLearningState)
           setTurns(current => current.map(turn => turn.id === turnId
             ? { ...turn, id: streamEvent.qa_id, loading: false, loadingPhase: undefined, imageAnalysisLoading: false }
             : turn))
           if (requestedKind === 'notes') {
-            const completedTurn = turns.find(item => item.id === turnId)
-            setDocumentSetup(defaultDocumentSetup(streamEvent.qa_id, prompt, completedTurn?.response || ''))
+            setDocumentSetup(defaultDocumentSetup(streamEvent.qa_id, prompt, completedResponse))
           }
-          else if (requestedKind === 'practice') setPracticeSetupTurnId(streamEvent.qa_id)
+          else if (requestedKind === 'practice') {
+            setPracticeSetupMode('standard')
+            setPracticeSetupTurnId(streamEvent.qa_id)
+          }
           else if (requestedKind === 'map') setPendingMapGenerationTurnId(streamEvent.qa_id)
           else if (requestedKind === 'interactive') setPendingDynamicExplanationTurnId(streamEvent.qa_id)
+          else if (requestedKind && practiceModeByArtifactKind[requestedKind]) {
+            setPracticeSetupMode(practiceModeByArtifactKind[requestedKind]!)
+            setPracticeSetupTurnId(streamEvent.qa_id)
+          }
+          else if (requestedKind === 'audio') {
+            void runAudioGeneration(streamEvent.qa_id, prompt, completedResponse)
+          }
+          else if (requestedKind && documentTemplateByArtifactKind[requestedKind]) {
+            setDocumentSetup({ turnId: streamEvent.qa_id, template: documentTemplateByArtifactKind[requestedKind]! })
+          }
+          else if (requestedKind === 'study-pack') {
+            setDocumentSetup({ turnId: streamEvent.qa_id, template: 'system_guide' })
+            setNotice('回答已完成，打开学习文档设置即可批量生成学习资料包。')
+          }
           else if (requestedKind) {
-            setNotice(`${artifactOptions.find(item => item.kind === requestedKind)?.label}将在后续阶段接通，当前先完成学习文档。`)
+            setNotice(`${artifactOptions.find(item => item.kind === requestedKind)?.label || '这份内容'}暂时没有对应的生成器，请先选择学习文档、知识图解、动态讲解或练习测验。`)
           }
         }
       })
       await refreshSessions()
     } catch (error) {
+      flushStreamChunks()
+      delete streamResponseByTurnRef.current[turnId]
       const message = error instanceof Error ? error.message : '本地服务暂时无法回答'
       setTurns(current => current.map(turn => turn.id === turnId
         ? { ...turn, response: `${message}。请检查后端连接后重试。`, loading: false, error: true }
@@ -3641,22 +3964,30 @@ function App() {
       void runDynamicExplanationGeneration(turnId)
       return
     }
-    const practiceModeByKind: Partial<Record<ArtifactKind, PracticeMode>> = {
-      practice: 'standard',
-      similar: 'similar',
-      variants: 'variants',
-      special: 'special',
-      mock: 'mock',
-      coding: 'coding',
-      oral: 'oral',
+    if (kind === 'audio') {
+      void runAudioGeneration(turnId)
+      return
     }
-    const practiceMode = practiceModeByKind[kind]
+    if (kind === 'study-pack') {
+      openDocumentPackSetup(turnId)
+      return
+    }
+    const practiceMode = practiceModeByArtifactKind[kind]
     if (practiceMode) {
       setPracticeSetupTurnId(current => current === turnId ? null : turnId)
       setPracticeSetupMode(practiceMode)
       return
     }
-    setNotice(`${artifactOptions.find(item => item.kind === kind)?.label}将在后续阶段接通，当前先完成学习文档。`)
+    const documentTemplate = documentTemplateByArtifactKind[kind]
+    if (documentTemplate) {
+      const label = artifactOptions.find(item => item.kind === kind)?.label || '学习资料'
+      setDocumentSetup(current => current?.turnId === turnId && current.template === documentTemplate
+        ? null
+        : { turnId, template: documentTemplate })
+      setNotice(`${label}已接入${documentTemplateById[documentTemplate].label}结构，生成后仍可继续编辑。`)
+      return
+    }
+    setNotice(`${artifactOptions.find(item => item.kind === kind)?.label || '这份内容'}暂时没有对应的生成器，请先选择学习文档、知识图解、动态讲解或练习测验。`)
   }
 
   async function runDocumentGeneration(setupOverride?: DocumentSetup, replaceArtifactId?: string) {
@@ -5681,6 +6012,7 @@ function App() {
       result: null,
       topicMastery: current.artifact.topicMastery || null,
       remainingSeconds: current.practice.practice_mode === 'mock' ? current.practice.estimated_minutes * 60 : undefined,
+      mockTimerStartedAt: current.practice.practice_mode === 'mock' ? Date.now() : undefined,
     } : current)
   }
 
@@ -6546,15 +6878,255 @@ function App() {
     setNotice('已回到生成这份资料的对话。')
   }
 
-  function toggleRecording() {
-    if (!recording) {
-      setRecording(true)
-      setNotice('正在聆听，再次点击即可结束。')
+  function toggleBrowserNarration(turnId: string, script: string) {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setNotice('当前浏览器不支持在线朗读，请使用系统或浏览器的朗读功能。')
       return
     }
+    if (audioSpeechTurnId === turnId && window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel()
+      setAudioSpeechTurnId(null)
+      return
+    }
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(script)
+    utterance.lang = interfaceLanguage === 'en' ? 'en-US' : 'zh-CN'
+    utterance.rate = 0.96
+    utterance.onend = () => setAudioSpeechTurnId(current => current === turnId ? null : current)
+    utterance.onerror = () => {
+      setAudioSpeechTurnId(current => current === turnId ? null : current)
+      setNotice('在线朗读没有完成，你仍可以直接阅读讲稿。')
+    }
+    setAudioSpeechTurnId(turnId)
+    window.speechSynthesis.speak(utterance)
+  }
+
+  async function runAudioGeneration(turnId: string, sourcePrompt?: string, sourceResponse?: string) {
+    const turn = turns.find(item => item.id === turnId)
+    const prompt = sourcePrompt ?? turn?.prompt ?? ''
+    const response = sourceResponse ?? turn?.response ?? ''
+    if (!response.trim()) {
+      setNotice('这条回答还没有完成，完成后才能生成音频讲解。')
+      return
+    }
+    const script = buildAudioNarrationScript(prompt, response)
+    const requestId = audioGenerationRequestRef.current + 1
+    audioGenerationRequestRef.current = requestId
+    audioGenerationAbortRef.current?.abort()
+    const controller = new AbortController()
+    audioGenerationAbortRef.current = controller
+    setAudioSpeechTurnId(null)
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
+    setAudioNarrationsByTurnId(current => ({
+      ...current,
+      [turnId]: { status: 'generating', script, createdAt: Date.now() },
+    }))
+    setNotice('音频讲稿正在生成，完成后可直接播放。')
+    let timedOut = false
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 135_000)
+    try {
+      const result = await textToSpeech(LOCAL_USER_ID, script, controller.signal) as { audio_url?: string }
+      if (requestId !== audioGenerationRequestRef.current) return
+      const audioUrl = resolveApiAssetUrl(result.audio_url || '')
+      if (!audioUrl) throw new Error('服务没有返回可播放的音频')
+      setAudioNarrationsByTurnId(current => ({
+        ...current,
+        [turnId]: { status: 'ready', script, audioUrl, createdAt: Date.now() },
+      }))
+      setNotice('音频讲解已准备好，可以直接播放或下载。')
+    } catch (error) {
+      if (requestId !== audioGenerationRequestRef.current) return
+      const message = timedOut
+        ? '音频生成等待超时'
+        : error instanceof Error && error.message ? error.message : '云端音频暂时不可用'
+      setAudioNarrationsByTurnId(current => ({
+        ...current,
+        [turnId]: { status: 'fallback', script, error: message, createdAt: Date.now() },
+      }))
+      setNotice('云端音频暂时不可用，已保留讲稿，可用浏览器朗读。')
+    } finally {
+      window.clearTimeout(timeoutId)
+      if (audioGenerationAbortRef.current === controller) audioGenerationAbortRef.current = null
+    }
+  }
+
+  function releaseVoiceCapture() {
+    voiceMediaStreamRef.current?.getTracks().forEach(track => track.stop())
+    voiceMediaStreamRef.current = null
+    voiceMediaRecorderRef.current = null
+    voiceAudioChunksRef.current = []
+    voiceStartedAtRef.current = null
+    voiceStopRequestedRef.current = false
+  }
+
+  function discardVoiceCapture() {
+    voiceCaptureIdRef.current += 1
+    voiceRequestAbortRef.current?.abort()
+    voiceRequestAbortRef.current = null
+    const recorder = voiceMediaRecorderRef.current
+    if (recorder) {
+      recorder.ondataavailable = null
+      recorder.onerror = null
+      recorder.onstop = null
+      if (recorder.state !== 'inactive') {
+        try { recorder.stop() } catch { /* the recorder may already be inactive */ }
+      }
+    }
+    releaseVoiceCapture()
     setRecording(false)
-    setInput(current => current || '请帮我梳理这部分内容的核心知识和易错点')
-    setNotice('语音已转成文字，你可以修改后发送。')
+    setVoicePreparing(false)
+    setVoiceTranscribing(false)
+    setRecordingSeconds(0)
+    setVoiceDraft(null)
+    setVoiceTranscriptionError('')
+    setNotice('已丢弃这段录音。')
+  }
+
+  async function transcribeVoiceDraft(draft: VoiceDraft, captureId: number) {
+    voiceRequestAbortRef.current?.abort()
+    const controller = new AbortController()
+    voiceRequestAbortRef.current = controller
+    let timedOut = false
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 75_000)
+    setVoiceTranscribing(true)
+    setVoiceTranscriptionError('')
+    setNotice('正在识别语音…')
+    try {
+      const result = await speechToText(LOCAL_USER_ID, draft.dataUrl, controller.signal) as { text?: string }
+      if (voiceCaptureIdRef.current !== captureId || controller.signal.aborted) return
+      const transcript = result.text?.trim()
+      if (!transcript) throw new Error('没有识别到清晰的语音')
+      setInput(current => current.trim() ? `${current.trim()}\n${transcript}` : transcript)
+      setVoiceDraft(null)
+      setVoiceTranscriptionError('')
+      setNotice('语音已转成文字，你可以修改后发送。')
+    } catch (error) {
+      if (voiceCaptureIdRef.current !== captureId) return
+      const message = timedOut
+        ? '语音识别等待超时'
+        : error instanceof Error && error.message ? error.message : '语音识别失败'
+      setVoiceTranscriptionError(message)
+      setNotice(`${message}，录音已保留，可重试识别。`)
+    } finally {
+      window.clearTimeout(timeoutId)
+      if (voiceRequestAbortRef.current === controller) voiceRequestAbortRef.current = null
+      if (voiceCaptureIdRef.current === captureId) setVoiceTranscribing(false)
+    }
+  }
+
+  function retryVoiceTranscription() {
+    if (!voiceDraft || voiceTranscribing) return
+    const captureId = voiceCaptureIdRef.current + 1
+    voiceCaptureIdRef.current = captureId
+    void transcribeVoiceDraft(voiceDraft, captureId)
+  }
+
+  async function toggleRecording() {
+    if (voiceTranscribing || voicePreparing) return
+    if (recording) {
+      voiceStopRequestedRef.current = true
+      setNotice('正在结束录音并识别…')
+      const recorder = voiceMediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop()
+      } else {
+        releaseVoiceCapture()
+        setRecording(false)
+        setNotice('没有捕获到录音，请再试一次。')
+      }
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setNotice('当前浏览器不支持录音，请直接在文字框中输入学习问题。')
+      return
+    }
+
+    const captureId = voiceCaptureIdRef.current + 1
+    voiceCaptureIdRef.current = captureId
+    setVoiceDraft(null)
+    setVoiceTranscriptionError('')
+    setVoicePreparing(true)
+    setGenerateOpen(false)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+      if (voiceCaptureIdRef.current !== captureId) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      const mimeType = preferredVoiceMimeType()
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+      let finalized = false
+      voiceMediaStreamRef.current = stream
+      voiceMediaRecorderRef.current = recorder
+      voiceAudioChunksRef.current = []
+      voiceStartedAtRef.current = Date.now()
+      voiceStopRequestedRef.current = false
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) voiceAudioChunksRef.current.push(event.data)
+      }
+      recorder.onerror = () => {
+        if (finalized) return
+        finalized = true
+        releaseVoiceCapture()
+        setRecording(false)
+        setRecordingSeconds(0)
+        setVoiceTranscriptionError('录音出现问题')
+        setNotice('录音出现问题，请检查麦克风后重试。')
+      }
+      recorder.onstop = () => {
+        if (finalized) return
+        finalized = true
+        const chunks = [...voiceAudioChunksRef.current]
+        const audio = new Blob(chunks, { type: recorder.mimeType || mimeType || chunks[0]?.type || 'audio/webm' })
+        const durationSeconds = Math.max(1, Math.min(
+          VOICE_RECORDING_MAX_SECONDS,
+          Math.floor((Date.now() - (voiceStartedAtRef.current || Date.now())) / 1000),
+        ))
+        releaseVoiceCapture()
+        setRecording(false)
+        setRecordingSeconds(0)
+        if (voiceCaptureIdRef.current !== captureId) return
+        if (audio.size < 128) {
+          setVoiceTranscriptionError('没有捕获到清晰的声音')
+          setNotice('没有捕获到清晰的声音，请靠近麦克风再试一次。')
+          return
+        }
+        void readBlobAsDataUrl(audio)
+          .then(dataUrl => {
+            if (voiceCaptureIdRef.current !== captureId) return
+            const draft = { dataUrl, durationSeconds, mimeType: audio.type || 'audio/webm' }
+            setVoiceDraft(draft)
+            void transcribeVoiceDraft(draft, captureId)
+          })
+          .catch(error => {
+            if (voiceCaptureIdRef.current !== captureId) return
+            const message = error instanceof Error ? error.message : '语音识别失败'
+            setVoiceTranscriptionError(message)
+            setNotice(`${message}，请重新录音。`)
+          })
+      }
+      recorder.start(250)
+      setVoicePreparing(false)
+      setRecording(true)
+      setRecordingSeconds(0)
+      setNotice('正在录音，再次点击“结束”后会自动转写。')
+    } catch (error) {
+      releaseVoiceCapture()
+      setVoicePreparing(false)
+      setRecording(false)
+      const name = error instanceof DOMException ? error.name : ''
+      setNotice(name === 'NotAllowedError' || name === 'PermissionDeniedError'
+        ? '麦克风权限未开启，请允许后再试，或直接输入文字。'
+        : '无法启用麦克风，请检查设备后再试。')
+    }
   }
 
   return (
@@ -6789,7 +7361,7 @@ function App() {
                     <div className="assistant-content">
                       <div className={turn.error ? 'assistant-response error' : 'assistant-response'} aria-live={turn.loading ? 'polite' : undefined}>
                         {turn.response
-                          ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{turn.response}</ReactMarkdown>
+                          ? <MarkdownContent content={turn.response} />
                           : turn.loading && <span className="thinking-label">{turn.loadingPhase === 'image_analysis'
                             ? t('正在识别图片…', 'Reading the image…')
                             : turn.loadingPhase === 'retrieving'
@@ -6883,10 +7455,67 @@ function App() {
                       })()}
 
                       {renderLearningLoop(turn)}
-                      {renderDocumentPack({ ...turn, artifacts: resolvedPackArtifacts(turn) })}
-                      {renderPracticePack({ ...turn, artifacts: resolvedPackArtifacts(turn) })}
+                      {renderDocumentPack({ ...turn, artifacts: resolvedPackArtifactsByTurnId.get(turn.id) || turn.artifacts })}
+                      {renderPracticePack({ ...turn, artifacts: resolvedPackArtifactsByTurnId.get(turn.id) || turn.artifacts })}
 
-                      {resolvedPackArtifacts(turn).filter(artifact => !artifact.documentPackId && !artifact.practicePackId).map(artifact => {
+                      {audioNarrationsByTurnId[turn.id] && (() => {
+                        const narration = audioNarrationsByTurnId[turn.id]
+                        const browserSpeechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
+                        const isBrowserSpeaking = audioSpeechTurnId === turn.id
+                        return (
+                          <section className={`audio-narration-card audio-narration-${narration.status}`} aria-label={t('音频讲解', 'Audio lesson')}>
+                            <div className="audio-narration-head">
+                              <span className="audio-narration-icon"><AudioLines size={17} /></span>
+                              <div>
+                                <span>{t('音频讲解', 'Audio lesson')}</span>
+                                <h3>{narration.status === 'generating' ? t('正在整理可朗读讲稿', 'Preparing a narration script') : t('当前回答的音频讲解', 'Audio lesson for this answer')}</h3>
+                              </div>
+                              <button type="button" className="icon-button" aria-label={t('关闭音频讲解', 'Close audio lesson')} onClick={() => {
+                                audioGenerationRequestRef.current += 1
+                                audioGenerationAbortRef.current?.abort()
+                                audioGenerationAbortRef.current = null
+                                if (isBrowserSpeaking && browserSpeechSupported) window.speechSynthesis.cancel()
+                                setAudioSpeechTurnId(current => current === turn.id ? null : current)
+                                setAudioNarrationsByTurnId(current => {
+                                  const next = { ...current }
+                                  delete next[turn.id]
+                                  return next
+                                })
+                              }}><X size={15} /></button>
+                            </div>
+                            {narration.status === 'generating' ? (
+                              <div className="audio-narration-loading" role="status"><span className="stream-dots" aria-hidden="true"><i /><i /><i /></span>{t('正在请求语音合成，完成后会自动出现播放器。', 'Requesting speech synthesis; the player will appear when ready.')}</div>
+                            ) : narration.status === 'ready' && narration.audioUrl ? (
+                              <>
+                                <p className="audio-narration-note">{t('音频已经生成，点击播放即可听讲。', 'The audio is ready. Press play to listen.')}</p>
+                                <audio className="audio-narration-player" controls preload="metadata" src={narration.audioUrl} onError={() => setAudioNarrationsByTurnId(current => ({
+                                  ...current,
+                                  [turn.id]: { ...narration, status: 'fallback', error: '音频文件加载失败' },
+                                }))} />
+                              </>
+                            ) : (
+                              <div className="audio-narration-fallback">
+                                <p className="audio-narration-note">{narration.error || t('云端音频暂时不可用，已保留讲稿。', 'Cloud audio is unavailable; the narration script is preserved.')}</p>
+                                {browserSpeechSupported && <button type="button" onClick={() => toggleBrowserNarration(turn.id, narration.script)}><Icon name={isBrowserSpeaking ? 'x' : 'play'} size={14} />{isBrowserSpeaking ? t('停止朗读', 'Stop reading') : t('浏览器朗读', 'Read aloud')}</button>}
+                              </div>
+                            )}
+                            {narration.status !== 'generating' && (
+                              <>
+                                <details className="audio-narration-script">
+                                  <summary>{t('查看讲稿', 'View script')}</summary>
+                                  <p>{narration.script}</p>
+                                </details>
+                                <div className="audio-narration-actions">
+                                  <button type="button" onClick={() => void runAudioGeneration(turn.id)}><RotateCcw size={14} />{t('重新生成', 'Regenerate')}</button>
+                                  {narration.status === 'ready' && narration.audioUrl && <a href={narration.audioUrl} download={`rhyme-audio-${turn.id}.mp3`}><Icon name="download" size={14} />{t('下载音频', 'Download MP3')}</a>}
+                                </div>
+                              </>
+                            )}
+                          </section>
+                        )
+                      })()}
+
+                      {(resolvedPackArtifactsByTurnId.get(turn.id) || turn.artifacts).filter(artifact => !artifact.documentPackId && !artifact.practicePackId).map(artifact => {
                         const option = artifactOptions.find(item => item.kind === artifact.kind)
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
                         const dynamicExplanation = artifact.kind === 'interactive' ? parseDynamicExplanation(artifact.content) : null
@@ -6946,7 +7575,7 @@ function App() {
                             )}
                             {artifact.kind !== 'map' && artifact.kind !== 'practice' && artifact.kind !== 'interactive' && artifact.content && expandedArtifactId === artifact.id && (
                               <div className="artifact-document">
-                                <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{artifact.content}</ReactMarkdown>
+                                <MarkdownContent content={artifact.content} />
                               </div>
                             )}
                             <div className="artifact-source"><Icon name="paperclip" size={14} />基于 {artifact.source}</div>
@@ -7204,28 +7833,30 @@ function App() {
                     </div>
                   </header>
                   <div className="map-workspace-stage">
-                    <G6KnowledgeMap
-                      data={mapWorkspaceData}
-                      reader
-                      workspace
-                      language={interfaceLanguage}
-                      progress={mapWorkspaceProgress}
-                      progressLoading={Boolean(mapWorkspaceArtifact.backendId && !mapWorkspaceProgress && mapProgressFetches.current.has(mapWorkspaceArtifact.id))}
-                      progressSavingNodeId={mapWorkspaceSavingNodeId}
-                      reviewPracticeGenerating={mapReviewPracticeGeneratingArtifactId === mapWorkspaceArtifact.id}
-                      onStatusChange={mapWorkspaceArtifact.status === 'generating' ? undefined : (nodeId, status) => void updateMapNodeStatus(mapWorkspaceArtifact, nodeId, status)}
-                      onReviewPractice={mapWorkspaceArtifact.status === 'generating' ? undefined : () => void runMapReviewPractice(mapWorkspaceArtifact, mapWorkspaceData)}
-                      onMapChange={map => persistEditedKnowledgeMap(mapWorkspaceArtifact, map)}
-                      mapSaving={mapEditingArtifactId === mapWorkspaceArtifact.id}
-                      collaboration={mapCollaborations[mapWorkspaceArtifact.id]}
-                      collaborationLoading={mapCollaborationLoadingArtifactId === mapWorkspaceArtifact.id}
-                      onCollaboration={() => void runMapCollaboration(mapWorkspaceArtifact)}
-                      onDismissSuggestion={suggestion => dismissMapSuggestion(mapWorkspaceArtifact.id, suggestion)}
-                      onGenerateDeepDive={mapWorkspaceArtifact.status === 'generating' ? undefined : (nodeId, force) => requestKnowledgeMapDeepDive(mapWorkspaceArtifact, nodeId, force)}
-                      exploration={mapWorkspaceProgress?.exploration}
-                      explorationKey={mapWorkspaceArtifact.id}
-                      onExplorationChange={state => updateMapExploration(mapWorkspaceArtifact, state)}
-                    />
+                    <Suspense fallback={<div className="map-component-loading" role="status"><Sparkles size={18} />{t('正在载入图解画布…', 'Loading the map canvas…')}</div>}>
+                      <G6KnowledgeMap
+                        data={mapWorkspaceData}
+                        reader
+                        workspace
+                        language={interfaceLanguage}
+                        progress={mapWorkspaceProgress}
+                        progressLoading={Boolean(mapWorkspaceArtifact.backendId && !mapWorkspaceProgress && mapProgressFetches.current.has(mapWorkspaceArtifact.id))}
+                        progressSavingNodeId={mapWorkspaceSavingNodeId}
+                        reviewPracticeGenerating={mapReviewPracticeGeneratingArtifactId === mapWorkspaceArtifact.id}
+                        onStatusChange={mapWorkspaceArtifact.status === 'generating' ? undefined : (nodeId, status) => void updateMapNodeStatus(mapWorkspaceArtifact, nodeId, status)}
+                        onReviewPractice={mapWorkspaceArtifact.status === 'generating' ? undefined : () => void runMapReviewPractice(mapWorkspaceArtifact, mapWorkspaceData)}
+                        onMapChange={map => persistEditedKnowledgeMap(mapWorkspaceArtifact, map)}
+                        mapSaving={mapEditingArtifactId === mapWorkspaceArtifact.id}
+                        collaboration={mapCollaborations[mapWorkspaceArtifact.id]}
+                        collaborationLoading={mapCollaborationLoadingArtifactId === mapWorkspaceArtifact.id}
+                        onCollaboration={() => void runMapCollaboration(mapWorkspaceArtifact)}
+                        onDismissSuggestion={suggestion => dismissMapSuggestion(mapWorkspaceArtifact.id, suggestion)}
+                        onGenerateDeepDive={mapWorkspaceArtifact.status === 'generating' ? undefined : (nodeId, force) => requestKnowledgeMapDeepDive(mapWorkspaceArtifact, nodeId, force)}
+                        exploration={mapWorkspaceProgress?.exploration}
+                        explorationKey={mapWorkspaceArtifact.id}
+                        onExplorationChange={state => updateMapExploration(mapWorkspaceArtifact, state)}
+                      />
+                    </Suspense>
                   </div>
                 </>
               ) : (
@@ -7303,24 +7934,26 @@ function App() {
                   <div className={`library-reader-content ${readerMapData ? 'has-knowledge-map' : ''} ${readerDynamicExplanation ? 'has-dynamic-explanation' : ''} ${readerExternalVideo ? 'has-external-video' : ''} ${readerArtifact?.kind === 'notes' ? `document-template-${readerArtifact.documentTemplate || 'system_guide'}` : ''}`}>
                     {readerArtifact?.kind === 'map'
                       ? readerMapData
-                        ? <G6KnowledgeMap
-                            data={readerMapData}
-                            reader
-                            language={interfaceLanguage}
-                            progress={readerMapProgress}
-                            progressLoading={Boolean(readerArtifact.backendId && !readerMapProgress && mapProgressFetches.current.has(readerArtifact.id))}
-                            progressSavingNodeId={readerMapSavingNodeId}
-                            reviewPracticeGenerating={mapReviewPracticeGeneratingArtifactId === readerArtifact.id}
-                            onStatusChange={(nodeId, status) => void updateMapNodeStatus(readerArtifact, nodeId, status)}
-                            onReviewPractice={() => void runMapReviewPractice(readerArtifact, readerMapData)}
-                            onMapChange={versionPreview ? undefined : map => persistEditedKnowledgeMap(readerArtifact, map)}
-                            mapSaving={mapEditingArtifactId === readerArtifact.id}
-                            collaboration={mapCollaborations[readerArtifact.id]}
-                            collaborationLoading={mapCollaborationLoadingArtifactId === readerArtifact.id}
-                            onCollaboration={versionPreview ? undefined : () => void runMapCollaboration(readerArtifact)}
-                            onDismissSuggestion={suggestion => dismissMapSuggestion(readerArtifact.id, suggestion)}
-                            onGenerateDeepDive={versionPreview ? undefined : (nodeId, force) => requestKnowledgeMapDeepDive(readerArtifact, nodeId, force)}
-                          />
+                        ? <Suspense fallback={<div className="map-component-loading" role="status"><Sparkles size={18} />{t('正在载入图解画布…', 'Loading the map canvas…')}</div>}>
+                            <G6KnowledgeMap
+                              data={readerMapData}
+                              reader
+                              language={interfaceLanguage}
+                              progress={readerMapProgress}
+                              progressLoading={Boolean(readerArtifact.backendId && !readerMapProgress && mapProgressFetches.current.has(readerArtifact.id))}
+                              progressSavingNodeId={readerMapSavingNodeId}
+                              reviewPracticeGenerating={mapReviewPracticeGeneratingArtifactId === readerArtifact.id}
+                              onStatusChange={(nodeId, status) => void updateMapNodeStatus(readerArtifact, nodeId, status)}
+                              onReviewPractice={() => void runMapReviewPractice(readerArtifact, readerMapData)}
+                              onMapChange={versionPreview ? undefined : map => persistEditedKnowledgeMap(readerArtifact, map)}
+                              mapSaving={mapEditingArtifactId === readerArtifact.id}
+                              collaboration={mapCollaborations[readerArtifact.id]}
+                              collaborationLoading={mapCollaborationLoadingArtifactId === readerArtifact.id}
+                              onCollaboration={versionPreview ? undefined : () => void runMapCollaboration(readerArtifact)}
+                              onDismissSuggestion={suggestion => dismissMapSuggestion(readerArtifact.id, suggestion)}
+                              onGenerateDeepDive={versionPreview ? undefined : (nodeId, force) => requestKnowledgeMapDeepDive(readerArtifact, nodeId, force)}
+                            />
+                          </Suspense>
                         : <p>这份图解内容无法读取，请回到来源对话重新生成。</p>
                       : readerArtifact?.kind === 'interactive'
                         ? readerDynamicExplanation
@@ -7364,7 +7997,7 @@ function App() {
                                 </div>
                               </section>
                             : <p>这条课程视频的信息无法读取，请重新搜索后收藏。</p>
-                          : <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{readerArtifact?.content || ''}</ReactMarkdown>}
+                          : <MarkdownContent content={readerArtifact?.content || ''} />}
                   </div>
                   <div className="library-reader-actions">
                     {libraryPreview.status === 'deleted' ? (
@@ -7772,6 +8405,41 @@ function App() {
               </div>
             )}
 
+            {(recording || voicePreparing || voiceTranscribing || voiceDraft) && (
+              <div className={`composer-voice-status${voiceTranscriptionError ? ' has-error' : ''}`} aria-live="polite">
+                <div className="composer-voice-status-head">
+                  <span className="composer-voice-status-icon"><Icon name={recording ? 'mic' : 'audio'} size={15} /></span>
+                  <div>
+                    <b>{recording
+                      ? t('正在录音', 'Recording')
+                      : voicePreparing
+                        ? t('正在连接麦克风…', 'Connecting to microphone…')
+                        : voiceTranscribing
+                          ? t('正在识别语音…', 'Transcribing…')
+                          : voiceTranscriptionError
+                            ? t('识别没有完成，录音已保留', 'Transcription failed; recording kept')
+                            : t('录音已准备好', 'Recording ready')}</b>
+                    <small>{recording
+                      ? t('再次点击“结束”后自动转写', 'Press “Stop” to transcribe')
+                      : voicePreparing
+                        ? t('请在浏览器提示中允许麦克风权限', 'Allow microphone access when prompted')
+                        : voiceTranscribing
+                          ? t('你可以取消识别，稍后再重试', 'You can cancel and retry later')
+                          : voiceTranscriptionError || t('可以试听，或重试识别', 'Preview or retry transcription')}</small>
+                  </div>
+                  {recording && <time dateTime={`PT${recordingSeconds}S`}>{formatRecordingDuration(recordingSeconds)}</time>}
+                  {(recording || voicePreparing || voiceTranscribing) && <button type="button" onClick={discardVoiceCapture}>{t('取消', 'Cancel')}</button>}
+                </div>
+                {voiceDraft && <audio className="composer-voice-preview" controls preload="metadata" src={voiceDraft.dataUrl} />}
+                {voiceDraft && !recording && !voicePreparing && !voiceTranscribing && (
+                  <div className="composer-voice-status-actions">
+                    {voiceTranscriptionError && <button type="button" onClick={retryVoiceTranscription}><Icon name="rotate" size={14} />{t('重试识别', 'Retry')}</button>}
+                    <button type="button" className="quiet" onClick={discardVoiceCapture}><Icon name="x" size={14} />{t('丢弃录音', 'Discard')}</button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <textarea
               value={input}
               onChange={event => setInput(event.target.value)}
@@ -7788,8 +8456,11 @@ function App() {
             />
 
             {generateOpen && (
-              <div className="generate-menu" role="menu" aria-label={t('选择生成资料类型', 'Choose generated material')}>
-                <div className="generate-menu-head"><b>{t('常用生成', 'Common materials')}</b><span>{t('适用于任何问题或资料', 'For any question or learning material')}</span></div>
+              <div id="generate-menu" className="generate-menu" role="menu" aria-label={t('选择生成资料类型', 'Choose generated material')}>
+                <div className="generate-menu-head">
+                  <b>{composerHasReadyContext ? t('基于最近回答生成', 'Generate from the latest answer') : t('常用生成', 'Common materials')}</b>
+                  <span>{composerHasReadyContext ? t('点击一种类型即可开始准备', 'Choose a type to start') : t('适用于任何问题或资料', 'For any question or learning material')}</span>
+                </div>
                 <div className="generate-options">
                   {primaryArtifactOptions.map(item => (
                     <button key={item.kind} type="button" role="menuitem" onClick={() => chooseArtifact(item.kind)}>
@@ -7798,10 +8469,6 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <button className="generate-menu-more" type="button" onClick={() => openGeneratorCatalog()}>
-                  <span><b>{t('生成更多内容', 'Generate more')}</b><small>{t('按学习目的选择专业产物', 'Choose materials by learning goal')}</small></span>
-                  <Icon name="chevron" size={16} />
-                </button>
               </div>
             )}
 
@@ -7812,11 +8479,31 @@ function App() {
               <input id="file-input" className="visually-hidden" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,image/*" onChange={event => handleFile(event, 'file')} />
               <label className="composer-tool" htmlFor="file-input"><Icon name="paperclip" size={17} /><span>{t('上传', 'Upload')}</span></label>
 
-              <button className={recording ? 'composer-tool active' : 'composer-tool'} type="button" onClick={toggleRecording} aria-pressed={recording}>
-                <Icon name="mic" size={17} /><span>{recording ? t('结束', 'Stop') : t('语音', 'Voice')}</span>
+              <button
+                className={`composer-tool${recording ? ' recording active' : ''}${voiceBusy ? ' busy' : ''}`}
+                type="button"
+                onClick={() => void toggleRecording()}
+                aria-pressed={recording}
+                aria-busy={voiceBusy}
+                aria-label={recording ? t('结束录音', 'Stop recording') : voiceBusy ? voiceButtonLabel : t('开始语音输入', 'Start voice input')}
+                title={recording ? t('结束录音并转写', 'Stop recording and transcribe') : voiceBusy ? voiceButtonLabel : t('开始语音输入', 'Start voice input')}
+                disabled={sending || voiceBusy}
+              >
+                <Icon name="mic" size={17} />
+                <span>{voiceButtonLabel}</span>
+                {recording && <time className="composer-recording-time" dateTime={`PT${recordingSeconds}S`}>{formatRecordingDuration(recordingSeconds)}</time>}
               </button>
 
-              <button className={generateOpen || selectedKind ? 'composer-tool active' : 'composer-tool'} type="button" onClick={() => setGenerateOpen(current => !current)} aria-expanded={generateOpen}>
+              <button
+                className={generateOpen || selectedKind ? 'composer-tool active' : 'composer-tool'}
+                type="button"
+                onClick={() => setGenerateOpen(current => !current)}
+                aria-expanded={generateOpen}
+                aria-haspopup="menu"
+                aria-controls="generate-menu"
+                disabled={sending || recording || voiceBusy}
+                title={t('选择要生成的学习资料', 'Choose a learning material to generate')}
+              >
                 <Icon name="spark" size={17} /><span>{t('生成', 'Generate')}</span>
               </button>
 
@@ -8030,7 +8717,7 @@ function App() {
                       <span>完成进度</span>
                       <b>{practiceAnsweredCount}<small> / {practiceRun.practice.questions.length}</small></b>
                     </div>
-                    {practiceRun.practice.practice_mode === 'mock' && <b className={`practice-timer ${(practiceRun.remainingSeconds || 0) <= 60 ? 'urgent' : ''}`}>剩余 {Math.floor((practiceRun.remainingSeconds || 0) / 60)}:{String((practiceRun.remainingSeconds || 0) % 60).padStart(2, '0')}</b>}
+                    {practiceRun.practice.practice_mode === 'mock' && <MockPracticeTimer key={practiceRun.mockTimerStartedAt} initialSeconds={practiceRun.remainingSeconds || 0} />}
                     <nav>{practiceRun.practice.questions.map((question, index) => (
                       <button
                         key={question.id}
@@ -8581,7 +9268,7 @@ function App() {
               : undefined
             if (!turn) return
             closeDocumentPackBooklet()
-            openDocumentPackSave({ ...turn, artifacts: resolvedPackArtifacts(turn) }, documentPackBooklet.packId)
+            openDocumentPackSave({ ...turn, artifacts: resolvedPackArtifactsByTurnId.get(turn.id) || turn.artifacts }, documentPackBooklet.packId)
           }}
           onOpenLibrary={documentPackBooklet.persisted ? () => {
             closeDocumentPackBooklet()
@@ -8621,7 +9308,7 @@ function App() {
             const turn = practicePackBooklet.turnId ? turns.find(item => item.id === practicePackBooklet.turnId) : undefined
             if (!turn) return
             closePracticePackBooklet()
-            openPracticePackSave({ ...turn, artifacts: resolvedPackArtifacts(turn) }, practicePackBooklet.packId)
+            openPracticePackSave({ ...turn, artifacts: resolvedPackArtifactsByTurnId.get(turn.id) || turn.artifacts }, practicePackBooklet.packId)
           }}
           onOpenLibrary={practicePackBooklet.persisted ? () => {
             closePracticePackBooklet()
@@ -8636,7 +9323,7 @@ function App() {
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 3D 学习屋…', 'Opening 3D learning house…')}</div>}>
           <LearningHouse
             language={interfaceLanguage}
-            suspended={knowledgeMapHallOpen || apexLabOpen || solarExplorerOpen || studyArchiveOpen}
+            suspended={personalHouseOpen || knowledgeMapHallOpen || apexLabOpen || solarExplorerOpen || studyArchiveOpen}
             onExit={() => { setKnowledgeMapHallOpen(false); setPersonalHouseOpen(false); setApexLabOpen(false); setSolarExplorerOpen(false); setStudyArchiveOpen(false); setLearningHouseOpen(false) }}
             onOpenPersonalRoom={() => setPersonalHouseOpen(true)}
             onOpenMapHall={() => setKnowledgeMapHallOpen(true)}
@@ -8668,16 +9355,7 @@ function App() {
       {knowledgeMapHallOpen && (
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在点亮万象星海…', 'Lighting up life constellations…')}</div>}>
           <KnowledgeMapHall
-            maps={knowledgeHallMaps}
             onExit={() => setKnowledgeMapHallOpen(false)}
-            onOpenMap={(id) => {
-              const artifact = mapArtifacts.find(item => item.id === id)
-              if (!artifact) return
-              setKnowledgeMapHallOpen(false)
-              setPersonalHouseOpen(false)
-              setLearningHouseOpen(false)
-              openMapWorkspace(artifact, 'chat')
-            }}
           />
         </Suspense>
       )}

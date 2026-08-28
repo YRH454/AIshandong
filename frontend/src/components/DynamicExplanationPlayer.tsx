@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, ArrowUp, CirclePause, CirclePlay, FastForward, Gauge, GripVertical, Maximize2, Save, Sparkles, Target, X } from 'lucide-react'
 import type { DynamicExplanationBranchCondition, DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationInteractionOutcome, DynamicExplanationScene } from './dynamicExplanation'
@@ -76,6 +76,11 @@ const learningModes: Array<{ id: LearningMode; zh: string; en: string; descripti
 
 const RHYME_EXPLAINER_LESSON_PREFIX = 'rhyme-explainer:lesson:'
 
+type RhymeExplainerLesson = {
+  key: string
+  source: string
+}
+
 function hashRhymeLesson(value: string) {
   let hash = 2166136261
   for (let index = 0; index < value.length; index += 1) {
@@ -120,7 +125,7 @@ function visualItems(scene: DynamicExplanationScene) {
   return scene.visual.items.length ? scene.visual.items : [scene.key_point]
 }
 
-function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisualProps) {
+const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisualProps) {
   const tr = (chinese: string, english: string) => language === 'en' ? english : chinese
   const visual = scene.visual
   const items = useMemo(() => visualItems(scene), [scene])
@@ -329,7 +334,7 @@ function SceneVisual({ scene, language, selectedItem, onSelectItem }: SceneVisua
       <p className="constellation-detail">{visual.example || selected}</p>
     </div>
   )
-}
+})
 
 export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSceneCompleted, onCompleted, progress, onProgressChange, onCheckpoint, onSavePresentation, onRegenerateScene, saving = false, saveAsVersion = true, openImmersiveRequest, compact = false, onContinueLearning, continueLearningLabel }: DynamicExplanationPlayerProps) {
   const [activeIndex, setActiveIndex] = useState(0)
@@ -353,29 +358,34 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
   const startedScenes = useRef(new Set<string>())
   const completedScenes = useRef(new Set<string>())
   const completedExplanation = useRef(false)
+  const handledImmersiveRequestRef = useRef<number | undefined>(undefined)
   // The library parses saved JSON on every parent render. Its object reference can
   // change while the presentation itself has not, so use the content as the reset
   // boundary rather than the transient object identity.
-  const dataFingerprint = JSON.stringify(data)
+  const dataFingerprint = useMemo(() => JSON.stringify(data), [data])
   const presentation = presentationDraft || data
-  const rhymeLessonPayload = useMemo(() => buildRhymeExplainerPayload(presentation), [presentation])
-  const rhymeLessonSerialized = useMemo(() => JSON.stringify(rhymeLessonPayload), [rhymeLessonPayload])
-  const rhymeLessonKey = useMemo(
-    () => `lesson-${hashRhymeLesson(rhymeLessonSerialized)}`,
-    [rhymeLessonSerialized],
-  )
-  const rhymeExplainerSource = useMemo(
-    () => `/rhyme-explainer/index.html?topic=${encodeURIComponent(presentation.title)}&lesson=${encodeURIComponent(rhymeLessonKey)}`,
-    [presentation.title, rhymeLessonKey],
-  )
-
-  useEffect(() => {
+  const [rhymeExplainerLesson, setRhymeExplainerLesson] = useState<RhymeExplainerLesson | null>(null)
+  const prepareRhymeExplainerLesson = useCallback(() => {
+    const serialized = JSON.stringify(buildRhymeExplainerPayload(presentation))
+    const key = `lesson-${hashRhymeLesson(serialized)}`
     try {
-      window.sessionStorage.setItem(`${RHYME_EXPLAINER_LESSON_PREFIX}${rhymeLessonKey}`, rhymeLessonSerialized)
+      // Store before opening the iframe. This avoids a race on a cold page load
+      // and, more importantly, keeps every unopened card from doing this work.
+      window.sessionStorage.setItem(`${RHYME_EXPLAINER_LESSON_PREFIX}${key}`, serialized)
     } catch {
       // The explainer still has its topic-aware fallback if browser storage is unavailable.
     }
-  }, [rhymeLessonKey, rhymeLessonSerialized])
+    const lesson = {
+      key,
+      source: `/rhyme-explainer/index.html?topic=${encodeURIComponent(presentation.title)}&lesson=${encodeURIComponent(key)}`,
+    }
+    setRhymeExplainerLesson(current => current?.key === lesson.key ? current : lesson)
+    return lesson
+  }, [presentation])
+  const openRhymeExplainer = useCallback(() => {
+    prepareRhymeExplainerLesson()
+    setImmersive(true)
+  }, [prepareRhymeExplainerLesson])
 
   const visibleSceneIndexes = useMemo(() => {
     const all = presentation.scenes.map((_, index) => index)
@@ -406,6 +416,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     setAnswers({})
     setSelectedVisualItem(0)
     setImmersive(false)
+    setRhymeExplainerLesson(null)
     setEditorOpen(false)
     setPresentationDraft(null)
     setDraggedIndex(null)
@@ -626,7 +637,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         setImmersive(false)
         return
       }
-      if (event.data?.lessonKey !== rhymeLessonKey) return
+      if (!rhymeExplainerLesson || event.data?.lessonKey !== rhymeExplainerLesson.key) return
       if (event.data?.action === 'progress' || event.data?.action === 'complete') {
         syncExplorableProgress(event.data.payload, event.data.action === 'complete')
       }
@@ -638,11 +649,13 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('message', onMessage)
     }
-  }, [advanceTo, immersive, rhymeLessonKey, returnToPreviousScene, syncExplorableProgress])
+  }, [advanceTo, immersive, rhymeExplainerLesson, returnToPreviousScene, syncExplorableProgress])
 
   useEffect(() => {
-    if (openImmersiveRequest) setImmersive(true)
-  }, [openImmersiveRequest])
+    if (!openImmersiveRequest || handledImmersiveRequestRef.current === openImmersiveRequest) return
+    handledImmersiveRequestRef.current = openImmersiveRequest
+    openRhymeExplainer()
+  }, [openImmersiveRequest, openRhymeExplainer])
 
   if (!scene) return null
 
@@ -746,10 +759,10 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
     </div>
   )
 
-  const immersiveStage = (
+  const immersiveStage = rhymeExplainerLesson && (
     <section className="rhyme-explorable-frame" aria-label={tr('RHYME 互动知识推演', 'RHYME explorable lesson')}>
       <iframe
-        src={rhymeExplainerSource}
+        src={rhymeExplainerLesson.source}
         title={tr(`${presentation.title}：互动知识推演`, `${presentation.title}: explorable lesson`)}
         allow="autoplay"
         data-rhyme-context={JSON.stringify({
@@ -832,7 +845,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
           </div>
         </div>
         <div className="dynamic-compact-actions">
-          <button className="presentation-open dynamic-compact-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr(activeIndex > 0 && !explanationComplete ? '继续动态讲解' : '进入动态讲解', activeIndex > 0 && !explanationComplete ? 'Continue lesson' : 'Open lesson')}</button>
+          <button className="presentation-open dynamic-compact-open" type="button" onClick={openRhymeExplainer}><Maximize2 size={16} />{tr(activeIndex > 0 && !explanationComplete ? '继续动态讲解' : '进入动态讲解', activeIndex > 0 && !explanationComplete ? 'Continue lesson' : 'Open lesson')}</button>
           {explanationComplete && onContinueLearning && <button className="dynamic-compact-continue" type="button" onClick={() => { setImmersive(false); onContinueLearning() }}><Target size={16} />{continueLearningLabel || tr('进入练习检验', 'Continue to practice')}</button>}
         </div>
         {immersive && createPortal(<div className="interactive-presentation-layer" role="dialog" aria-modal="true">{immersiveStage}</div>, document.body)}
@@ -848,7 +861,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
           <h2>{presentation.title}</h2>
           <p>{presentation.summary}</p>
         </div>
-        <button className="presentation-open" type="button" onClick={() => setImmersive(true)}><Maximize2 size={16} />{tr(activeIndex > 0 && !completedExplanation.current ? '继续学习' : '沉浸学习', activeIndex > 0 && !completedExplanation.current ? 'Continue learning' : 'Open immersive view')}</button>
+        <button className="presentation-open" type="button" onClick={openRhymeExplainer}><Maximize2 size={16} />{tr(activeIndex > 0 && !completedExplanation.current ? '继续学习' : '沉浸学习', activeIndex > 0 && !completedExplanation.current ? 'Continue learning' : 'Open immersive view')}</button>
       </header>
 
       {learningModeControl('preview')}

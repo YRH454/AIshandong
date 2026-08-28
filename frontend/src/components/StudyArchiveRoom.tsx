@@ -1,11 +1,15 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { ContactShadows, Text, useTexture } from '@react-three/drei'
 import { ArrowLeft, BookOpen, ChevronRight, LibraryBig, Sparkles, X } from 'lucide-react'
 import * as THREE from 'three'
 import './StudyArchiveRoom.css'
-import StudyArchiveBookReader from './StudyArchiveBookReader'
+import { SceneRenderPulse } from './SceneRenderPulse'
+
+// The page-flip runtime is only needed after a learner opens a book. Keep it
+// out of the initial room chunk so the shelves become interactive sooner.
+const StudyArchiveBookReader = lazy(() => import('./StudyArchiveBookReader'))
 
 type Props = {
   onExit: () => void
@@ -95,17 +99,25 @@ function supportsWebGL() {
   }
 }
 
-function DustField() {
+function reducedScene() {
+  const nav = navigator as Navigator & { deviceMemory?: number }
+  return window.matchMedia('(max-width: 760px)').matches
+    || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || (navigator.hardwareConcurrency || 8) <= 4
+    || (nav.deviceMemory || 8) <= 4
+}
+
+const DustField = memo(function DustField({ lowPower }: { lowPower: boolean }) {
   const positions = useMemo(() => {
     const values: number[] = []
-    for (let index = 0; index < 96; index += 1) {
+    for (let index = 0; index < (lowPower ? 48 : 96); index += 1) {
       const x = ((((index * 43) % 101) / 100) - .5) * 14
       const y = (((index * 29) % 97) / 97) * 7 - 1.2
       const z = -3 + (((index * 17) % 61) / 61) * 8
       values.push(x, y, z)
     }
     return new Float32Array(values)
-  }, [])
+  }, [lowPower])
 
   const group = useRef<THREE.Points>(null)
   useFrame((state) => {
@@ -116,11 +128,11 @@ function DustField() {
     <bufferGeometry>
       <bufferAttribute attach="attributes-position" args={[positions, 3]} />
     </bufferGeometry>
-    <pointsMaterial color="#ffe7b2" size={.035} transparent opacity={.62} sizeAttenuation depthWrite={false} />
+    <pointsMaterial color="#ffe7b2" size={lowPower ? .028 : .035} transparent opacity={.62} sizeAttenuation depthWrite={false} />
   </points>
-}
+})
 
-function CameraRig() {
+const CameraRig = memo(function CameraRig() {
   const { camera, pointer } = useThree()
   const target = useRef(new THREE.Vector3(0, .4, -1.3))
 
@@ -132,9 +144,9 @@ function CameraRig() {
     camera.lookAt(target.current)
   })
   return null
-}
+})
 
-function RoomShell() {
+const RoomShell = memo(function RoomShell() {
   const floorLines = Array.from({ length: 12 }, (_, index) => -5.2 + index * .94)
   const wallLines = Array.from({ length: 10 }, (_, index) => -7.2 + index * 1.6)
   return <group>
@@ -172,9 +184,9 @@ function RoomShell() {
       <meshBasicMaterial color="#d9b376" transparent opacity={.78} />
     </mesh>
   </group>
-}
+})
 
-function WindowNook() {
+const WindowNook = memo(function WindowNook() {
   const stars = useMemo(() => Array.from({ length: 17 }, (_, index) => [
     -1.02 + ((index * 29) % 83) / 42,
     -1.15 + ((index * 19) % 89) / 36,
@@ -220,7 +232,7 @@ function WindowNook() {
       <meshStandardMaterial color="#765743" roughness={.7} />
     </mesh>
   </group>
-}
+})
 
 function FeaturedBookCover({ book, position, selected, onSelect, scale = 1 }: {
   book: StudyBook
@@ -333,12 +345,12 @@ function FeaturedReadingWall({ selected, onSelect }: { selected: StudyBook; onSe
   </group>
 }
 
-function StaticBook({ position, color, height, tilt = 0 }: { position: [number, number, number]; color: string; height: number; tilt?: number }) {
+const StaticBook = memo(function StaticBook({ position, color, height, tilt = 0 }: { position: [number, number, number]; color: string; height: number; tilt?: number }) {
   return <mesh position={position} rotation={[0, 0, tilt]} castShadow>
     <boxGeometry args={[.4, height, .3]} />
     <meshStandardMaterial color={color} roughness={.72} />
   </mesh>
-}
+})
 
 function InteractiveBook({ book, position, selected, onSelect }: {
   book: StudyBook
@@ -472,15 +484,15 @@ function Desk({ selected }: { selected: StudyBook }) {
   </group>
 }
 
-function ReadingStool() {
+const ReadingStool = memo(function ReadingStool() {
   return <group position={[0, -1.64, 1.35]}>
     <mesh castShadow><cylinderGeometry args={[.82, .76, .42, 32]} /><meshStandardMaterial color="#56716c" roughness={.9} /></mesh>
     <mesh position={[0, .23, 0]}><cylinderGeometry args={[.72, .79, .12, 32]} /><meshStandardMaterial color="#d9bd89" roughness={.82} /></mesh>
     {[-.5, .5].map(x => [-.48, .48].map(z => <mesh key={x + '-' + z} position={[x, -.42, z]} castShadow><boxGeometry args={[.11, .48, .11]} /><meshStandardMaterial color="#5d402e" roughness={.7} /></mesh>))}
   </group>
-}
+})
 
-function StudyArchiveScene({ selectedId, onSelect }: { selectedId: BookId; onSelect: (id: BookId) => void }) {
+function StudyArchiveScene({ selectedId, onSelect, lowPower }: { selectedId: BookId; onSelect: (id: BookId) => void; lowPower: boolean }) {
   const selected = studyBooks.find(book => book.id === selectedId) ?? studyBooks[0]
   return <>
     <color attach="background" args={['#1e1718']} />
@@ -506,8 +518,8 @@ function StudyArchiveScene({ selectedId, onSelect }: { selectedId: BookId; onSel
       <meshStandardMaterial color="#d4965e" side={THREE.DoubleSide} roughness={.5} />
     </mesh>
     <pointLight position={[0, 3.18, -1.15]} color="#ffd39a" intensity={4.4} distance={7.2} decay={2} />
-    <DustField />
-    <ContactShadows position={[0, -2.19, -.15]} opacity={.45} scale={17} blur={2.5} far={4.6} color="#181112" />
+    <DustField lowPower={lowPower} />
+    {!lowPower && <ContactShadows position={[0, -2.19, -.15]} opacity={.45} scale={17} blur={2.5} far={4.6} resolution={256} frames={1} color="#181112" />}
     <CameraRig />
   </>
 }
@@ -529,9 +541,12 @@ function Fallback({ selected, onSelect }: { selected: StudyBook; onSelect: (id: 
 
 export default function StudyArchiveRoom({ onExit }: Props) {
   const [canUseWebGL] = useState(supportsWebGL)
+  const [lowPower] = useState(reducedScene)
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const [selectedId, setSelectedId] = useState<BookId>('probability')
   const [readerOpen, setReaderOpen] = useState(false)
   const selected = studyBooks.find(book => book.id === selectedId) ?? studyBooks[0]
+  const canvasActive = pageVisible && !readerOpen
 
   useEffect(() => {
     document.body.classList.add('study-archive-open')
@@ -545,6 +560,12 @@ export default function StudyArchiveRoom({ onExit }: Props) {
     }
   }, [onExit])
 
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden)
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => document.removeEventListener('visibilitychange', updateVisibility)
+  }, [])
+
   return createPortal(<div className="study-archive-layer" role="dialog" aria-modal="true" aria-label="学习档案馆">
     <section className="study-archive-shell">
       <header className="study-archive-topbar">
@@ -555,14 +576,16 @@ export default function StudyArchiveRoom({ onExit }: Props) {
       <main className="study-archive-stage">
         {canUseWebGL ? <Canvas
           className="study-archive-canvas"
+          frameloop={canvasActive ? 'demand' : 'never'}
           camera={{ position: [0, 1.35, 9.4], fov: 52, near: .1, far: 32 }}
-          dpr={[1, 1.55]}
-          shadows
-          gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
+          dpr={lowPower ? 1 : [1, 1.25]}
+          shadows={lowPower ? false : 'basic'}
+          gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}
         >
           <Suspense fallback={null}>
-            <StudyArchiveScene selectedId={selectedId} onSelect={setSelectedId} />
+            <StudyArchiveScene selectedId={selectedId} onSelect={setSelectedId} lowPower={lowPower} />
           </Suspense>
+          <SceneRenderPulse active={canvasActive} fps={lowPower ? 22 : 40} />
         </Canvas> : <Fallback selected={selected} onSelect={setSelectedId} />}
 
         <div className="study-archive-intro" aria-hidden="true">
@@ -589,6 +612,6 @@ export default function StudyArchiveRoom({ onExit }: Props) {
         </nav>
       </main>
     </section>
-    {readerOpen && <StudyArchiveBookReader key={selected.id} book={selected} onClose={() => setReaderOpen(false)} />}
+    {readerOpen && <Suspense fallback={<div className="study-archive-reader-loading" role="status"><BookOpen size={20} />正在打开翻页学习册…</div>}><StudyArchiveBookReader key={selected.id} book={selected} onClose={() => setReaderOpen(false)} /></Suspense>}
   </div>, document.body)
 }

@@ -366,6 +366,18 @@ button { color: inherit; }
 .artifact-document pre { overflow-x: auto; padding: 11px 12px; border-radius: 9px; background: var(--surface); font-size: 11.5px; line-height: 1.65; }
 .artifact-document pre code { padding: 0; background: transparent; }
 .artifact-card.artifact-dynamic { max-width: min(980px, 100%); }
+.audio-narration-card { max-width: 670px; display: grid; gap: 10px; margin-top: 16px; padding: 13px 14px 12px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface)); }
+.audio-narration-head { min-width: 0; display: flex; align-items: flex-start; gap: 9px; }
+.audio-narration-icon { width: 30px; height: 30px; display: grid; flex: 0 0 30px; place-items: center; border-radius: 8px; background: var(--surface); color: var(--accent); }
+.audio-narration-head > div { min-width: 0; flex: 1; }.audio-narration-head > div > span { color: var(--accent-deep); font-size: 9.5px; font-weight: 700; }.audio-narration-head h3 { margin: 2px 0 0; font-size: 12px; line-height: 1.35; }
+.audio-narration-head > .icon-button { width: 27px; height: 27px; flex: 0 0 27px; }
+.audio-narration-note { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.55; }
+.audio-narration-loading { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.audio-narration-loading .stream-dots { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; }.audio-narration-loading .stream-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: stream-pulse 1s ease-in-out infinite; }.audio-narration-loading .stream-dots i:nth-child(2) { animation-delay: .14s; }.audio-narration-loading .stream-dots i:nth-child(3) { animation-delay: .28s; }
+.audio-narration-player { width: 100%; height: 38px; accent-color: var(--accent); }
+.audio-narration-fallback { display: grid; gap: 8px; }.audio-narration-fallback > button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; align-self: start; gap: 5px; width: max-content; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--accent-deep); cursor: pointer; font-size: 10px; font-weight: 650; }.audio-narration-fallback > button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.audio-narration-script { border-top: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line)); padding-top: 8px; }.audio-narration-script summary { color: var(--accent-deep); cursor: pointer; font-size: 9.5px; font-weight: 650; }.audio-narration-script p { max-height: 130px; margin: 7px 0 0; overflow: auto; color: var(--muted); font-size: 10px; line-height: 1.65; white-space: pre-wrap; }
+.audio-narration-actions { display: flex; align-items: center; gap: 5px; }.audio-narration-actions button, .audio-narration-actions a { min-height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9.5px; text-decoration: none; }.audio-narration-actions button:hover, .audio-narration-actions a:hover { background: var(--hover); color: var(--text); }.audio-narration-actions a { margin-left: auto; }
 .artifact-dynamic .artifact-details { display: none; }
 .dynamic-explanation-player { border-top: 1px solid var(--line); background: var(--surface-soft); color: var(--text); }
 .dynamic-player-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 22px clamp(18px, 3vw, 36px) 16px; background: var(--surface); }
@@ -675,6 +687,7 @@ body.interactive-presentation-open { overflow: hidden; }
 .map-workspace-package-action-note { flex-basis: 100%; color: var(--faint) !important; font-size: 9px !important; line-height: 1.35; text-align: right; }
 @keyframes map-package-spin { to { transform: rotate(360deg); } }
 .map-workspace-stage { margin-top: 22px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.map-component-loading { min-height: min(62dvh, 560px); display: grid; place-content: center; justify-items: center; gap: 9px; color: var(--faint); font-size: 11px; text-align: center; }.map-component-loading .lucide { color: var(--accent); animation: stream-pulse 1.15s ease-in-out infinite; }
 .map-workspace-stage .knowledge-map { padding: 0; }
 .map-workspace-stage .knowledge-map-overview { min-height: 50px; gap: 9px 14px; padding: 12px 0; }
 .map-workspace-stage .knowledge-map-overview > span, .map-workspace-stage .knowledge-map-overview > small { font-size: 11px; }
@@ -806,11 +819,32 @@ body.interactive-presentation-open { overflow: hidden; }
 .attachment-error { color: var(--danger); }.attachment-error small { color: var(--danger); }
 .recipe-chip { background: var(--accent-soft); }
 
+.composer-voice-status { display: grid; gap: 8px; margin: 2px 2px 8px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--accent-soft) 48%, var(--surface)); }
+.composer-voice-status.has-error { border-color: color-mix(in srgb, var(--danger) 36%, var(--line)); background: color-mix(in srgb, var(--danger) 5%, var(--surface)); }
+.composer-voice-status-head { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.composer-voice-status-icon { width: 26px; height: 26px; display: grid; flex: 0 0 26px; place-items: center; border-radius: 8px; background: var(--surface); color: var(--accent); }
+.composer-voice-status.has-error .composer-voice-status-icon { color: var(--danger); }
+.composer-voice-status-head > div { min-width: 0; flex: 1; }
+.composer-voice-status-head b, .composer-voice-status-head small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-voice-status-head b { font-size: 10.5px; }.composer-voice-status-head small { margin-top: 2px; color: var(--muted); font-size: 9px; }
+.composer-voice-status-head time { flex: 0 0 auto; color: var(--danger); font-size: 9.5px; font-variant-numeric: tabular-nums; }
+.composer-voice-status-head > button, .composer-voice-status-actions button { min-height: 27px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--accent-deep); cursor: pointer; font-size: 9.5px; font-weight: 650; }
+.composer-voice-status-head > button:hover, .composer-voice-status-actions button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.composer-voice-preview { width: 100%; height: 31px; display: block; }
+.composer-voice-status-actions { display: flex; justify-content: flex-end; gap: 5px; }
+.composer-voice-status-actions .quiet { border-color: transparent; background: transparent; color: var(--muted); }
+.composer-voice-status-actions .quiet:hover { border-color: var(--line); background: var(--hover); color: var(--text); }
+
 .composer-tools { display: flex; align-items: center; gap: 1px; }
 .composer-tool { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10.5px; }
 .composer-tool:hover { background: var(--hover); color: var(--text); }
 .composer-tool .icon { color: var(--accent); }
 .composer-tool.active { background: var(--accent-soft); color: var(--accent-deep); }
+.composer-tool:disabled { cursor: wait; opacity: .58; }
+.composer-tool.recording { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); color: var(--danger); }
+.composer-tool.recording .icon { color: var(--danger); animation: composer-mic-pulse 1.25s ease-in-out infinite; }
+.composer-tool.busy { color: var(--accent-deep); }
+.composer-recording-time { min-width: 31px; color: var(--danger); font-size: 9px; font-variant-numeric: tabular-nums; }
 .send-button { width: 31px; height: 31px; display: grid; flex: 0 0 31px; place-items: center; margin-left: auto; border: 0; border-radius: 9px; background: var(--accent); color: var(--on-accent); cursor: pointer; }
 .send-button:hover:not(:disabled) { background: var(--accent-deep); }
 .send-button:disabled { background: var(--line); color: var(--faint); cursor: default; }
@@ -825,11 +859,6 @@ body.interactive-presentation-open { overflow: hidden; }
 .generate-options button > span:last-child { min-width: 0; }
 .generate-options b, .generate-options small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .generate-options b { font-size: 11px; }.generate-options small { margin-top: 2px; color: var(--faint); font-size: 9.5px; }
-.generate-menu-more { width: calc(100% - 12px); min-height: 45px; display: flex; align-items: center; gap: 9px; margin: 0 6px 6px; padding: 7px 9px; border: 0; border-top: 1px solid var(--line); background: transparent; cursor: pointer; text-align: left; }
-.generate-menu-more:hover { background: var(--hover); }
-.generate-menu-more > span { min-width: 0; flex: 1; }.generate-menu-more b, .generate-menu-more small { display: block; }
-.generate-menu-more b { font-size: 11px; }.generate-menu-more small { margin-top: 2px; color: var(--faint); font-size: 9.5px; }
-.generate-menu-more > .icon { color: var(--faint); }
 
 .library-page { width: min(780px, 100%); margin: 0 auto; padding: 12px 0 48px; }
 .library-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding-bottom: 17px; }
@@ -1382,6 +1411,8 @@ body.interactive-presentation-open { overflow: hidden; }
 @keyframes inline-video-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
 @keyframes stream-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+
+@keyframes composer-mic-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
 
 @media (max-width: 380px) {
   .composer-tool { gap: 4px; padding-inline: 5px; font-size: 10px; }
@@ -4719,3 +4750,22 @@ body.interactive-presentation-open { overflow: hidden; }
 .universal-scene.storyboard-surface .system-network-field > button.storyboard-atom,
 .universal-scene.storyboard-surface .state-route-field > button.storyboard-atom,
 .universal-scene.storyboard-surface .parameter-wave > button.storyboard-atom { position: absolute; }
+
+/* Pausing decorative CSS motion while the tab is in the background prevents
+   idle CPU/GPU work across the full app without changing the foreground look. */
+html[data-page-hidden] *,
+html[data-page-hidden] *::before,
+html[data-page-hidden] *::after { animation-play-state: paused !important; }
+
+/* Keep the compact rail authoritative across the themed sidebars.  Theme
+   presets intentionally set their own sidebar widths, so this rule lives at
+   the end of the stylesheet and wins whenever the user folds the rail. */
+@media (min-width: 901px) {
+  .app-frame[data-style] .sidebar.sidebar-collapsed {
+    width: 68px;
+    flex: 0 0 68px;
+    min-width: 68px;
+    align-items: center;
+    padding: 14px 10px 12px;
+  }
+}

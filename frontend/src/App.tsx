@@ -89,6 +89,7 @@ const PersonalHouse = lazy(() => import('./components/PersonalHouse'))
 const KnowledgeMapHall = lazy(() => import('./components/KnowledgeMapHall'))
 const ApexLab = lazy(() => import('./components/ApexLab'))
 const SolarExplorer = lazy(() => import('./components/SolarExplorer'))
+const StudyArchiveRoom = lazy(() => import('./components/StudyArchiveRoom'))
 
 type IconName =
   | 'archive'
@@ -1644,6 +1645,7 @@ function App() {
   const [knowledgeMapHallOpen, setKnowledgeMapHallOpen] = useState(false)
   const [apexLabOpen, setApexLabOpen] = useState(false)
   const [solarExplorerOpen, setSolarExplorerOpen] = useState(false)
+  const [studyArchiveOpen, setStudyArchiveOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -1652,6 +1654,12 @@ function App() {
   const backgroundGenerationJobMonitors = useRef(new Set<string>())
   const backgroundVideoSearchMonitors = useRef(new Set<string>())
   const restoredBackgroundGenerationTasks = useRef(new Set<string>())
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('study-archive') !== '1') return
+    setLearningHouseOpen(true)
+    setStudyArchiveOpen(true)
+  }, [])
   const [documentSetup, setDocumentSetup] = useState<DocumentSetup | null>(null)
   const [documentGenerating, setDocumentGenerating] = useState(false)
   const [documentPackSetup, setDocumentPackSetup] = useState<DocumentPackSetup | null>(null)
@@ -8628,12 +8636,13 @@ function App() {
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 3D 学习屋…', 'Opening 3D learning house…')}</div>}>
           <LearningHouse
             language={interfaceLanguage}
-            suspended={knowledgeMapHallOpen || apexLabOpen || solarExplorerOpen}
-            onExit={() => { setKnowledgeMapHallOpen(false); setPersonalHouseOpen(false); setApexLabOpen(false); setSolarExplorerOpen(false); setLearningHouseOpen(false) }}
+            suspended={knowledgeMapHallOpen || apexLabOpen || solarExplorerOpen || studyArchiveOpen}
+            onExit={() => { setKnowledgeMapHallOpen(false); setPersonalHouseOpen(false); setApexLabOpen(false); setSolarExplorerOpen(false); setStudyArchiveOpen(false); setLearningHouseOpen(false) }}
             onOpenPersonalRoom={() => setPersonalHouseOpen(true)}
             onOpenMapHall={() => setKnowledgeMapHallOpen(true)}
             onOpenApexLab={() => setApexLabOpen(true)}
             onOpenSolarExplorer={() => setSolarExplorerOpen(true)}
+            onOpenStudyArchive={() => setStudyArchiveOpen(true)}
           />
         </Suspense>
       )}
@@ -8647,6 +8656,12 @@ function App() {
       {solarExplorerOpen && (
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在点亮太阳系探索舱…', 'Launching solar explorer…')}</div>}>
           <SolarExplorer onExit={() => setSolarExplorerOpen(false)} />
+        </Suspense>
+      )}
+
+      {studyArchiveOpen && (
+        <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开学习档案馆…', 'Opening study archive…')}</div>}>
+          <StudyArchiveRoom onExit={() => setStudyArchiveOpen(false)} />
         </Suspense>
       )}
 

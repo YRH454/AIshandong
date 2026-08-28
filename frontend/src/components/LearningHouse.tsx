@@ -19,6 +19,7 @@ type Props = {
   onOpenMapHall?: () => void
   onOpenApexLab?: () => void
   onOpenSolarExplorer?: () => void
+  onOpenStudyArchive?: () => void
   suspended?: boolean
 }
 
@@ -367,7 +368,7 @@ function FlatFallback({ language, onEnter }: { language: Language; onEnter: () =
   return <div className="learning-house-flat entrance"><BookOpen size={30} /><h1>RHYME</h1><p>{zh ? '3D 学习屋需要浏览器开启图形加速。' : 'The 3D learning house needs WebGL graphics support.'}</p><button type="button" onClick={onEnter}>{zh ? '进入学习空间' : 'Enter learning space'}</button></div>
 }
 
-export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPersonalRoom, onOpenMapHall, onOpenApexLab, onOpenSolarExplorer, suspended = false }: Props) {
+export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPersonalRoom, onOpenMapHall, onOpenApexLab, onOpenSolarExplorer, onOpenStudyArchive, suspended = false }: Props) {
   const [canUseWebGL] = useState(() => supportsWebGL())
   const [lowPower] = useState(() => reducedScene())
   const [phase, setPhase] = useState<Phase>('entrance')
@@ -401,7 +402,9 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
             ? (zh ? '系统交互实验馆已开启，点击门进入完整中文实验。' : 'The systems lab is ready. Click the door to enter the experiments.')
             : activeRoom.id === 'dynamic'
               ? (zh ? '太阳系探索舱已开启，点击门进入沉浸式科学探索。' : 'The solar explorer is ready. Click the door to launch.')
-        : (zh ? `${activeRoom.title}已预留，生成资料后会自动入住。` : `${activeRoom.titleEn} is ready for generated work.`))
+              : activeRoom.id === 'document'
+                ? (zh ? '学习档案馆已经布置完成，点击门进入可互动的书房。' : 'The study archive is ready. Click the door to enter the interactive library.')
+                : (zh ? `${activeRoom.title}已预留，生成资料后会自动入住。` : `${activeRoom.titleEn} is ready for generated work.`))
       : (zh ? '滚动或按 W / S 前进，靠近房门后点击。' : 'Scroll or use W / S to walk. Click a nearby door.'))
 
   return createPortal(<div className="learning-house-layer" role="dialog" aria-modal="true" aria-label="RHYME 3D learning house">
@@ -416,10 +419,10 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
       </header>
       <main className="learning-house-main">
         <section className="learning-house-stage">
-          {canUseWebGL ? <Canvas className="learning-house-canvas" camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
+          {canUseWebGL ? <Canvas className="learning-house-canvas" frameloop={suspended ? 'never' : 'always'} camera={{ position: [0, .05, 5.6], fov: 60, near: .1, far: 110 }} dpr={lowPower ? 1 : [1, 1.5]} shadows={!lowPower} gl={{ antialias: !lowPower, alpha: false, powerPreference: 'high-performance' }}>
             <color attach="background" args={['#fafafa']} /><fog attach="fog" args={['#fafafa', 20, 62]} /><ambientLight intensity={1.04} /><hemisphereLight args={['#ffffff', '#d7d7d2', .72]} /><directionalLight position={[4, 8, 8]} intensity={.86} color="#fff9e9" />
             <Suspense fallback={null}>
-              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'profile') onOpenPersonalRoom?.(); if (room.id === 'map') onOpenMapHall?.(); if (room.id === 'practice') onOpenApexLab?.(); if (room.id === 'dynamic') onOpenSolarExplorer?.() }} />)}</>}
+              {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'document') onOpenStudyArchive?.(); if (room.id === 'profile') onOpenPersonalRoom?.(); if (room.id === 'map') onOpenMapHall?.(); if (room.id === 'practice') onOpenApexLab?.(); if (room.id === 'dynamic') onOpenSolarExplorer?.() }} />)}</>}
             </Suspense>
             <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} />
           </Canvas> : <FlatFallback language={language} onEnter={enterCorridor} />}
@@ -434,6 +437,9 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
             )}
             {phase === 'corridor' && activeRoom?.id === 'dynamic' && onOpenSolarExplorer && (
               <button type="button" onClick={onOpenSolarExplorer}>{zh ? '进入太阳系探索舱' : 'Launch solar explorer'}</button>
+            )}
+            {phase === 'corridor' && activeRoom?.id === 'document' && onOpenStudyArchive && (
+              <button type="button" onClick={onOpenStudyArchive}>{zh ? '进入学习档案馆' : 'Enter study archive'}</button>
             )}
           </div>
         </section>

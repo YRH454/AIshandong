@@ -602,6 +602,19 @@ def generate_media(p: dict) -> dict:
                     data["video_task_id"] = task_id
                     data["video_status"] = "PENDING"
                     data["video_prompt"] = video_prompt
+                    owner_id = p.get("user_id")
+                    if owner_id:
+                        try:
+                            from app.services.media_db import create_video_task
+                            create_video_task(
+                                int(owner_id), task_id, video_prompt,
+                                "1280*720", 5,
+                            )
+                        except Exception:
+                            # The package itself remains usable if the optional
+                            # task ledger is temporarily unavailable; direct
+                            # media polling still fails closed without a row.
+                            logger.warning("视频任务归属记录写入失败: %s", task_id, exc_info=True)
     except Exception:
         pass
 

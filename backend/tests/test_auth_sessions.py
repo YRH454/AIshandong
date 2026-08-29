@@ -77,6 +77,16 @@ class AuthSessionTest(unittest.TestCase):
             self.auth.me(authorization=f"Guest {token}")
         self.assertEqual(error.exception.status_code, 401)
 
+    def test_guest_logout_revokes_the_temporary_session(self):
+        response = Response()
+        result = self.auth.guest_login(response)
+        token = result["token"]
+
+        self.auth.logout(Response(), authorization=f"Guest {token}")
+        with self.assertRaises(HTTPException) as error:
+            self.auth.me(authorization=f"Guest {token}")
+        self.assertEqual(error.exception.status_code, 401)
+
     def test_admin_dependency_rejects_regular_user(self):
         response = Response()
         result = self.auth.register(
@@ -92,6 +102,28 @@ class AuthSessionTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             self.auth.get_admin_user(user)
         self.assertEqual(error.exception.status_code, 403)
+
+    def test_legacy_id_allocation_stays_unique_for_users_and_guests(self):
+        first = self.auth.register(
+            self.auth.RegisterRequest(
+                username="第一个用户",
+                email="first@example.com",
+                password="secret123",
+            ),
+            Response(),
+        )
+        second = self.auth.register(
+            self.auth.RegisterRequest(
+                username="第二个用户",
+                email="second@example.com",
+                password="secret123",
+            ),
+            Response(),
+        )
+        guest = self.auth.guest_login(Response())
+        guest_two = self.auth.guest_login(Response())
+        self.assertNotEqual(first["user"]["id"], second["user"]["id"])
+        self.assertNotEqual(guest["user"]["session_id"], guest_two["user"]["session_id"])
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import json
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,7 @@ from app.agents.resources_agent import (
 )
 from app.services.profile_db import get_chat_session_by_id, get_profile
 from app.database import query, execute, insert
+from app.api.auth import enforce_registered_request
 from app.services.resources_db import (
     create_package, get_media_by_package, get_package, get_resource_session,
     list_packages, list_resource_sessions, save_package_resources,
@@ -24,7 +25,11 @@ from app.services.resources_db import (
 import logging
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/resources", tags=["resources"])
+router = APIRouter(
+    prefix="/api/v1/resources",
+    tags=["resources"],
+    dependencies=[Depends(enforce_registered_request)],
+)
 
 
 def _event(payload: dict | str) -> str:
@@ -53,6 +58,17 @@ def _student_profile(user_id: int) -> dict | None:
         return record.get("profile") if record else None
     except Exception:
         return None
+
+
+def _bind_runtime_user(plan: dict, user_id: int) -> dict:
+    """Attach the authenticated owner to agent params used by async workers."""
+    for agent in plan.get("agents", []):
+        if not isinstance(agent, dict):
+            continue
+        params = agent.setdefault("params", {})
+        if isinstance(params, dict):
+            params["user_id"] = int(user_id)
+    return plan
 
 
 @router.get("/sessions")
@@ -93,6 +109,7 @@ def start_generation(req: StartRequest):
     messages = list(session.get("messages", [])) if session else []
     profile = _student_profile(req.user_id)
     plan = orchestrate(req.message, messages, profile, selected)
+    _bind_runtime_user(plan, req.user_id)
 
     # 规划结果安全过滤
     try:
@@ -134,6 +151,7 @@ def _generation_context(user_id: int, session_id: int | None):
 @router.get("/generate/stream")
 def generate_stream(user_id: int, session_id: int | None = None):
     session, messages, plan = _generation_context(user_id, session_id)
+    _bind_runtime_user(plan, user_id)
 
     def event_gen():
         agents = plan.get("agents", [])
@@ -221,6 +239,7 @@ def generate_sync(req: GenerateRequest):
         ))
         req.session_id = start["session_id"]
     session, messages, plan = _generation_context(req.user_id, req.session_id)
+    _bind_runtime_user(plan, req.user_id)
     sid = session.get("id") if session else req.session_id
     results = run_agents(plan)
     package_id = create_package(req.user_id, plan.get("needs", {}), plan, [a["key"] for a in plan["agents"]], sid)
@@ -233,15 +252,18 @@ def generate_sync(req: GenerateRequest):
 
 
 @router.post("/packages/{package_id}/retry/{agent_key}")
-def retry_resource(package_id: int, agent_key: str):
+def retry_resource(package_id: int, agent_key: str, user: dict = Depends(enforce_registered_request)):
     if agent_key not in AGENT_RUNNERS:
         raise HTTPException(404, "未知资源类型")
     package = get_package(package_id)
     if not package:
         raise HTTPException(404, "资源包不存在")
+    if int(package.get("user_id", -1)) != int(user["id"]):
+        raise HTTPException(403, "无权操作该资源包")
     cfg = next((a for a in package.get("generation_plan", {}).get("agents", []) if a.get("key") == agent_key), None)
     if not cfg:
         raise HTTPException(400, "该资源不在原始计划中")
+    _bind_runtime_user({"agents": [cfg]}, int(user["id"]))
     _, result = run_agent(cfg)
     resources = package.get("resources") or {}
     resources[agent_key] = result
@@ -256,16 +278,23 @@ def list_user_packages(user_id: int):
 
 
 @router.get("/packages/{package_id}")
-def get_resource_package(package_id: int):
+def get_resource_package(package_id: int, user: dict = Depends(enforce_registered_request)):
     package = get_package(package_id)
     if not package:
         return {"package_id": package_id, "exists": False}
+    if int(package.get("user_id", -1)) != int(user["id"]):
+        raise HTTPException(403, "无权查看该资源包")
     package["overview"] = build_package_overview(package.get("generation_plan") or {}, package.get("resources") or {})
     return {"package_id": package_id, "exists": True, "package": package}
 
 
 @router.get("/packages/{package_id}/media")
-def package_media(package_id: int):
+def package_media(package_id: int, user: dict = Depends(enforce_registered_request)):
+    package = get_package(package_id)
+    if not package:
+        raise HTTPException(404, "资源包不存在")
+    if int(package.get("user_id", -1)) != int(user["id"]):
+        raise HTTPException(403, "无权查看该资源包")
     return {"package_id": package_id, "media": get_media_by_package(package_id)}
 
 
@@ -406,18 +435,33 @@ def _schedule_video_poll(package_id: int):
                 if status == "FAILED":
                     return
                 from app.services.llm import query_wan_video, _download_to_static
+                from app.services.media_db import update_video_task
                 result = query_wan_video(task_id)
                 if result["status"] == "SUCCEEDED":
                     local = _download_to_static(result.get("video_url", ""), subdir="videos", prefix="wan", ext=".mp4")
                     content["video_url"] = local or result.get("video_url", "")
                     content["video_status"] = "SUCCEEDED"
+                    update_video_task(
+                        task_id,
+                        int(package.get("user_id", 0)),
+                        status="SUCCEEDED",
+                        video_url=result.get("video_url", ""),
+                        local_url=local or "",
+                    )
                     save_package_resources(package_id, resources)
                     return
                 if result["status"] == "FAILED":
                     content["video_status"] = "FAILED"
                     content["video_error"] = result.get("message", "")
+                    update_video_task(
+                        task_id,
+                        int(package.get("user_id", 0)),
+                        status="FAILED",
+                        error=result.get("message", ""),
+                    )
                     save_package_resources(package_id, resources)
                     return
+                update_video_task(task_id, int(package.get("user_id", 0)), status=result["status"])
                 time.sleep(15)
         except Exception:
             pass

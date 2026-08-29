@@ -4,45 +4,73 @@ import type { KnowledgeMapDeepDive } from '../components/EditableKnowledgeMap'
 // RHYME — API 封装（后端精简版）
 export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api/v1'
 
+/** All application calls use the HttpOnly session cookie by default. */
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const response = await fetch(input, { ...init, credentials: init.credentials ?? 'include' })
+  if (response.status === 401 && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('rhyme-auth-expired'))
+  }
+  return response
+}
+
 // ---- 认证 ----
-export async function registerApi(username: string, email: string, password: string) {
-  const res = await fetch(`${API_BASE}/auth/register`, {
+export type AuthRole = 'user' | 'admin' | 'guest' | 'anonymous'
+
+export interface AuthUser {
+  id?: number
+  username?: string
+  email?: string
+  role?: AuthRole | string
+  avatar_url?: string
+  session_id?: number
+  remaining?: number
+}
+
+export interface AuthResponse {
+  token: string
+  user?: AuthUser
+  notice?: string
+  expires_at?: string
+}
+
+export async function registerApi(username: string, email: string, password: string): Promise<AuthResponse> {
+  const res = await apiFetch(`${API_BASE}/auth/register`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify({ username, email, password }),
   })
   if (!res.ok) throw (await res.json().catch(() => ({})))
-  return res.json()
+  return res.json() as Promise<AuthResponse>
 }
 
-export async function loginApi(email: string, password: string) {
-  const res = await fetch(`${API_BASE}/auth/login`, {
+export async function loginApi(email: string, password: string): Promise<AuthResponse> {
+  const res = await apiFetch(`${API_BASE}/auth/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify({ email, password }),
   })
   if (!res.ok) throw (await res.json().catch(() => ({})))
-  return res.json()
+  return res.json() as Promise<AuthResponse>
 }
 
-export async function guestLoginApi() {
-  const res = await fetch(`${API_BASE}/auth/guest`, {
+export async function guestLoginApi(): Promise<AuthResponse> {
+  const res = await apiFetch(`${API_BASE}/auth/guest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
   })
   if (!res.ok) throw (await res.json().catch(() => ({})))
-  return res.json()
+  return res.json() as Promise<AuthResponse>
 }
 
-export async function getCurrentUserApi() {
-  const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' })
+export async function getCurrentUserApi(): Promise<{ user: AuthUser; permissions?: Record<string, boolean>; notice?: string }> {
+  const res = await apiFetch(`${API_BASE}/auth/me`, { credentials: 'include' })
   if (!res.ok) throw (await res.json().catch(() => ({})))
-  return res.json()
+  return res.json() as Promise<{ user: AuthUser; permissions?: Record<string, boolean>; notice?: string }>
 }
 
 export async function logoutApi() {
-  const res = await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' })
+  const res = await apiFetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' })
   if (!res.ok) throw (await res.json().catch(() => ({})))
   return res.json() as Promise<{ status: 'logged_out' }>
 }
@@ -133,13 +161,13 @@ export type TutorStreamEvent =
   | { type: 'done'; qa_id: string; session_id: number; learning_state: LearningState }
 
 export async function getTutorSessions(userId: number) {
-  const res = await fetch(`${API_BASE}/tutor/sessions?user_id=${userId}`)
+  const res = await apiFetch(`${API_BASE}/tutor/sessions?user_id=${userId}`)
   if (!res.ok) throw new Error('获取会话失败')
   return res.json()
 }
 
 export async function newTutorSession(userId: number) {
-  const res = await fetch(`${API_BASE}/tutor/sessions/new?user_id=${userId}`, { method: 'POST' })
+  const res = await apiFetch(`${API_BASE}/tutor/sessions/new?user_id=${userId}`, { method: 'POST' })
   if (!res.ok) throw new Error('创建会话失败')
   return res.json()
 }
@@ -149,7 +177,7 @@ export async function updateTutorSession(
   sessionId: number,
   updates: { title?: string; is_pinned?: boolean },
 ) {
-  const res = await fetch(`${API_BASE}/tutor/sessions/${sessionId}?user_id=${userId}`, {
+  const res = await apiFetch(`${API_BASE}/tutor/sessions/${sessionId}?user_id=${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -162,7 +190,7 @@ export async function updateTutorSession(
 }
 
 export async function deleteTutorSession(userId: number, sessionId: number) {
-  const res = await fetch(`${API_BASE}/tutor/sessions/${sessionId}?user_id=${userId}`, {
+  const res = await apiFetch(`${API_BASE}/tutor/sessions/${sessionId}?user_id=${userId}`, {
     method: 'DELETE',
   })
   if (!res.ok) {
@@ -173,13 +201,13 @@ export async function deleteTutorSession(userId: number, sessionId: number) {
 }
 
 export async function getTutorHistory(userId: number, sessionId: number) {
-  const res = await fetch(`${API_BASE}/tutor/history?user_id=${userId}&session_id=${sessionId}`)
+  const res = await apiFetch(`${API_BASE}/tutor/history?user_id=${userId}&session_id=${sessionId}`)
   if (!res.ok) throw new Error('获取历史失败')
   return res.json()
 }
 
 export async function createImageAnalysisArtifact(userId: number, sessionId: number, qaId: string) {
-  const res = await fetch(`${API_BASE}/artifacts/create-image-analysis`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/create-image-analysis`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId }),
@@ -192,7 +220,7 @@ export async function createImageAnalysisArtifact(userId: number, sessionId: num
 }
 
 export async function generateKnowledgeMap(userId: number, sessionId: number, qaId: string) {
-  const res = await fetch(`${API_BASE}/artifacts/generate-knowledge-map`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/generate-knowledge-map`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, async_mode: true }),
@@ -210,7 +238,7 @@ export async function generateKnowledgeMapDeepDive(
   nodeId: string,
   force = false,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/deep-dives/${encodeURIComponent(nodeId)}/generate`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/deep-dives/${encodeURIComponent(nodeId)}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, force }),
@@ -244,7 +272,7 @@ export interface KnowledgeMapPackResult {
 }
 
 export async function generateKnowledgeMapPack(artifactId: number, userId: number) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/deep-dives/generate-all`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/deep-dives/generate-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId }),
@@ -260,7 +288,7 @@ export async function generateKnowledgeMapPack(artifactId: number, userId: numbe
 }
 
 export async function generateDynamicExplanation(userId: number, sessionId: number, qaId: string) {
-  const res = await fetch(`${API_BASE}/artifacts/generate-dynamic-explanation`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/generate-dynamic-explanation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, async_mode: true }),
@@ -273,7 +301,7 @@ export async function generateDynamicExplanation(userId: number, sessionId: numb
 }
 
 export async function getGenerationJob<T>(userId: number, jobId: string) {
-  const res = await fetch(`${API_BASE}/artifacts/generation-jobs/${jobId}?user_id=${userId}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/generation-jobs/${jobId}?user_id=${userId}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '生成任务暂时无法读取')
@@ -304,7 +332,7 @@ export async function streamTutorChat(
   userId: number, sessionId: number | null,
   message: string, mode: string, images?: string[],
 ): Promise<Response> {
-  const response = await fetch(`${API_BASE}/tutor/chat`, {
+  const response = await apiFetch(`${API_BASE}/tutor/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, session_id: sessionId, message, mode, images: images || [] }),
@@ -343,7 +371,7 @@ export async function readTutorStream(
 
 // ---- 资料生成 ----
 export async function startResourceGeneration(userId: number, message: string) {
-  const res = await fetch(`${API_BASE}/resources/start`, {
+  const res = await apiFetch(`${API_BASE}/resources/start`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, message }),
   })
@@ -357,7 +385,7 @@ export function streamGenerate(
 ) {
   let url = `${API_BASE}/resources/generate/stream?user_id=${userId}`
   if (sessionId) url += `&session_id=${sessionId}`
-  const es = new EventSource(url)
+  const es = new EventSource(url, { withCredentials: true })
   es.onmessage = (e) => {
     if (e.data === '[DONE]') { es.close(); onDone(); return }
     try { onEvent(JSON.parse(e.data)) } catch { /* ignore */ }
@@ -367,14 +395,14 @@ export function streamGenerate(
 }
 
 export async function getResourcePackage(packageId: number) {
-  const res = await fetch(`${API_BASE}/resources/packages/${packageId}`)
+  const res = await apiFetch(`${API_BASE}/resources/packages/${packageId}`)
   if (!res.ok) throw new Error('获取资源包失败')
   return res.json()
 }
 
 // ---- 多模态 ----
 export async function visionAnalyze(userId: number, message: string, images: string[], mode = 'qa') {
-  const res = await fetch(`${API_BASE}/vision/analyze`, {
+  const res = await apiFetch(`${API_BASE}/vision/analyze`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, message, images, mode }),
   })
@@ -386,7 +414,7 @@ export async function visionAnalyze(userId: number, message: string, images: str
 }
 
 export async function textToSpeech(userId: number, text: string, signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE}/audio/tts`, {
+  const res = await apiFetch(`${API_BASE}/audio/tts`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, text }),
     signal,
@@ -407,7 +435,7 @@ export function resolveApiAssetUrl(url: string) {
 }
 
 export async function speechToText(userId: number, audio: string, signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE}/audio/asr`, {
+  const res = await apiFetch(`${API_BASE}/audio/asr`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, audio }),
     signal,
@@ -663,14 +691,14 @@ export async function getLearningArtifacts(
 ) {
   const params = new URLSearchParams({ user_id: String(userId), status: options.status || 'all' })
   if (options.sessionId !== undefined) params.set('session_id', String(options.sessionId))
-  const res = await fetch(`${API_BASE}/artifacts?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts?${params}`)
   if (!res.ok) throw new Error('获取学习资料失败')
   return res.json() as Promise<{ artifacts: LearningArtifactRecord[] }>
 }
 
 export async function getLibraryTopicReviews(userId: number) {
   const params = new URLSearchParams({ user_id: String(userId) })
-  const res = await fetch(`${API_BASE}/artifacts/topics/reviews?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/topics/reviews?${params}`)
   if (!res.ok) throw new Error('获取主题复习状态失败')
   return res.json() as Promise<{ reviews: LibraryTopicReview[] }>
 }
@@ -681,7 +709,7 @@ export async function getLibraryTopicLearningState(userId: number, courseName: s
     course_name: courseName,
     topic_name: topicName,
   })
-  const res = await fetch(`${API_BASE}/artifacts/topics/state?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/topics/state?${params}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '获取主题学习状态失败')
@@ -695,7 +723,7 @@ export async function getTopicStudyPlan(userId: number, courseName: string, topi
     course_name: courseName,
     topic_name: topicName,
   })
-  const res = await fetch(`${API_BASE}/artifacts/topics/study-plan?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/topics/study-plan?${params}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '获取本次复习清单失败')
@@ -704,7 +732,7 @@ export async function getTopicStudyPlan(userId: number, courseName: string, topi
 }
 
 export async function startTopicStudyPlan(userId: number, courseName: string, topicName: string) {
-  const res = await fetch(`${API_BASE}/artifacts/topics/study-plan/start`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/topics/study-plan/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, course_name: courseName, topic_name: topicName }),
@@ -724,7 +752,7 @@ export async function updateTopicStudyPlanTask(
   taskId: string,
   status: TopicStudyPlanTaskStatus,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/topics/study-plan/${planId}/tasks`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/topics/study-plan/${planId}/tasks`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -748,7 +776,7 @@ export async function recordLearningActivity(
   activityType: string,
   activityData: Record<string, unknown> = {},
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/activity`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/activity`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, activity_type: activityType, activity_data: activityData }),
@@ -772,7 +800,7 @@ export async function generateLearningDocument(
     document_pack_template?: LearningArtifactRecord['document_template']
   },
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/generate-document`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/generate-document`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, ...settings, async_mode: true }),
@@ -801,7 +829,7 @@ export async function generateStudyPackBlueprint(
   qaId: string,
   templates: LearningArtifactRecord['document_template'][],
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/generate-document-pack-blueprint`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/generate-document-pack-blueprint`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, session_id: sessionId, qa_id: qaId, templates, async_mode: true }),
@@ -831,7 +859,7 @@ export async function generatePracticeSet(
     coding: 3,
     oral: 4,
   }
-  const res = await fetch(`${API_BASE}/artifacts/generate-practice`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/generate-practice`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -856,7 +884,7 @@ export async function generatePracticeSet(
 
 export async function getPracticeForArtifact(artifactId: number, userId: number) {
   const params = new URLSearchParams({ user_id: String(userId) })
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/practice?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/practice?${params}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '获取练习集失败')
@@ -865,7 +893,7 @@ export async function getPracticeForArtifact(artifactId: number, userId: number)
 }
 
 export async function submitPracticeAttempt(practiceSetId: number, userId: number, answers: Record<string, string>) {
-  const res = await fetch(`${API_BASE}/artifacts/practice-sets/${practiceSetId}/submit`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/practice-sets/${practiceSetId}/submit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, answers }),
@@ -879,7 +907,7 @@ export async function submitPracticeAttempt(practiceSetId: number, userId: numbe
 
 export async function getKnowledgeMapProgress(artifactId: number, userId: number) {
   const params = new URLSearchParams({ user_id: String(userId) })
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/map-progress?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/map-progress?${params}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '获取知识图解进度失败')
@@ -889,7 +917,7 @@ export async function getKnowledgeMapProgress(artifactId: number, userId: number
 
 export async function getInteractivePresentationProgress(artifactId: number, userId: number) {
   const params = new URLSearchParams({ user_id: String(userId) })
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/progress?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/progress?${params}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '获取互动演示进度失败')
@@ -902,7 +930,7 @@ export async function updateInteractivePresentationProgress(
   userId: number,
   progress: Pick<InteractivePresentationProgress, 'active_scene_id' | 'completed_scene_ids' | 'visited_scene_ids' | 'is_completed'>,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/progress`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/progress`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, ...progress }),
@@ -919,7 +947,7 @@ export async function recordInteractivePresentationCheckpoint(
   userId: number,
   checkpoint: { scene_id: string; answer: string },
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/checkpoint`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/checkpoint`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, ...checkpoint }),
@@ -937,7 +965,7 @@ export async function updateKnowledgeMapNodeProgress(
   nodeId: string,
   status: KnowledgeMapNodeStatus,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/map-progress/${encodeURIComponent(nodeId)}`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/map-progress/${encodeURIComponent(nodeId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, status }),
@@ -954,7 +982,7 @@ export async function updateKnowledgeMapWorkspaceProgress(
   userId: number,
   state: { active_node_id: string; explored_node_ids: string[] },
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/map-workspace`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/map-workspace`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, ...state }),
@@ -973,7 +1001,7 @@ export async function updateKnowledgeMap(
   userId: number,
   map: object,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, map }),
@@ -990,7 +1018,7 @@ export async function updateInteractivePresentation(
   userId: number,
   presentation: DynamicExplanationData,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, presentation }),
@@ -1008,7 +1036,7 @@ export async function regenerateInteractivePresentationScene(
   presentation: DynamicExplanationData,
   sceneId: string,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/regenerate-scene`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/interactive-presentation/regenerate-scene`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, presentation, scene_id: sceneId }),
@@ -1021,7 +1049,7 @@ export async function regenerateInteractivePresentationScene(
 }
 
 export async function collaborateKnowledgeMap(artifactId: number, userId: number) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/collaborate`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/knowledge-map/collaborate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId }),
@@ -1042,7 +1070,7 @@ export async function saveLearningArtifact(
   saveStrategy: 'separate' | 'version' | 'update' = 'separate',
   duplicateArtifactId?: number,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/save`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/save`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1068,7 +1096,7 @@ export async function saveLearningLoop(
   topicName: string,
   artifacts: Array<{ artifact_id: number; step: 'notes' | 'map' | 'interactive' | 'practice' }>,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/learning-loop/save`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/learning-loop/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1093,7 +1121,7 @@ export async function saveDocumentPack(
   topicName: string,
   artifacts: Array<{ artifact_id: number; document_template: LearningArtifactRecord['document_template'] }>,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/document-packs/save`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/document-packs/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1118,7 +1146,7 @@ export async function savePracticePack(
   topicName: string,
   artifacts: Array<{ artifact_id: number; practice_mode: Exclude<PracticeMode, 'standard'> }>,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/practice-packs/save`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/practice-packs/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1142,7 +1170,7 @@ export async function searchExternalVideos(
   topicName = '',
   limit = 4,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/video-search`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/video-search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1179,7 +1207,7 @@ export async function saveExternalVideoResource(payload: {
   description: string
   search_query: string
 }) {
-  const res = await fetch(`${API_BASE}/artifacts/video-resources/save`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/video-resources/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -1198,7 +1226,7 @@ export async function findLearningArtifactDuplicates(
   courseName: string,
   topicName: string,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/duplicates`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/duplicates`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1218,7 +1246,7 @@ export async function findLearningArtifactDuplicates(
 
 export async function getLearningArtifactVersions(artifactId: number, userId: number) {
   const params = new URLSearchParams({ user_id: String(userId) })
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/versions?${params}`)
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/versions?${params}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '获取版本记录失败')
@@ -1227,7 +1255,7 @@ export async function getLearningArtifactVersions(artifactId: number, userId: nu
 }
 
 export async function restoreLearningArtifactVersion(artifactId: number, userId: number) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/restore-version`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/restore-version`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId }),
@@ -1246,7 +1274,7 @@ export async function updateLearningArtifact(
   courseName: string,
   topicName: string,
 ) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, title, course_name: courseName, topic_name: topicName }),
@@ -1259,7 +1287,7 @@ export async function updateLearningArtifact(
 }
 
 export async function favoriteLearningArtifact(artifactId: number, userId: number, favorite: boolean) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/favorite`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/favorite`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, favorite }),
@@ -1272,7 +1300,7 @@ export async function favoriteLearningArtifact(artifactId: number, userId: numbe
 }
 
 export async function trashLearningArtifact(artifactId: number, userId: number) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/trash`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/trash`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId }),
@@ -1285,7 +1313,7 @@ export async function trashLearningArtifact(artifactId: number, userId: number) 
 }
 
 export async function restoreLearningArtifact(artifactId: number, userId: number) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/restore`, {
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}/restore`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId }),
@@ -1298,7 +1326,7 @@ export async function restoreLearningArtifact(artifactId: number, userId: number
 }
 
 export async function permanentlyDeleteLearningArtifact(artifactId: number, userId: number) {
-  const res = await fetch(`${API_BASE}/artifacts/${artifactId}?user_id=${userId}`, { method: 'DELETE' })
+  const res = await apiFetch(`${API_BASE}/artifacts/${artifactId}?user_id=${userId}`, { method: 'DELETE' })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || '永久删除资料失败')

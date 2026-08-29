@@ -135,6 +135,55 @@ def insert(table: str, data: dict) -> int:
         _return_conn(conn)
 
 
+def insert_with_next_id(table: str, data: dict, id_column: str = "id") -> int:
+    """Insert a row with a database-locked next id.
+
+    A few legacy tables use an explicit integer primary key instead of an
+    auto-increment column.  Keeping the allocation and insert in one
+    transaction avoids the old ``MAX(id) + 1`` race when two users register or
+    start guest sessions at the same time.
+    """
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", id_column):
+        raise ValueError("invalid table or id column")
+    conn = get_connection()
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        if DB_BACKEND == "sqlite":
+            cursor.execute("BEGIN IMMEDIATE")
+            lock_suffix = ""
+        else:
+            lock_suffix = " FOR UPDATE"
+        cursor.execute(
+            _normalize_sql(
+                f"SELECT COALESCE(MAX({id_column}), 0) + 1 AS next_id FROM {table}{lock_suffix}"
+            ),
+            (),
+        )
+        row = cursor.fetchone()
+        next_id = row["next_id"] if isinstance(row, dict) else row[0]
+        values = {id_column: next_id, **data}
+        columns = list(values.keys())
+        placeholders = ", ".join(["%s"] * len(columns))
+        cursor.execute(
+            _normalize_sql(
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
+            ),
+            _bind_params([values[column] for column in columns]),
+        )
+        conn.commit()
+        return int(next_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
+        _return_conn(conn)
+
+
 def init_core_tables():
     """初始化认证、画像和会话表，支持 MySQL 与本地 SQLite 演示模式。"""
     execute("""

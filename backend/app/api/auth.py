@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from app.config import COOKIE_SECURE, JWT_EXPIRE_MINUTES
-from app.database import execute, query
+from app.config import CORS_ORIGINS, COOKIE_SAMESITE, COOKIE_SECURE, JWT_EXPIRE_MINUTES
+from app.database import execute, insert_with_next_id, query
 from app.utils.auth import (
     create_token,
     decode_token,
     generate_guest_token,
     hash_password,
+    ROLE_PERMISSIONS,
     verify_password,
 )
 
@@ -50,7 +52,7 @@ def _set_cookie(response: Response, name: str, value: str, max_age: int) -> None
         max_age=max_age,
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite=COOKIE_SAMESITE,
         path="/",
     )
 
@@ -100,6 +102,20 @@ def _decode_active_access_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="登录会话已失效，请重新登录")
     execute("UPDATE auth_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = %s", (rows[0]["id"],))
     return payload
+
+
+def cleanup_expired_sessions() -> None:
+    """Remove expired/revoked session rows so the auth tables stay small."""
+    execute(
+        "DELETE FROM auth_sessions WHERE expires_at <= CURRENT_TIMESTAMP"
+    )
+    execute(
+        "DELETE FROM auth_sessions WHERE revoked_at IS NOT NULL AND revoked_at < %s",
+        (_utc_string(-24 * 30),),
+    )
+    execute(
+        "DELETE FROM guest_sessions WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP"
+    )
 
 
 def _find_guest_session(token: str) -> dict | None:
@@ -152,6 +168,66 @@ def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+async def enforce_registered_request(
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Require a registered session and reject forged ``user_id`` values.
+
+    The first version of the API accepted ``user_id`` in every request body or
+    query string and trusted it.  That is convenient for a local mock, but it
+    lets an authenticated user read or mutate another user's records.  This
+    router dependency keeps the existing request shapes backward compatible
+    while making the session the source of truth: any declared user id must
+    match the authenticated account.
+
+    ``Request.body()`` is safe here because Starlette caches the body; FastAPI
+    can still parse the same payload for the endpoint after this dependency
+    completes.
+    """
+    if user.get("role") not in {"user", "admin"}:
+        raise HTTPException(status_code=403, detail="该功能需要注册用户登录")
+
+    # Credentialed browser requests must originate from a configured frontend.
+    # This is a lightweight CSRF boundary for the cookie-backed API and still
+    # permits non-browser Bearer clients whose requests do not carry Origin.
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("origin", "").strip().rstrip("/")
+        if origin and origin not in CORS_ORIGINS:
+            raise HTTPException(status_code=403, detail="请求来源未被允许")
+
+    declared_ids: list[int] = []
+    query_user_ids = request.query_params.getlist("user_id")
+    for query_user_id in query_user_ids:
+        try:
+            declared_ids.append(int(query_user_id))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="user_id 格式无效") from None
+
+    content_type = request.headers.get("content-type", "").lower()
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and "application/json" in content_type:
+        raw_body = await request.body()
+        if raw_body.strip():
+            try:
+                payload = json.loads(raw_body)
+            except json.JSONDecodeError:
+                # Let FastAPI return its normal validation error for malformed
+                # JSON; there is no user id to validate at this layer.
+                payload = None
+            if isinstance(payload, dict) and payload.get("user_id") is not None:
+                try:
+                    declared_ids.append(int(payload["user_id"]))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="user_id 格式无效") from None
+
+    current_id = int(user["id"])
+    if any(value != current_id for value in declared_ids):
+        raise HTTPException(status_code=403, detail="不能操作其他用户的数据")
+
+    request.state.current_user = user
+    return user
+
+
 @router.post("/register")
 def register(req: RegisterRequest, response: Response):
     """注册新用户并建立登录会话。"""
@@ -172,19 +248,16 @@ def register(req: RegisterRequest, response: Response):
         raise HTTPException(400, "用户名或邮箱已被注册")
 
     password_hash = hash_password(req.password)
-    # 保持当前 SQLite/MySQL 双后端兼容；正式迁移阶段会改为数据库自增。
-    max_id = query("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM users")[0]["next_id"]
-    execute(
-        "INSERT INTO users (id, username, email, password_hash, role) "
-        "VALUES (%s, %s, %s, %s, 'user')",
-        (max_id, username, email, password_hash),
+    user_id = insert_with_next_id(
+        "users",
+        {"username": username, "email": email, "password_hash": password_hash, "role": "user"},
     )
 
-    token = _issue_access_token(max_id, "user", response)
+    token = _issue_access_token(user_id, "user", response)
     return {
         "token": token,
         "user": {
-            "id": max_id,
+            "id": user_id,
             "username": username,
             "email": email,
             "role": "user",
@@ -224,17 +297,19 @@ def guest_login(response: Response):
     """游客模式：无需注册，生成 24 小时临时会话。"""
     token = generate_guest_token()
     expires_at = _utc_string(24)
-    max_id = query("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM guest_sessions")[0]["next_id"]
-    execute(
-        "INSERT INTO guest_sessions "
-        "(id, session_token, session_token_hash, remaining_questions, expires_at) "
-        "VALUES (%s, %s, %s, 3, %s)",
-        (max_id, "", _token_hash(token), expires_at),
+    session_id = insert_with_next_id(
+        "guest_sessions",
+        {
+            "session_token": "",
+            "session_token_hash": _token_hash(token),
+            "remaining_questions": 3,
+            "expires_at": expires_at,
+        },
     )
     _set_cookie(response, GUEST_COOKIE, token, 24 * 60 * 60)
     return {
         "token": token,
-        "user": {"id": 0, "username": "游客", "role": "guest", "session_id": max_id},
+        "user": {"id": 0, "username": "游客", "role": "guest", "session_id": session_id},
         "notice": "游客模式可体验3个维度的画像构建，数据24小时后自动清除",
         "expires_at": expires_at,
     }
@@ -245,14 +320,24 @@ def logout(
     response: Response,
     authorization: str | None = Header(default=None),
     access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE),
+    guest_cookie: str | None = Cookie(default=None, alias=GUEST_COOKIE),
 ):
-    """撤销当前注册用户会话并清理浏览器 cookie。"""
+    """撤销当前会话并清理浏览器 cookie。"""
     token = _extract_access_token(authorization, access_cookie)
     if token:
         execute(
             "UPDATE auth_sessions SET revoked_at = CURRENT_TIMESTAMP "
             "WHERE token_hash = %s AND revoked_at IS NULL",
             (_token_hash(token),),
+        )
+    guest_token = _extract_guest_token(authorization, guest_cookie)
+    if guest_token:
+        # Guest sessions are intentionally disposable. Removing the row on
+        # logout makes a copied guest token invalid immediately instead of
+        # leaving it usable until the normal 24-hour expiry.
+        execute(
+            "DELETE FROM guest_sessions WHERE session_token_hash = %s OR session_token = %s",
+            (_token_hash(guest_token), guest_token),
         )
     _clear_cookies(response)
     return {"status": "logged_out"}
@@ -279,7 +364,10 @@ def me(
         )
         if not rows:
             raise HTTPException(status_code=401, detail="用户不存在或已停用")
-        return {"user": rows[0], "permissions": {}}
+        return {
+            "user": rows[0],
+            "permissions": dict(ROLE_PERMISSIONS.get(rows[0].get("role", "user"), {})),
+        }
 
     guest_token = _extract_guest_token(authorization, guest_cookie)
     if guest_token:

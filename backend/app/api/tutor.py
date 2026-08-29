@@ -6,7 +6,7 @@ import random
 import logging
 import re
 from threading import Thread
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.agents.tutor_agent import (
@@ -15,11 +15,16 @@ from app.agents.tutor_agent import (
     extract_learning_state, normalize_learning_state,
 )
 from app.database import query, execute, insert
+from app.api.auth import enforce_registered_request
 from app.safety.content_filter import filter_content
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/tutor", tags=["tutor"])
+router = APIRouter(
+    prefix="/api/v1/tutor",
+    tags=["tutor"],
+    dependencies=[Depends(enforce_registered_request)],
+)
 
 
 def _json_object(value, default):

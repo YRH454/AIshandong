@@ -4,7 +4,7 @@ import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
   Code2, Clock3, FileDown, FileQuestion, FileText, FolderOpen, History, House, Image, LayoutTemplate, Library, Map as MapIcon,
   Languages, ListChecks, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
-  Ellipsis, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
+  Ellipsis, LogOut, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -80,7 +80,7 @@ import {
 } from './services/api'
 import type {
   DynamicExplanationJobProgress, ExternalVideoResource, GenerationJob, ImageStudyAnalysis, InteractivePresentationProgress, KnowledgeMapCollaboration, KnowledgeMapCollaborationSuggestion, KnowledgeMapNodeStatus, KnowledgeMapPackProgress, KnowledgeMapPackResult, KnowledgeMapProgress, LearningArtifactRecord, LearningState, LibraryTopicLearningState, LibraryTopicReview, PracticeAttemptResult, PracticeAttemptSummary,
-  PracticeMode, PracticeSetRecord, StudyPackBlueprint, TopicStudyPlan, TopicStudyPlanTask, TutorMessage, TutorSessionSummary,
+  AuthUser, PracticeMode, PracticeSetRecord, StudyPackBlueprint, TopicStudyPlan, TopicStudyPlanTask, TutorMessage, TutorSessionSummary,
 } from './services/api'
 import './App.css'
 import './theme-worlds.css'
@@ -320,20 +320,24 @@ type AudioNarration = {
 
 const MAP_PACK_JOBS_STORAGE_KEY = 'rhyme-map-pack-jobs'
 
-function readStoredMapPackJobs(): Record<string, string> {
+function scopedStorageKey(base: string, userId: number) {
+  return `${base}:${userId}`
+}
+
+function readStoredMapPackJobs(userId: number): Record<string, string> {
   try {
-    const value = JSON.parse(localStorage.getItem(MAP_PACK_JOBS_STORAGE_KEY) || '{}')
+    const value = JSON.parse(localStorage.getItem(scopedStorageKey(MAP_PACK_JOBS_STORAGE_KEY, userId)) || '{}')
     return value && typeof value === 'object' ? value : {}
   } catch {
     return {}
   }
 }
 
-function writeStoredMapPackJob(artifactId: number, jobId?: string) {
-  const stored = readStoredMapPackJobs()
+function writeStoredMapPackJob(userId: number, artifactId: number, jobId?: string) {
+  const stored = readStoredMapPackJobs(userId)
   if (jobId) stored[String(artifactId)] = jobId
   else delete stored[String(artifactId)]
-  localStorage.setItem(MAP_PACK_JOBS_STORAGE_KEY, JSON.stringify(stored))
+  localStorage.setItem(scopedStorageKey(MAP_PACK_JOBS_STORAGE_KEY, userId), JSON.stringify(stored))
 }
 
 type StoredDynamicExplanationJob = {
@@ -352,9 +356,9 @@ type StoredDynamicExplanationJob = {
 
 const DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY = 'rhyme-dynamic-explanation-jobs'
 
-function readStoredDynamicExplanationJobs(): Record<string, StoredDynamicExplanationJob> {
+function readStoredDynamicExplanationJobs(userId: number): Record<string, StoredDynamicExplanationJob> {
   try {
-    const value = JSON.parse(localStorage.getItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY) || '{}')
+    const value = JSON.parse(localStorage.getItem(scopedStorageKey(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, userId)) || '{}')
     if (!value || typeof value !== 'object') return {}
     return Object.fromEntries(Object.entries(value).filter(([, item]) => {
       if (!item || typeof item !== 'object') return false
@@ -370,17 +374,17 @@ function readStoredDynamicExplanationJobs(): Record<string, StoredDynamicExplana
   }
 }
 
-function writeStoredDynamicExplanationJob(task: StoredDynamicExplanationJob) {
-  const stored = readStoredDynamicExplanationJobs()
+function writeStoredDynamicExplanationJob(userId: number, task: StoredDynamicExplanationJob) {
+  const stored = readStoredDynamicExplanationJobs(userId)
   stored[task.loadingId] = task
-  localStorage.setItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, JSON.stringify(stored))
+  localStorage.setItem(scopedStorageKey(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, userId), JSON.stringify(stored))
 }
 
-function removeStoredDynamicExplanationJob(loadingId: string) {
-  const stored = readStoredDynamicExplanationJobs()
+function removeStoredDynamicExplanationJob(userId: number, loadingId: string) {
+  const stored = readStoredDynamicExplanationJobs(userId)
   if (!(loadingId in stored)) return
   delete stored[loadingId]
-  localStorage.setItem(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, JSON.stringify(stored))
+  localStorage.setItem(scopedStorageKey(DYNAMIC_EXPLANATION_JOBS_STORAGE_KEY, userId), JSON.stringify(stored))
 }
 
 type BackgroundGenerationKind = 'notes' | 'practice' | 'map' | 'video'
@@ -421,9 +425,9 @@ type StoredBackgroundGenerationTask = {
 
 const BACKGROUND_GENERATION_TASKS_STORAGE_KEY = 'rhyme-background-generation-tasks'
 
-function readStoredBackgroundGenerationTasks(): Record<string, StoredBackgroundGenerationTask> {
+function readStoredBackgroundGenerationTasks(userId: number): Record<string, StoredBackgroundGenerationTask> {
   try {
-    const value = JSON.parse(localStorage.getItem(BACKGROUND_GENERATION_TASKS_STORAGE_KEY) || '{}')
+    const value = JSON.parse(localStorage.getItem(scopedStorageKey(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, userId)) || '{}')
     if (!value || typeof value !== 'object') return {}
     return Object.fromEntries(Object.entries(value).filter(([, item]) => {
       if (!item || typeof item !== 'object') return false
@@ -442,8 +446,8 @@ function readStoredBackgroundGenerationTasks(): Record<string, StoredBackgroundG
   }
 }
 
-function writeStoredBackgroundGenerationTask(task: StoredBackgroundGenerationTask) {
-  const stored = readStoredBackgroundGenerationTasks()
+function writeStoredBackgroundGenerationTask(userId: number, task: StoredBackgroundGenerationTask) {
+  const stored = readStoredBackgroundGenerationTasks(userId)
   stored[task.loadingId] = task
   const retained = Object.values(stored)
     .sort((left, right) => right.createdAt - left.createdAt)
@@ -452,14 +456,14 @@ function writeStoredBackgroundGenerationTask(task: StoredBackgroundGenerationTas
       items[item.loadingId] = item
       return items
     }, {})
-  localStorage.setItem(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, JSON.stringify(retained))
+  localStorage.setItem(scopedStorageKey(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, userId), JSON.stringify(retained))
 }
 
-function removeStoredBackgroundGenerationTask(loadingId: string) {
-  const stored = readStoredBackgroundGenerationTasks()
+function removeStoredBackgroundGenerationTask(userId: number, loadingId: string) {
+  const stored = readStoredBackgroundGenerationTasks(userId)
   if (!(loadingId in stored)) return
   delete stored[loadingId]
-  localStorage.setItem(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, JSON.stringify(stored))
+  localStorage.setItem(scopedStorageKey(BACKGROUND_GENERATION_TASKS_STORAGE_KEY, userId), JSON.stringify(stored))
 }
 
 type DocumentPurpose = 'review' | 'preview' | 'exam'
@@ -636,8 +640,7 @@ function createPracticeRun(
   }
 }
 
-const LOCAL_USER_ID = 1
-const DEFERRED_SESSION_CHANGES_KEY = `rhyme-deferred-session-changes-${LOCAL_USER_ID}`
+const DEMO_USER_ID = 1
 const emptyLearningState: LearningState = {
   subject: '',
   goal: '',
@@ -648,9 +651,13 @@ const emptyLearningState: LearningState = {
   current_topic: '',
 }
 
-function readDeferredSessionChanges(): Record<number, DeferredSessionChange> {
+function deferredSessionChangesKey(userId: number) {
+  return `rhyme-deferred-session-changes-${userId}`
+}
+
+function readDeferredSessionChanges(userId: number): Record<number, DeferredSessionChange> {
   try {
-    const parsed = JSON.parse(localStorage.getItem(DEFERRED_SESSION_CHANGES_KEY) || '{}') as Record<string, DeferredSessionChange>
+    const parsed = JSON.parse(localStorage.getItem(deferredSessionChangesKey(userId)) || '{}') as Record<string, DeferredSessionChange>
     return Object.fromEntries(
       Object.entries(parsed)
         .filter(([id, change]) => Number.isInteger(Number(id)) && change && typeof change === 'object')
@@ -661,8 +668,8 @@ function readDeferredSessionChanges(): Record<number, DeferredSessionChange> {
   }
 }
 
-function writeDeferredSessionChanges(changes: Record<number, DeferredSessionChange>) {
-  localStorage.setItem(DEFERRED_SESSION_CHANGES_KEY, JSON.stringify(changes))
+function writeDeferredSessionChanges(userId: number, changes: Record<number, DeferredSessionChange>) {
+  localStorage.setItem(deferredSessionChangesKey(userId), JSON.stringify(changes))
 }
 
 function isTemporarySessionMutationFailure(error: unknown) {
@@ -903,9 +910,9 @@ const interfaceStyles: Array<{ id: InterfaceStyleId; label: string; labelEn: str
 
 const LEARNING_LOOP_RUNTIME_STORAGE_KEY = 'rhyme-learning-loop-runtime-v1'
 
-function readStoredLearningLoopRuntime(): Record<string, LearningLoopRuntime> {
+function readStoredLearningLoopRuntime(userId: number): Record<string, LearningLoopRuntime> {
   try {
-    const raw = JSON.parse(localStorage.getItem(LEARNING_LOOP_RUNTIME_STORAGE_KEY) || '{}')
+    const raw = JSON.parse(localStorage.getItem(scopedStorageKey(LEARNING_LOOP_RUNTIME_STORAGE_KEY, userId)) || '{}')
     if (!raw || typeof raw !== 'object') return {}
     return Object.fromEntries(Object.entries(raw).flatMap(([key, value]) => {
       if (!value || typeof value !== 'object') return []
@@ -925,7 +932,7 @@ function readStoredLearningLoopRuntime(): Record<string, LearningLoopRuntime> {
   }
 }
 
-function writeStoredLearningLoopRuntime(state: Record<string, LearningLoopRuntime>) {
+function writeStoredLearningLoopRuntime(userId: number, state: Record<string, LearningLoopRuntime>) {
   const retained = Object.entries(state)
     .sort(([, left], [, right]) => right.updatedAt - left.updatedAt)
     .slice(0, 48)
@@ -933,7 +940,7 @@ function writeStoredLearningLoopRuntime(state: Record<string, LearningLoopRuntim
       result[key] = value
       return result
     }, {})
-  localStorage.setItem(LEARNING_LOOP_RUNTIME_STORAGE_KEY, JSON.stringify(retained))
+  localStorage.setItem(scopedStorageKey(LEARNING_LOOP_RUNTIME_STORAGE_KEY, userId), JSON.stringify(retained))
 }
 
 function learningLoopRuntimeKey(turnId: string, loopId: string) {
@@ -1781,7 +1788,13 @@ function messagesToTurns(messages: TutorMessage[]): ChatTurn[] {
     : { ...turn, response: '这条问题尚未完成回答，可以重新发送后继续。', error: true })
 }
 
-function App() {
+type AppProps = {
+  currentUser?: AuthUser
+  onLogout?: () => void
+}
+
+function App({ currentUser, onLogout }: AppProps = {}) {
+  const LOCAL_USER_ID = currentUser?.id ?? DEMO_USER_ID
   const [view, setView] = useState<View>('welcome')
   const [input, setInput] = useState('')
   const [turns, setTurns] = useState<ChatTurn[]>([])
@@ -1837,7 +1850,7 @@ function App() {
   const [sessionMenuMode, setSessionMenuMode] = useState<SessionMenuMode>('menu')
   const [sessionRenameDraft, setSessionRenameDraft] = useState('')
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
-  const deferredSessionChanges = useRef<Record<number, DeferredSessionChange>>(readDeferredSessionChanges())
+  const deferredSessionChanges = useRef<Record<number, DeferredSessionChange>>(readDeferredSessionChanges(LOCAL_USER_ID))
   const deferredSessionSyncing = useRef(false)
   const [sending, setSending] = useState(false)
   const [attachment, setAttachment] = useState<Attachment | null>(null)
@@ -1877,8 +1890,9 @@ function App() {
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [backgroundTasksOpen, setBackgroundTasksOpen] = useState(false)
-  const [backgroundGenerationTasks, setBackgroundGenerationTasks] = useState<Record<string, StoredBackgroundGenerationTask>>(() => readStoredBackgroundGenerationTasks())
+  const [backgroundGenerationTasks, setBackgroundGenerationTasks] = useState<Record<string, StoredBackgroundGenerationTask>>(() => readStoredBackgroundGenerationTasks(LOCAL_USER_ID))
   const backgroundGenerationJobMonitors = useRef(new Set<string>())
   const backgroundVideoSearchMonitors = useRef(new Set<string>())
   const restoredBackgroundGenerationTasks = useRef(new Set<string>())
@@ -1909,7 +1923,7 @@ function App() {
   const [learningLoopGeneratingTurnId, setLearningLoopGeneratingTurnId] = useState<string | null>(null)
   const learningLoopGenerationLocked = useRef(false)
   const [learningLoopActiveStepByTurn, setLearningLoopActiveStepByTurn] = useState<Record<string, LearningLoopStep>>({})
-  const [learningLoopRuntimeByKey, setLearningLoopRuntimeByKey] = useState<Record<string, LearningLoopRuntime>>(() => readStoredLearningLoopRuntime())
+  const [learningLoopRuntimeByKey, setLearningLoopRuntimeByKey] = useState<Record<string, LearningLoopRuntime>>(() => readStoredLearningLoopRuntime(LOCAL_USER_ID))
   const [immersiveOpenRequest, setImmersiveOpenRequest] = useState<{ artifactId: string; revision: number } | null>(null)
   const [mapProgressByArtifactId, setMapProgressByArtifactId] = useState<Record<string, KnowledgeMapProgressState>>({})
   const mapProgressFetches = useRef(new Set<string>())
@@ -2054,19 +2068,19 @@ function App() {
   }, [learningState.current_topic, learningState.subject])
 
   function persistBackgroundGenerationTask(task: StoredBackgroundGenerationTask) {
-    writeStoredBackgroundGenerationTask(task)
-    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+    writeStoredBackgroundGenerationTask(LOCAL_USER_ID, task)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks(LOCAL_USER_ID))
   }
 
   function patchBackgroundGenerationTask(loadingId: string, updates: Partial<StoredBackgroundGenerationTask>) {
-    const current = readStoredBackgroundGenerationTasks()[loadingId]
+    const current = readStoredBackgroundGenerationTasks(LOCAL_USER_ID)[loadingId]
     if (!current) return
     persistBackgroundGenerationTask({ ...current, ...updates, loadingId: current.loadingId })
   }
 
   function dismissBackgroundGenerationTask(loadingId: string) {
-    removeStoredBackgroundGenerationTask(loadingId)
-    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+    removeStoredBackgroundGenerationTask(LOCAL_USER_ID, loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks(LOCAL_USER_ID))
   }
 
   const createBackgroundGenerationPlaceholder = useCallback((
@@ -2172,7 +2186,7 @@ function App() {
   }, [learningGuideOpen])
 
   useEffect(() => {
-    writeStoredLearningLoopRuntime(learningLoopRuntimeByKey)
+    writeStoredLearningLoopRuntime(LOCAL_USER_ID, learningLoopRuntimeByKey)
   }, [learningLoopRuntimeByKey])
 
   useEffect(() => {
@@ -2207,6 +2221,23 @@ function App() {
   }, [sessionMenuId])
 
   useEffect(() => {
+    if (!profileMenuOpen) return
+    const closeWhenOutside = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-profile-menu-root]')) return
+      setProfileMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setProfileMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeWhenOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeWhenOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [profileMenuOpen])
+
+  useEffect(() => {
     if (!generateOpen && !generatorCatalogOpen) return
     const closeWhenOutside = (event: PointerEvent) => {
       if (event.target instanceof Element && event.target.closest('.composer-wrap, .generator-panel')) return
@@ -2236,7 +2267,7 @@ function App() {
 
   useEffect(() => {
     if (!sessionId || turns.length === 0) return
-    const storedTasks = Object.values(readStoredDynamicExplanationJobs())
+    const storedTasks = Object.values(readStoredDynamicExplanationJobs(LOCAL_USER_ID))
       .filter(task => task.sessionId === sessionId)
       .sort((left, right) => left.createdAt - right.createdAt)
 
@@ -2696,7 +2727,7 @@ function App() {
     return () => { cancelled = true }
   }, [mapArtifacts, mapProgressByArtifactId])
   useEffect(() => {
-    const stored = readStoredMapPackJobs()
+    const stored = readStoredMapPackJobs(LOCAL_USER_ID)
     mapArtifacts.forEach(artifact => {
       if (!artifact.backendId || mapPackMonitors.current.has(artifact.backendId)) return
       const backendId = artifact.backendId
@@ -2705,7 +2736,7 @@ function App() {
       void getGenerationJob<KnowledgeMapPackResult>(LOCAL_USER_ID, jobId)
         .then(job => mapPackMonitorRef.current(artifact, job))
         .catch(() => {
-          writeStoredMapPackJob(backendId)
+          writeStoredMapPackJob(LOCAL_USER_ID, backendId)
           setMapPackJobs(current => ({
             ...current,
             [artifact.id]: {
@@ -3401,7 +3432,7 @@ function App() {
       [sessionIdToChange]: { ...deferredSessionChanges.current[sessionIdToChange], ...change },
     }
     deferredSessionChanges.current = next
-    writeDeferredSessionChanges(next)
+    writeDeferredSessionChanges(LOCAL_USER_ID, next)
   }
 
   function clearDeferredSessionChange(sessionIdToChange: number, fields?: Array<keyof DeferredSessionChange>) {
@@ -3417,7 +3448,7 @@ function App() {
       else delete next[sessionIdToChange]
     }
     deferredSessionChanges.current = next
-    writeDeferredSessionChanges(next)
+    writeDeferredSessionChanges(LOCAL_USER_ID, next)
   }
 
   async function syncDeferredSessionChanges(remoteSessions: TutorSessionSummary[]) {
@@ -4083,8 +4114,8 @@ function App() {
       depth: 'standard',
       style: 'plain',
     }
-    removeStoredBackgroundGenerationTask(loadingId)
-    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+    removeStoredBackgroundGenerationTask(LOCAL_USER_ID, loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks(LOCAL_USER_ID))
     setDocumentGenerating(true)
     setDocumentSetup(null)
     setTurns(current => current.map(item => item.id === turn.id
@@ -4342,8 +4373,8 @@ function App() {
       style: 'exam',
       sourceMapArtifactId,
     }
-    removeStoredBackgroundGenerationTask(loadingId)
-    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+    removeStoredBackgroundGenerationTask(LOCAL_USER_ID, loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks(LOCAL_USER_ID))
     practiceGenerationLocked.current = true
     setPracticeGenerating(true)
     setPracticeSetupTurnId(null)
@@ -4473,8 +4504,8 @@ function App() {
       depth: 'standard',
       style: 'plain',
     }
-    removeStoredBackgroundGenerationTask(loadingId)
-    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks())
+    removeStoredBackgroundGenerationTask(LOCAL_USER_ID, loadingId)
+    setBackgroundGenerationTasks(readStoredBackgroundGenerationTasks(LOCAL_USER_ID))
     knowledgeMapGenerationLock.current = { turnId: turn.id, loadingId, startedAt: Date.now() }
     setKnowledgeMapGeneratingTurnId(turn.id)
     setNotice('知识图解已经转入后台生成。你可以继续学习，完成后在左下角“后台任务”打开。')
@@ -4678,7 +4709,7 @@ function App() {
       const artifact = task.learningLoopId && task.learningLoopStep
         ? { ...generatedArtifact, learningLoopId: task.learningLoopId, learningLoopStep: task.learningLoopStep }
         : generatedArtifact
-      removeStoredDynamicExplanationJob(task.loadingId)
+      removeStoredDynamicExplanationJob(LOCAL_USER_ID, task.loadingId)
       setTurns(current => current.map(item => item.id === task.turnId
         ? { ...item, artifacts: item.artifacts.map(item => item.id === task.loadingId ? artifact : item) }
         : item))
@@ -4703,7 +4734,7 @@ function App() {
         errorCode: jobMissing ? 'job_expired' : latestJob.error_code,
         retryable: jobMissing ? true : latestJob.retryable !== false,
       }
-      writeStoredDynamicExplanationJob(failureTask)
+      writeStoredDynamicExplanationJob(LOCAL_USER_ID, failureTask)
       const stoppedAt = (latestJob.progress as DynamicExplanationJobProgress | undefined)?.label || '本次生成未完成'
       updateDynamicExplanationProgress(task.turnId, task.loadingId, {
         phase: 'failed',
@@ -4764,7 +4795,7 @@ function App() {
       : undefined
     const loadingId = replaceArtifactId || `dynamic-explanation-generating-${Date.now()}`
     const loadingArtifact = createDynamicExplanationPlaceholder(turn, loadingId, replacedArtifact)
-    removeStoredDynamicExplanationJob(loadingId)
+    removeStoredDynamicExplanationJob(LOCAL_USER_ID, loadingId)
     dynamicExplanationGenerationLocked.current = true
     setDynamicExplanationGeneratingTurnId(turn.id)
     setRecentDynamicExplanationArtifactId(loadingId)
@@ -4796,7 +4827,7 @@ function App() {
         learningLoopId: loadingArtifact.learningLoopId,
         learningLoopStep: loadingArtifact.learningLoopStep,
       }
-      writeStoredDynamicExplanationJob(task)
+      writeStoredDynamicExplanationJob(LOCAL_USER_ID, task)
       await monitorDynamicExplanationJob(task, queued.job)
     } catch (error) {
       // monitorDynamicExplanationJob normally owns the failure state. This only
@@ -4813,7 +4844,7 @@ function App() {
         errorCode: 'queue_unavailable',
         retryable: true,
       }
-      writeStoredDynamicExplanationJob(failedTask)
+      writeStoredDynamicExplanationJob(LOCAL_USER_ID, failedTask)
       setTurns(current => current.map(item => item.id === turn.id
         ? {
             ...item,
@@ -5797,7 +5828,7 @@ function App() {
 
   function dismissBackgroundDynamicTask(artifact: Artifact) {
     if (artifact.status === 'generating') return
-    removeStoredDynamicExplanationJob(artifact.id)
+    removeStoredDynamicExplanationJob(LOCAL_USER_ID, artifact.id)
     setDismissedDynamicTaskIds(current => new Set([...current, artifact.id]))
     if (recentDynamicExplanationArtifactId === artifact.id) setRecentDynamicExplanationArtifactId(null)
   }
@@ -5805,7 +5836,7 @@ function App() {
   function dismissBackgroundTask(artifact: Artifact) {
     const task = mapPackJobs[artifact.id]
     if (!task || task.status === 'queued' || task.status === 'running') return
-    if (artifact.backendId) writeStoredMapPackJob(artifact.backendId)
+    if (artifact.backendId) writeStoredMapPackJob(LOCAL_USER_ID, artifact.backendId)
     setMapPackJobs(current => {
       const next = { ...current }
       delete next[artifact.id]
@@ -5893,14 +5924,14 @@ function App() {
     try {
       while (current.status === 'queued' || current.status === 'running') {
         setMapPackJobs(state => ({ ...state, [artifact.id]: mapPackProgressFromJob(artifact, current) }))
-        writeStoredMapPackJob(artifact.backendId, current.job_id)
+        writeStoredMapPackJob(LOCAL_USER_ID, artifact.backendId, current.job_id)
         if (Date.now() > deadline) throw new Error(t('后台任务仍在运行，可以稍后从资料库继续查看。', 'The background task is still running. Check it later from the library.'))
         await new Promise<void>(resolve => window.setTimeout(resolve, 900))
         current = await getGenerationJob<KnowledgeMapPackResult>(LOCAL_USER_ID, current.job_id)
       }
 
       if (current.status === 'failed' || !current.result) {
-        writeStoredMapPackJob(artifact.backendId)
+        writeStoredMapPackJob(LOCAL_USER_ID, artifact.backendId)
         setMapPackJobs(state => ({
           ...state,
           [artifact.id]: {
@@ -5914,7 +5945,7 @@ function App() {
 
       const result = current.result
       replaceArtifactFromRecord(result.artifact, artifact.backendId)
-      writeStoredMapPackJob(artifact.backendId)
+      writeStoredMapPackJob(LOCAL_USER_ID, artifact.backendId)
       const failedCount = result.failed_nodes.length
       setMapPackJobs(state => ({
         ...state,
@@ -5952,7 +5983,7 @@ function App() {
     if (!artifact.backendId || mapPackMonitors.current.has(artifact.backendId)) return
     try {
       const queued = await generateKnowledgeMapPack(artifact.backendId, LOCAL_USER_ID)
-      writeStoredMapPackJob(artifact.backendId, queued.job.job_id)
+      writeStoredMapPackJob(LOCAL_USER_ID, artifact.backendId, queued.job.job_id)
       setMapPackJobs(state => ({ ...state, [artifact.id]: mapPackProgressFromJob(artifact, queued.job) }))
       void monitorMapPackJob(artifact, queued.job)
       setNotice(t('整套图解已转入后台补全，你可以离开当前页面。', 'The map package is being completed in the background. You can leave this page.'))
@@ -7331,11 +7362,31 @@ function App() {
               <span>{backgroundRunningTaskCount || backgroundAttentionTaskCount || backgroundCompletedTaskCount}</span>
             )}
           </button>
-          <button className="profile-button" type="button">
-            <span className="profile-avatar">姚</span>
-            <span><b>姚瑞辉</b><small>{t('本地学习空间', 'Local learning space')}</small></span>
-            <Icon name="chevron" size={15} />
-          </button>
+          <div className="profile-menu-root" data-profile-menu-root>
+            <button
+              className="profile-button"
+              type="button"
+              onClick={() => setProfileMenuOpen(value => !value)}
+              title={t('账户菜单', 'Account menu')}
+              aria-expanded={profileMenuOpen}
+              aria-haspopup={onLogout ? 'menu' : undefined}
+            >
+              <span className="profile-avatar">{(currentUser?.username || '姚').slice(0, 1)}</span>
+              <span><b>{currentUser?.username || '姚瑞辉'}</b><small>{currentUser?.email || t('本地学习空间', 'Local learning space')}</small></span>
+              <Icon name="chevron" size={15} />
+            </button>
+            {profileMenuOpen && onLogout && (
+              <div className="profile-menu" role="menu" aria-label={t('账户菜单', 'Account menu')}>
+                <div className="profile-menu-summary">
+                  <b>{currentUser?.username || '学习者'}</b>
+                  <small>{currentUser?.role === 'admin' ? t('管理员账户', 'Administrator') : t('已登录账户', 'Signed-in account')}</small>
+                </div>
+                <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); onLogout() }}>
+                  <LogOut size={15} strokeWidth={1.9} />{t('退出登录', 'Sign out')}
+                </button>
+              </div>
+            )}
+          </div>
           <button
             className="settings-trigger"
             type="button"

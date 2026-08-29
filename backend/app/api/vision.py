@@ -4,15 +4,20 @@
 """
 import base64
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.services.llm import chat_qwen_vision
 from app.safety.content_filter import filter_content
 from app.safety.garbage_detector import detect_garbage_input
+from app.api.auth import enforce_registered_request
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/vision", tags=["vision"])
+router = APIRouter(
+    prefix="/api/v1/vision",
+    tags=["vision"],
+    dependencies=[Depends(enforce_registered_request)],
+)
 
 MAX_IMAGES = 3
 

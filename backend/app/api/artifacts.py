@@ -6,7 +6,7 @@ import logging
 from threading import Lock
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.artifact_agent import generate_learning_document, generate_study_pack_blueprint
@@ -25,6 +25,7 @@ from app.agents.dynamic_explanation_agent import (
 )
 from app.agents.library_agent import recommend_library_path
 from app.database import query
+from app.api.auth import enforce_registered_request
 from app.services.generation_jobs import get_generation_job, submit_generation_job
 from app.services.artifact_db import (
     create_artifact,
@@ -80,7 +81,11 @@ from app.services.video_search import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/artifacts", tags=["artifacts"])
+router = APIRouter(
+    prefix="/api/v1/artifacts",
+    tags=["artifacts"],
+    dependencies=[Depends(enforce_registered_request)],
+)
 _map_deep_dive_merge_lock = Lock()
 
 

@@ -4,13 +4,18 @@ POST /tts 文本→语音(下载到 static/audio);POST /asr 语音→文本。
 """
 import os
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.services.llm import qwen_tts, qwen_asr
+from app.api.auth import enforce_registered_request
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/audio", tags=["audio"])
+router = APIRouter(
+    prefix="/api/v1/audio",
+    tags=["audio"],
+    dependencies=[Depends(enforce_registered_request)],
+)
 
 
 class TTSRequest(BaseModel):

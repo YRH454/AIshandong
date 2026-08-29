@@ -23,6 +23,15 @@ export async function loginApi(email: string, password: string) {
   return res.json()
 }
 
+export async function guestLoginApi() {
+  const res = await fetch(`${API_BASE}/auth/guest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) throw (await res.json().catch(() => ({})))
+  return res.json()
+}
+
 // ---- 聊天（流式）----
 export interface ImageStudyAnalysis {
   title: string

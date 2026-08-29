@@ -206,6 +206,9 @@ button { color: inherit; }
 .learning-house-entry .icon, .learning-house-entry-spark { color: var(--accent); }
 .learning-house-entry-spark { margin-left: auto; opacity: .85; }
 .learning-house-entry:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: var(--accent-soft); color: var(--accent-deep); }
+.focus-desk-nav-item { margin-top: 3px; }
+.focus-desk-nav-item > svg { color: var(--accent); }
+.focus-desk-nav-item.active { border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); }
 .sidebar-section { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
 .section-label { padding: 7px 9px 5px; color: var(--faint); font-size: 10px; font-weight: 650; }
 .history-empty { margin: 4px 9px; color: var(--faint); font-size: 11px; line-height: 1.55; }

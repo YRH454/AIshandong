@@ -2,14 +2,19 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import AuthScreen from './components/AuthScreen.tsx'
 
 const root = createRoot(document.getElementById('root')!)
 const localBranchDemo = ['127.0.0.1', 'localhost'].includes(window.location.hostname)
   && new URLSearchParams(window.location.search).has('adaptive-branch-demo')
 const g6MapDemo = ['127.0.0.1', 'localhost'].includes(window.location.hostname)
   && new URLSearchParams(window.location.search).has('g6-map-demo')
+const authPreview = ['127.0.0.1', 'localhost'].includes(window.location.hostname)
+  && new URLSearchParams(window.location.search).has('auth-preview')
 
-if (localBranchDemo) {
+if (authPreview) {
+  root.render(<StrictMode><AuthScreen /></StrictMode>)
+} else if (localBranchDemo) {
   void import('./components/AdaptiveBranchDemo.tsx').then(({ default: AdaptiveBranchDemo }) => {
     root.render(<StrictMode><AdaptiveBranchDemo /></StrictMode>)
   })

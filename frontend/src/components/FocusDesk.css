@@ -1,0 +1,179 @@
+.focus-desk-layer {
+  position: fixed;
+  z-index: 92;
+  inset: 0;
+  overflow: auto;
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent-soft) 68%, transparent), transparent 34%),
+    radial-gradient(circle at 95% 100%, color-mix(in srgb, var(--accent-soft) 52%, transparent), transparent 36%),
+    var(--canvas);
+  color: var(--text);
+  animation: focus-desk-in .24s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.focus-desk-shell {
+  width: min(1260px, 100%);
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  margin: 0 auto;
+  padding: clamp(18px, 3vw, 40px) clamp(16px, 4vw, 58px) clamp(18px, 3vw, 38px);
+}
+
+.focus-desk-topbar {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 1.4fr) minmax(160px, 1fr);
+  align-items: start;
+  gap: 18px;
+  padding-bottom: clamp(22px, 4vw, 42px);
+}
+
+.focus-desk-back,
+.focus-desk-close {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 680;
+  transition: border-color .16s ease, background-color .16s ease, color .16s ease, transform .16s ease;
+}
+
+.focus-desk-back { justify-self: start; padding: 0 11px; }
+.focus-desk-back:hover,
+.focus-desk-close:hover { border-color: var(--line-strong); background: var(--surface); color: var(--text); transform: translateY(-1px); }
+.focus-desk-close { width: 34px; justify-content: center; justify-self: end; padding: 0; }
+
+.focus-desk-title { min-width: 0; display: grid; justify-items: center; gap: 5px; text-align: center; }
+.focus-desk-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-deep); font-size: 9px; font-weight: 760; letter-spacing: .13em; text-transform: uppercase; }
+.focus-desk-eyebrow svg { color: var(--accent); }
+.focus-desk-title h1 { margin: 0; font-family: var(--heading-font); font-size: clamp(25px, 3.1vw, 40px); font-weight: 750; letter-spacing: -.06em; line-height: 1.05; }
+.focus-desk-title p { max-width: 54ch; overflow: hidden; margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+
+.focus-desk-main { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .92fr); align-items: stretch; gap: clamp(14px, 2vw, 24px); }
+.focus-desk-timer-panel,
+.focus-desk-task-panel { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 18px; background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: 0 18px 48px color-mix(in srgb, var(--shadow) 42%, transparent); }
+.focus-desk-timer-panel { min-height: 560px; padding: clamp(20px, 3vw, 34px); }
+.focus-desk-task-panel { min-height: 560px; padding: clamp(18px, 2.4vw, 29px); }
+
+.focus-desk-panel-head,
+.focus-desk-task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.focus-desk-kicker { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-deep); font-size: 9px; font-weight: 780; letter-spacing: .12em; text-transform: uppercase; }
+.focus-desk-panel-head h2,
+.focus-desk-task-head h2 { max-width: 26ch; margin: 7px 0 0; font-size: clamp(17px, 1.7vw, 23px); font-weight: 720; letter-spacing: -.045em; line-height: 1.16; }
+.focus-desk-live-dot { width: 9px; height: 9px; flex: 0 0 auto; margin-top: 7px; border: 2px solid var(--line-strong); border-radius: 50%; background: transparent; }
+.focus-desk-live-dot.is-running { border-color: color-mix(in srgb, var(--accent) 72%, var(--line-strong)); background: var(--accent); box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 14%, transparent); animation: focus-desk-pulse 1.6s ease-in-out infinite; }
+
+.focus-desk-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 25px auto 4px; padding: 4px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-soft); }
+.focus-desk-mode-switch button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700; transition: background-color .16s ease, color .16s ease, box-shadow .16s ease; }
+.focus-desk-mode-switch button.active { background: var(--surface); color: var(--accent-deep); box-shadow: 0 4px 12px var(--shadow); }
+.focus-desk-mode-switch button:disabled { cursor: not-allowed; opacity: .65; }
+
+.focus-desk-ring { width: min(286px, 61vw); aspect-ratio: 1; display: grid; place-items: center; position: relative; margin: clamp(22px, 3vw, 34px) auto 23px; border-radius: 50%; background: conic-gradient(var(--accent) 0deg var(--focus-progress), color-mix(in srgb, var(--accent-soft) 80%, var(--line)) var(--focus-progress) 360deg); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 15%, transparent), 0 20px 50px color-mix(in srgb, var(--shadow) 52%, transparent); }
+.focus-desk-ring::before { content: ''; width: calc(100% - 12px); height: calc(100% - 12px); position: absolute; border-radius: 50%; background: var(--surface); }
+.focus-desk-ring-inner { width: calc(100% - 35px); height: calc(100% - 35px); display: grid; align-content: center; justify-items: center; position: relative; z-index: 1; gap: 8px; padding: 20px; border: 1px solid var(--line); border-radius: 50%; background: color-mix(in srgb, var(--surface) 92%, transparent); text-align: center; }
+.focus-desk-ring-inner > span { color: var(--accent-deep); font-size: 8.5px; font-weight: 780; letter-spacing: .13em; text-transform: uppercase; }
+.focus-desk-ring-inner strong { font-variant-numeric: tabular-nums; font-size: clamp(41px, 5vw, 67px); font-weight: 660; letter-spacing: -.075em; line-height: .96; }
+.focus-desk-ring-inner small { width: min(190px, 100%); overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+
+.focus-desk-controls { display: flex; align-items: center; justify-content: center; gap: 9px; }
+.focus-desk-primary-action,
+.focus-desk-reset { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 9px; cursor: pointer; font-size: 10.5px; font-weight: 750; transition: transform .16s ease, background-color .16s ease, border-color .16s ease; }
+.focus-desk-primary-action { min-width: 132px; padding: 0 15px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 20%, transparent); }
+.focus-desk-primary-action:hover { background: var(--accent-deep); border-color: var(--accent-deep); transform: translateY(-1px); }
+.focus-desk-reset { padding: 0 11px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
+.focus-desk-reset:hover { border-color: var(--line-strong); color: var(--text); transform: translateY(-1px); }
+
+.focus-desk-presets { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 9px; margin-top: auto; padding-top: 27px; color: var(--faint); font-size: 9px; }
+.focus-desk-presets > div { display: inline-flex; gap: 5px; }
+.focus-desk-presets button { min-height: 26px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--muted); cursor: pointer; font-size: 9px; font-variant-numeric: tabular-nums; font-weight: 700; }
+.focus-desk-presets button:hover { border-color: var(--accent); color: var(--accent-deep); }
+.focus-desk-presets button.active { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); color: var(--accent-deep); }
+.focus-desk-presets button:disabled { cursor: not-allowed; opacity: .65; }
+.focus-desk-phase-message { min-height: 18px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; margin: 13px 0 0; color: var(--accent-deep); font-size: 9.5px; line-height: 1.45; text-align: center; }
+
+.focus-desk-task-head { align-items: end; }
+.focus-desk-task-head h2 { max-width: 29ch; }
+.focus-desk-task-count { display: grid; justify-items: end; color: var(--faint); font-variant-numeric: tabular-nums; }
+.focus-desk-task-count b { color: var(--accent-deep); font-size: 30px; font-weight: 720; letter-spacing: -.07em; line-height: .9; }
+.focus-desk-task-count span { margin-top: 4px; font-size: 9px; }
+.focus-desk-task-progress { height: 5px; overflow: hidden; margin: 22px 0 16px; border-radius: 99px; background: var(--surface-soft); }
+.focus-desk-task-progress > span { height: 100%; display: block; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
+
+.focus-desk-add-task { display: grid; grid-template-columns: minmax(0, 1fr) 36px; gap: 7px; }
+.focus-desk-add-task input { width: 100%; min-height: 36px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; outline: none; background: var(--surface-soft); color: var(--text); font-size: 10.5px; }
+.focus-desk-add-task input::placeholder { color: var(--faint); }
+.focus-desk-add-task input:focus { border-color: color-mix(in srgb, var(--accent) 65%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
+.focus-desk-add-task button { width: 36px; min-height: 36px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--accent-deep); cursor: pointer; }
+.focus-desk-add-task button:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+.focus-desk-task-list { min-height: 0; display: grid; align-content: start; gap: 7px; margin-top: 15px; overflow-y: auto; padding-right: 2px; scrollbar-color: var(--line-strong) transparent; }
+.focus-desk-task { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr) 28px; align-items: center; gap: 8px; padding: 9px 8px; border: 1px solid transparent; border-radius: 10px; background: var(--surface-soft); transition: border-color .16s ease, background-color .16s ease, transform .16s ease; }
+.focus-desk-task:hover { border-color: var(--line); transform: translateY(-1px); }
+.focus-desk-task.is-selected { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface)); }
+.focus-desk-task.is-complete { opacity: .68; }
+.focus-desk-task-check,
+.focus-desk-task-delete { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: transparent; cursor: pointer; }
+.focus-desk-task-check:hover,
+.focus-desk-task-delete:hover { border-color: var(--accent); color: var(--accent-deep); }
+.focus-desk-task.is-complete .focus-desk-task-check { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.focus-desk-task-delete { border-color: transparent; background: transparent; color: var(--faint); }
+.focus-desk-task-copy { min-width: 0; display: grid; justify-items: start; gap: 3px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+.focus-desk-task-copy b { max-width: 100%; overflow: hidden; font-size: 10.5px; font-weight: 700; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.focus-desk-task-copy span { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 8.5px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.focus-desk-task.is-complete .focus-desk-task-copy b { text-decoration: line-through; }
+.focus-desk-empty-tasks { min-height: 148px; display: grid; place-content: center; justify-items: center; gap: 7px; padding: 20px; border: 1px dashed var(--line-strong); border-radius: 11px; color: var(--faint); text-align: center; }
+.focus-desk-empty-tasks b { color: var(--text); font-size: 11px; }
+.focus-desk-empty-tasks span { max-width: 27ch; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.focus-desk-clear-completed { align-self: start; margin-top: 12px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
+.focus-desk-clear-completed:hover { color: var(--accent-deep); }
+.focus-desk-selected-note { display: grid; gap: 5px; margin-top: auto; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.focus-desk-selected-note span { color: var(--accent-deep); font-size: 8px; font-weight: 780; letter-spacing: .12em; }
+.focus-desk-selected-note b { overflow: hidden; font-size: 10.5px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
+.focus-desk-selected-note small { color: var(--muted); font-size: 9px; line-height: 1.5; }
+
+.focus-desk-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(220px, 1.4fr); gap: 10px; padding-top: clamp(15px, 2vw, 22px); }
+.focus-desk-stat,
+.focus-desk-footer-hint { min-width: 0; min-height: 74px; display: grid; align-content: center; gap: 3px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--surface) 78%, transparent); }
+.focus-desk-stat span { color: var(--faint); font-size: 8px; font-weight: 780; letter-spacing: .1em; }
+.focus-desk-stat b { font-size: 20px; font-weight: 720; letter-spacing: -.06em; line-height: 1; }
+.focus-desk-stat small { overflow: hidden; color: var(--muted); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.focus-desk-footer-hint { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.focus-desk-footer-hint svg { flex: 0 0 auto; color: var(--accent); }
+
+@keyframes focus-desk-in { from { opacity: 0; transform: translateY(7px) scale(.992); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes focus-desk-pulse { 0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent); } 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 4%, transparent); } }
+
+@media (max-width: 860px) {
+  .focus-desk-main { grid-template-columns: 1fr; }
+  .focus-desk-timer-panel, .focus-desk-task-panel { min-height: auto; }
+  .focus-desk-task-panel { max-height: 680px; }
+  .focus-desk-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .focus-desk-footer-hint { grid-column: 1 / -1; }
+}
+
+@media (max-width: 560px) {
+  .focus-desk-shell { padding: 13px 11px 15px; }
+  .focus-desk-topbar { grid-template-columns: 38px minmax(0, 1fr) 38px; gap: 7px; padding-bottom: 18px; }
+  .focus-desk-back { width: 34px; padding: 0; justify-content: center; }
+  .focus-desk-back span { display: none; }
+  .focus-desk-title h1 { font-size: 23px; }
+  .focus-desk-title p { max-width: 31ch; font-size: 9px; }
+  .focus-desk-timer-panel, .focus-desk-task-panel { padding: 18px 15px; border-radius: 14px; }
+  .focus-desk-panel-head h2, .focus-desk-task-head h2 { font-size: 17px; }
+  .focus-desk-ring { width: min(258px, 70vw); margin-top: 22px; }
+  .focus-desk-ring-inner strong { font-size: 51px; }
+  .focus-desk-stats { grid-template-columns: 1fr 1fr; }
+  .focus-desk-stat:last-of-type { grid-column: 1 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-desk-layer { animation: none; }
+  .focus-desk-live-dot.is-running { animation: none; }
+  .focus-desk-back, .focus-desk-close, .focus-desk-primary-action, .focus-desk-reset, .focus-desk-task, .focus-desk-task-progress > span { transition: none; }
+}

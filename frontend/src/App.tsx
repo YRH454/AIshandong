@@ -2,7 +2,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, u
 import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
-  Code2, FileDown, FileQuestion, FileText, FolderOpen, History, House, Image, LayoutTemplate, Library, Map as MapIcon,
+  Code2, Clock3, FileDown, FileQuestion, FileText, FolderOpen, History, House, Image, LayoutTemplate, Library, Map as MapIcon,
   Languages, ListChecks, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
   Ellipsis, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
 } from 'lucide-react'
@@ -20,6 +20,7 @@ type KnowledgeMapSceneDirection = NonNullable<KnowledgeMapVisualScene['design']>
 type KnowledgeMapSceneComposition = NonNullable<KnowledgeMapSceneDirection['composition']>
 type KnowledgeMapSceneVisualLanguage = NonNullable<KnowledgeMapSceneDirection['visual_language']>
 import { DynamicExplanationPlayer, type DynamicExplanationProgress } from './components/DynamicExplanationPlayer'
+import { FocusDesk, type FocusDeskSeedTask } from './components/FocusDesk'
 import { LearningDocumentBooklet, type StudyBookletDocument } from './components/LearningDocumentBooklet'
 import { PracticePackBooklet, type PracticePackEntry } from './components/PracticePackBooklet'
 import { parseDynamicExplanation, type DynamicExplanationData, type DynamicExplanationScene } from './components/dynamicExplanation'
@@ -1872,6 +1873,7 @@ function App() {
   const [apexLabOpen, setApexLabOpen] = useState(false)
   const [solarExplorerOpen, setSolarExplorerOpen] = useState(false)
   const [studyArchiveOpen, setStudyArchiveOpen] = useState(false)
+  const [focusDeskOpen, setFocusDeskOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -2849,6 +2851,55 @@ function App() {
     [libraryItems, saveCourse],
   )
   const t = (chinese: string, english: string) => interfaceLanguage === 'en' ? english : chinese
+  const focusDeskSeedTasks = useMemo<FocusDeskSeedTask[]>(() => {
+    const topic = learningState.current_topic || learningState.subject || '当前学习主题'
+    const seeds: FocusDeskSeedTask[] = [
+      {
+        id: `focus-topic-${topic}`,
+        title: `梳理「${topic}」的核心概念`,
+        titleEn: `Clarify the core ideas of “${topic}”`,
+        detail: '先写下 3 个最重要的关键词和它们之间的关系。',
+        detailEn: 'Write down three key terms and how they connect.',
+      },
+    ]
+    if (learningState.goal) {
+      seeds.push({
+        id: `focus-goal-${learningState.goal}`,
+        title: `推进今天的目标：${learningState.goal}`,
+        titleEn: `Move today’s goal forward: ${learningState.goal}`,
+        detail: '把目标缩小成一个可以在本轮专注内完成的动作。',
+        detailEn: 'Turn the goal into one action you can finish this round.',
+      })
+    }
+    learningState.knowledge_points.slice(0, 3).forEach((point, index) => {
+      seeds.push({
+        id: `focus-point-${point}`,
+        title: `回忆知识点：${point}`,
+        titleEn: `Recall the concept: ${point}`,
+        detail: index === 0 ? '不看资料，先用自己的话解释一遍。' : '用一个例子检验自己是否真的理解。',
+        detailEn: index === 0 ? 'Explain it in your own words before checking notes.' : 'Use one example to test your understanding.',
+      })
+    })
+    topicStudyPlan?.tasks.filter(task => task.status !== 'completed').slice(0, 4).forEach(task => {
+      seeds.push({
+        id: `focus-plan-${task.id}`,
+        title: task.title,
+        titleEn: task.title,
+        detail: task.detail,
+        detailEn: task.detail,
+      })
+    })
+    if (seeds.length === 1 && !learningState.current_topic && !learningState.subject) {
+      seeds[0] = {
+        id: 'focus-first-question',
+        title: '明确今天要解决的第一个问题',
+        titleEn: 'Define the first question to solve today',
+        detail: '写下问题、已知条件和你准备尝试的第一步。',
+        detailEn: 'Write the question, known facts, and your first step.',
+      }
+    }
+    return [...new Map(seeds.map(seed => [seed.id, seed])).values()]
+  }, [learningState.current_topic, learningState.goal, learningState.knowledge_points, learningState.subject, topicStudyPlan])
   const appFrameStyle = { '--ui-scale': interfaceScale / 100 } as CSSProperties
   const activeInterfaceStyle = interfaceStyles.find(item => item.id === interfaceStyle) || interfaceStyles[0]
   const activeInterfaceScale = interfaceScales.find(item => item.value === interfaceScale) || interfaceScales[1]
@@ -7164,6 +7215,10 @@ function App() {
             <span>{t('3D 学习屋', '3D learning house')}</span>
             <Sparkles className="learning-house-entry-spark" size={13} aria-hidden="true" />
           </button>
+          <button className={focusDeskOpen ? 'nav-item active focus-desk-nav-item' : 'nav-item focus-desk-nav-item'} title={t('专注工作台', 'Focus desk')} onClick={() => { setFocusDeskOpen(true); setSidebarOpen(false) }}>
+            <Clock3 size={18} strokeWidth={1.8} />
+            <span>{t('专注工作台', 'Focus desk')}</span>
+          </button>
         </nav>
 
         <div className="sidebar-section">
@@ -9364,6 +9419,16 @@ function App() {
         <Suspense fallback={<div className="learning-house-loading" role="status"><Sparkles size={20} />{t('正在打开 EGOIST 小屋…', 'Opening EGOIST room…')}</div>}>
           <PersonalHouse onExit={() => setPersonalHouseOpen(false)} returnTo={learningHouseOpen ? 'learning-house' : 'rhyme'} />
         </Suspense>
+      )}
+
+      {focusDeskOpen && (
+        <FocusDesk
+          language={interfaceLanguage}
+          course={learningState.subject}
+          topic={learningState.current_topic}
+          seedTasks={focusDeskSeedTasks}
+          onClose={() => setFocusDeskOpen(false)}
+        />
       )}
 
       {foregroundBackgroundGenerationTask && !backgroundTasksOpen && (

@@ -220,6 +220,22 @@ def init_core_tables():
         )
     """)
     _ensure_column("guest_sessions", "session_token_hash", "VARCHAR(128)")
+    _ensure_column("users", "email_verified", "TINYINT DEFAULT 0")
+    execute("""
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            token_hash VARCHAR(128) NOT NULL UNIQUE,
+            expires_at DATETIME NOT NULL,
+            used_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        execute("CREATE INDEX idx_password_reset_tokens_user ON password_reset_tokens (user_id, used_at)")
+    except Exception as exc:
+        if "already exists" not in str(exc).lower() and "duplicate key" not in str(exc).lower():
+            raise
     execute("""
         CREATE TABLE IF NOT EXISTS student_profiles (
             id INT AUTO_INCREMENT PRIMARY KEY,

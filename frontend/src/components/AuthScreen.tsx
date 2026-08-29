@@ -2,10 +2,10 @@ import { ArrowRight, BookOpen, Check, Eye, EyeOff, KeyRound, LockKeyhole, Mail, 
 import { useState } from 'react'
 import mascot from '../assets/xuejing-slime-logo.png'
 import { AuthAnimatedCharacters } from './AuthAnimatedCharacters'
-import { guestLoginApi, loginApi, registerApi } from '../services/api'
+import { confirmPasswordResetApi, guestLoginApi, loginApi, registerApi, requestPasswordResetApi } from '../services/api'
 import './AuthScreen.css'
 
-type AuthMode = 'login' | 'register'
+type AuthMode = 'login' | 'register' | 'reset'
 
 type AuthResponse = {
   token: string
@@ -61,6 +61,8 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [resetToken, setResetToken] = useState('')
+  const [resetMessage, setResetMessage] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [isTyping, setIsTyping] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -71,6 +73,8 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
     if (busy) return
     setMode(nextMode)
     setError('')
+    setResetMessage('')
+    if (nextMode !== 'reset') setResetToken('')
     setSuccess(null)
   }
 
@@ -78,13 +82,29 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
     event.preventDefault()
     if (busy) return
     setError('')
-    if (mode === 'register' && password !== confirmPassword) {
+    if ((mode === 'register' || (mode === 'reset' && Boolean(resetToken))) && password !== confirmPassword) {
       setError('两次输入的密码不一致')
       return
     }
 
     setBusy(true)
     try {
+      if (mode === 'reset') {
+        if (!resetToken) {
+          const response = await requestPasswordResetApi(email.trim())
+          setResetToken(response.debug_token || '')
+          setResetMessage(response.debug_token
+            ? `${response.message} 本地调试链接已生成，请填写新密码。`
+            : response.message)
+        } else {
+          await confirmPasswordResetApi(resetToken, password)
+          setResetMessage('密码已重置，请返回登录并使用新密码。')
+          setResetToken('')
+          setPassword('')
+          setConfirmPassword('')
+        }
+        return
+      }
       const response = mode === 'login'
         ? await loginApi(email.trim(), password) as AuthResponse
         : await registerApi(username.trim(), email.trim(), password) as AuthResponse
@@ -134,14 +154,14 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
           ) : (
             <section className="auth-form-card" aria-label="RHYME 登录">
               <header className="auth-heading">
-                <h1>{mode === 'login' ? '登录你的账户' : '创建你的账户'}</h1>
-                <p>{mode === 'login' ? '输入邮箱，继续你的学习空间。' : '注册后保存你的对话、资料与学习进度。'}</p>
+                <h1>{mode === 'login' ? '登录你的账户' : mode === 'register' ? '创建你的账户' : '找回密码'}</h1>
+                <p>{mode === 'login' ? '输入邮箱，继续你的学习空间。' : mode === 'register' ? '注册后保存你的对话、资料与学习进度。' : resetToken ? '设置一个新的登录密码。' : '输入注册邮箱，获取安全的重置链接。'}</p>
               </header>
 
-              <div className="auth-mode-switch" role="tablist" aria-label="登录或注册">
+              {mode !== 'reset' ? <div className="auth-mode-switch" role="tablist" aria-label="登录或注册">
                 <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')} role="tab" aria-selected={mode === 'login'}>登录</button>
                 <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')} role="tab" aria-selected={mode === 'register'}>注册</button>
-              </div>
+              </div> : <button type="button" className="auth-reset-back" onClick={() => switchMode('login')}>← 返回登录</button>}
 
               <form className="auth-form" onSubmit={submit}>
                 {mode === 'register' && (
@@ -154,31 +174,39 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
                   <span>邮箱</span>
                   <span className="auth-input-wrap"><Mail size={17} /><input type="email" value={email} onChange={event => setEmail(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="电子邮箱" autoComplete="email" autoFocus={mode === 'login'} required /></span>
                 </label>
-                <label className="auth-field">
+                {mode === 'reset' && resetToken && <label className="auth-field">
+                  <span>重置令牌</span>
+                  <span className="auth-input-wrap"><KeyRound size={17} /><input value={resetToken} onChange={event => setResetToken(event.target.value)} autoComplete="one-time-code" required /></span>
+                </label>}
+                {(mode !== 'reset' || Boolean(resetToken)) && <label className="auth-field">
                   <span>密码</span>
-                  <span className="auth-input-wrap"><LockKeyhole size={17} /><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="密码" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={6} /><button type="button" className="auth-password-toggle" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? '隐藏密码' : '显示密码'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
-                </label>
-                {mode === 'register' && (
+                  <span className="auth-input-wrap"><LockKeyhole size={17} /><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder={mode === 'login' ? '密码' : '新密码（至少8位）'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={mode === 'login' ? 6 : 8} /><button type="button" className="auth-password-toggle" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? '隐藏密码' : '显示密码'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
+                </label>}
+                {(mode === 'register' || (mode === 'reset' && Boolean(resetToken))) && (
                   <label className="auth-field">
                     <span>确认密码</span>
-                    <span className="auth-input-wrap"><KeyRound size={17} /><input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="确认密码" autoComplete="new-password" required minLength={6} /></span>
+                    <span className="auth-input-wrap"><KeyRound size={17} /><input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="确认密码" autoComplete="new-password" required minLength={mode === 'reset' ? 8 : 8} /></span>
                   </label>
                 )}
+
+                {mode === 'login' && <button type="button" className="auth-forgot-link" onClick={() => switchMode('reset')}>忘记密码？</button>}
+
+                {resetMessage && <p className="auth-reset-message" role="status">{resetMessage}</p>}
 
                 {error && <p className="auth-error" role="alert">{error}</p>}
 
                 <button type="submit" className="auth-primary-button" disabled={busy} aria-busy={busy}>
-                  {busy ? '请稍候…' : mode === 'login' ? '用邮箱登录' : '创建账号'}
+                  {busy ? '请稍候…' : mode === 'login' ? '用邮箱登录' : mode === 'register' ? '创建账号' : resetToken ? '确认新密码' : '发送重置链接'}
                   {!busy && <ArrowRight size={16} />}
                 </button>
               </form>
 
-              <div className="auth-divider"><span>或者</span></div>
-              <button type="button" className="auth-guest-button" onClick={() => void enterAsGuest()} disabled={busy}>
-                <BookOpen size={16} />
-                <span>先以游客身份体验</span>
-              </button>
-              <p className="auth-footnote">登录即表示你同意 RHYME 的学习服务条款。</p>
+              {mode !== 'reset' && <><div className="auth-divider"><span>或者</span></div>
+                <button type="button" className="auth-guest-button" onClick={() => void enterAsGuest()} disabled={busy}>
+                  <BookOpen size={16} />
+                  <span>先以游客身份体验</span>
+                </button>
+                <p className="auth-footnote">登录即表示你同意 RHYME 的学习服务条款。</p></>}
             </section>
           )}
 

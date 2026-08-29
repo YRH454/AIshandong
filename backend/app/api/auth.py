@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from app.config import CORS_ORIGINS, COOKIE_SAMESITE, COOKIE_SECURE, JWT_EXPIRE_MINUTES
+from app.config import (
+    ADMIN_EMAIL,
+    ADMIN_BOOTSTRAP_PASSWORD,
+    ADMIN_USERNAME,
+    AUTH_RATE_LIMIT,
+    AUTH_RATE_WINDOW_SECONDS,
+    CORS_ORIGINS,
+    COOKIE_SAMESITE,
+    COOKIE_SECURE,
+    JWT_EXPIRE_MINUTES,
+    PASSWORD_RESET_DEBUG,
+)
 from app.database import execute, insert_with_next_id, query
 from app.utils.auth import (
     create_token,
@@ -25,6 +40,11 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 ACCESS_COOKIE = "rhyme_access_token"
 GUEST_COOKIE = "rhyme_guest_token"
+
+_rate_limit_lock = threading.Lock()
+_rate_limit_buckets: dict[str, list[float]] = {}
+
+
 class RegisterRequest(BaseModel):
     username: str
     email: str
@@ -36,6 +56,25 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class AdminUserUpdateRequest(BaseModel):
+    is_active: bool | None = None
+    role: Literal["user", "admin"] | None = None
+
+
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -43,6 +82,67 @@ def _token_hash(token: str) -> str:
 def _utc_string(hours: int) -> str:
     value = datetime.now(timezone.utc) + timedelta(hours=hours)
     return value.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _request_key(request: Request | None, scope: str) -> str:
+    host = "local"
+    if request is not None and request.client is not None:
+        host = request.client.host or "unknown"
+    return f"{scope}:{host}"
+
+
+def _enforce_auth_rate_limit(request: Request | None, scope: str) -> None:
+    """Apply a small in-process guard to credential endpoints.
+
+    It is deliberately conservative for the local demo and acts as a first
+    line of defence before a reverse-proxy rate limiter is configured in
+    production.  Bearer clients without a Request object (unit tests and
+    internal calls) remain unaffected.
+    """
+    if request is None:
+        return
+    now = time.monotonic()
+    key = _request_key(request, scope)
+    with _rate_limit_lock:
+        cutoff = now - AUTH_RATE_WINDOW_SECONDS
+        bucket = [stamp for stamp in _rate_limit_buckets.get(key, []) if stamp > cutoff]
+        if len(bucket) >= AUTH_RATE_LIMIT:
+            retry_after = max(1, int(bucket[0] + AUTH_RATE_WINDOW_SECONDS - now))
+            _rate_limit_buckets[key] = bucket
+            raise HTTPException(
+                status_code=429,
+                detail="请求过于频繁，请稍后再试",
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
+        _rate_limit_buckets[key] = bucket
+        # Keep the process-local map bounded when many clients touch auth.
+        if len(_rate_limit_buckets) > 2048:
+            for stale_key, stamps in list(_rate_limit_buckets.items())[:256]:
+                if not stamps or stamps[-1] <= cutoff:
+                    _rate_limit_buckets.pop(stale_key, None)
+
+
+def _validate_password(password: str) -> None:
+    if len(password) < 8:
+        raise HTTPException(400, "密码至少8位")
+    if len(password) > 128:
+        raise HTTPException(400, "密码不能超过128位")
+
+
+def _revoke_user_sessions(user_id: int) -> None:
+    execute(
+        "UPDATE auth_sessions SET revoked_at = CURRENT_TIMESTAMP "
+        "WHERE user_id = %s AND revoked_at IS NULL",
+        (user_id,),
+    )
+
+
+def _effective_user_role(row: dict) -> str:
+    role = str(row.get("role") or "user")
+    if role == "admin" and str(row.get("email") or "").lower() != ADMIN_EMAIL:
+        return "user"
+    return role
 
 
 def _set_cookie(response: Response, name: str, value: str, max_age: int) -> None:
@@ -159,13 +259,49 @@ def get_current_user(
     )
     if not rows:
         raise HTTPException(status_code=401, detail="用户不存在或已停用")
-    return rows[0]
+    user = rows[0]
+    user["role"] = _effective_user_role(user)
+    return user
 
 
 def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") != "admin":
+    # This deployment intentionally has one administrator account.  Checking
+    # the configured address as well as the role prevents a stale/manual role
+    # value from exposing the admin surface to another account.
+    if user.get("role") != "admin" or str(user.get("email", "")).lower() != ADMIN_EMAIL:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
+
+
+def ensure_primary_admin() -> None:
+    """Promote the configured owner account on every startup.
+
+    This is idempotent and also repairs the existing local demo database where
+    the owner account was created before role support existed.  Registration
+    still assigns the same role for a newly created owner account.
+    """
+    if not ADMIN_EMAIL:
+        return
+    existing = query("SELECT id FROM users WHERE lower(email) = %s", (ADMIN_EMAIL,))
+    if not existing and ADMIN_BOOTSTRAP_PASSWORD:
+        _validate_password(ADMIN_BOOTSTRAP_PASSWORD)
+        insert_with_next_id(
+            "users",
+            {
+                "username": ADMIN_USERNAME,
+                "email": ADMIN_EMAIL,
+                "password_hash": hash_password(ADMIN_BOOTSTRAP_PASSWORD),
+                "role": "admin",
+            },
+        )
+    execute(
+        "UPDATE users SET role = 'admin', is_active = TRUE WHERE lower(email) = %s",
+        (ADMIN_EMAIL,),
+    )
+    execute(
+        "UPDATE users SET role = 'user' WHERE role = 'admin' AND lower(email) <> %s",
+        (ADMIN_EMAIL,),
+    )
 
 
 async def enforce_registered_request(
@@ -228,17 +364,99 @@ async def enforce_registered_request(
     return user
 
 
+@router.post("/change-password")
+def change_password(
+    req: ChangePasswordRequest,
+    response: Response,
+    user: dict = Depends(get_current_user),
+):
+    """Change the current account password and rotate its sessions."""
+    _validate_password(req.new_password)
+    if req.current_password == req.new_password:
+        raise HTTPException(400, "新密码不能与当前密码相同")
+    rows = query("SELECT password_hash FROM users WHERE id = %s AND is_active = TRUE", (user["id"],))
+    if not rows:
+        raise HTTPException(401, "用户不存在或已停用")
+    try:
+        valid = verify_password(req.current_password, rows[0]["password_hash"])
+    except Exception:
+        valid = False
+    if not valid:
+        raise HTTPException(400, "当前密码不正确")
+
+    execute(
+        "UPDATE users SET password_hash = %s WHERE id = %s",
+        (hash_password(req.new_password), user["id"]),
+    )
+    _revoke_user_sessions(int(user["id"]))
+    token = _issue_access_token(int(user["id"]), str(user.get("role", "user")), response)
+    return {"status": "password_changed", "token": token}
+
+
+@router.post("/password-reset/request")
+def request_password_reset(req: PasswordResetRequest, request: Request = None):
+    """Start a password reset without revealing whether an email exists.
+
+    A mail provider can consume the generated token in production.  Local
+    development may opt into returning the token through PASSWORD_RESET_DEBUG;
+    the default is disabled for production deployments.
+    """
+    _enforce_auth_rate_limit(request, "password-reset")
+    email = req.email.strip().lower()
+    response: dict[str, str] = {
+        "status": "accepted",
+        "message": "如果邮箱已注册，重置说明会发送到邮箱。",
+    }
+    rows = query("SELECT id FROM users WHERE email = %s AND is_active = TRUE", (email,))
+    if not rows:
+        return response
+    token = secrets.token_urlsafe(32)
+    execute(
+        "UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP "
+        "WHERE user_id = %s AND used_at IS NULL",
+        (rows[0]["id"],),
+    )
+    execute(
+        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
+        (rows[0]["id"], _token_hash(token), _utc_string(1)),
+    )
+    if PASSWORD_RESET_DEBUG:
+        response["debug_token"] = token
+    return response
+
+
+@router.post("/password-reset/confirm")
+def confirm_password_reset(req: PasswordResetConfirmRequest):
+    _validate_password(req.new_password)
+    if len(req.token.strip()) < 20:
+        raise HTTPException(400, "重置链接无效或已过期")
+    rows = query(
+        "SELECT id, user_id FROM password_reset_tokens "
+        "WHERE token_hash = %s AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP",
+        (_token_hash(req.token.strip()),),
+    )
+    if not rows:
+        raise HTTPException(400, "重置链接无效或已过期")
+    token_row = rows[0]
+    execute("UPDATE users SET password_hash = %s WHERE id = %s AND is_active = TRUE", (hash_password(req.new_password), token_row["user_id"]))
+    execute("UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = %s", (token_row["id"],))
+    _revoke_user_sessions(int(token_row["user_id"]))
+    return {"status": "password_reset"}
+
+
 @router.post("/register")
-def register(req: RegisterRequest, response: Response):
+def register(req: RegisterRequest, response: Response, request: Request = None):
     """注册新用户并建立登录会话。"""
+    _enforce_auth_rate_limit(request, "register")
     username = " ".join(req.username.strip().split())
     email = req.email.strip().lower()
     if len(username) < 2 or len(username) > 30:
         raise HTTPException(400, "用户名长度2-30个字符")
     if len(email) > 160 or "@" not in email:
         raise HTTPException(400, "请输入有效邮箱")
-    if len(req.password) < 6:
-        raise HTTPException(400, "密码至少6位")
+    _validate_password(req.password)
+    if email == ADMIN_EMAIL:
+        raise HTTPException(403, "该管理员账号需要由部署初始化，不能通过公开注册创建")
 
     existing = query(
         "SELECT id FROM users WHERE email = %s OR username = %s",
@@ -248,27 +466,31 @@ def register(req: RegisterRequest, response: Response):
         raise HTTPException(400, "用户名或邮箱已被注册")
 
     password_hash = hash_password(req.password)
+    # Public registration never grants admin privileges.  The configured
+    # owner is promoted only by the startup reconciliation below, after the
+    # account already exists in the database.
+    role = "user"
     user_id = insert_with_next_id(
         "users",
-        {"username": username, "email": email, "password_hash": password_hash, "role": "user"},
+        {"username": username, "email": email, "password_hash": password_hash, "role": role},
     )
-
-    token = _issue_access_token(user_id, "user", response)
+    token = _issue_access_token(user_id, role, response)
     return {
         "token": token,
         "user": {
             "id": user_id,
             "username": username,
             "email": email,
-            "role": "user",
+            "role": role,
             "avatar_url": "",
         },
     }
 
 
 @router.post("/login")
-def login(req: LoginRequest, response: Response):
+def login(req: LoginRequest, response: Response, request: Request = None):
     """用户登录并建立可撤销的会话。"""
+    _enforce_auth_rate_limit(request, "login")
     email = req.email.strip().lower()
     rows = query(
         "SELECT id, username, email, password_hash, role, avatar_url FROM users "
@@ -279,6 +501,7 @@ def login(req: LoginRequest, response: Response):
         raise HTTPException(401, "邮箱或密码错误")
 
     user = rows[0]
+    user["role"] = _effective_user_role(user)
     token = _issue_access_token(user["id"], user["role"], response)
     return {
         "token": token,
@@ -293,8 +516,9 @@ def login(req: LoginRequest, response: Response):
 
 
 @router.post("/guest")
-def guest_login(response: Response):
+def guest_login(response: Response, request: Request = None):
     """游客模式：无需注册，生成 24 小时临时会话。"""
+    _enforce_auth_rate_limit(request, "guest")
     token = generate_guest_token()
     expires_at = _utc_string(24)
     session_id = insert_with_next_id(
@@ -364,6 +588,7 @@ def me(
         )
         if not rows:
             raise HTTPException(status_code=401, detail="用户不存在或已停用")
+        rows[0]["role"] = _effective_user_role(rows[0])
         return {
             "user": rows[0],
             "permissions": dict(ROLE_PERMISSIONS.get(rows[0].get("role", "user"), {})),
@@ -389,9 +614,133 @@ def me(
 
 
 @router.get("/admin/users")
-def list_users(user: dict = Depends(get_admin_user)):
+def list_users(user: dict = Depends(get_admin_user), limit: int = 100, offset: int = 0):
     """管理员查看用户列表。"""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
     rows = query(
-        "SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC"
+        "SELECT id, username, email, role, avatar_url, is_active, email_verified, created_at "
+        "FROM users ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        (limit, offset),
     )
-    return {"users": rows}
+    counts = query(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN is_active = TRUE THEN 1 ELSE 0 END) AS active, "
+        "SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins FROM users"
+    )
+    return {"users": rows, "total": int((counts[0] if counts else {}).get("total") or 0), "summary": counts[0] if counts else {}}
+
+
+@router.get("/admin/overview")
+def admin_overview(user: dict = Depends(get_admin_user)):
+    """Small operational snapshot for the administrator dashboard."""
+    users = query(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN is_active = TRUE THEN 1 ELSE 0 END) AS active, "
+        "SUM(CASE WHEN is_active = FALSE THEN 1 ELSE 0 END) AS inactive "
+        "FROM users"
+    )
+    sessions = query(
+        "SELECT COUNT(*) AS active_sessions FROM auth_sessions "
+        "WHERE revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"
+    )
+    try:
+        jobs = query(
+            "SELECT status, COUNT(*) AS count FROM generation_jobs "
+            "GROUP BY status ORDER BY status"
+        )
+    except Exception:
+        jobs = []
+    try:
+        audit = query("SELECT COUNT(*) AS count FROM audit_logs")
+        audit_count = int((audit[0] if audit else {}).get("count") or 0)
+    except Exception:
+        audit_count = 0
+    return {
+        "users": users[0] if users else {"total": 0, "active": 0, "inactive": 0},
+        "active_sessions": int((sessions[0] if sessions else {}).get("active_sessions") or 0),
+        "generation_jobs": jobs,
+        "audit_events": audit_count,
+    }
+
+
+@router.get("/admin/jobs")
+def list_generation_jobs(user: dict = Depends(get_admin_user), limit: int = 80):
+    """查看最近生成任务，便于定位云端模型或队列故障。"""
+    limit = max(1, min(limit, 200))
+    try:
+        rows = query(
+            "SELECT job_id, user_id, kind, status, error_code, retryable, progress, "
+            "created_at, started_at, finished_at FROM generation_jobs "
+            "ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+    except Exception:
+        rows = []
+    for row in rows:
+        progress = row.get("progress")
+        if isinstance(progress, str):
+            try:
+                row["progress"] = json.loads(progress)
+            except json.JSONDecodeError:
+                row["progress"] = {}
+    return {"jobs": rows}
+
+
+@router.get("/admin/audit")
+def list_audit_events(user: dict = Depends(get_admin_user), limit: int = 80):
+    """查看安全过滤与模型调用审计摘要。"""
+    limit = max(1, min(limit, 200))
+    try:
+        rows = query(
+            "SELECT id, user_id, agent_name, passed, score, detail, created_at "
+            "FROM audit_logs ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+    except Exception:
+        rows = []
+    for row in rows:
+        detail = row.get("detail")
+        if isinstance(detail, str):
+            try:
+                row["detail"] = json.loads(detail)
+            except json.JSONDecodeError:
+                pass
+    return {"events": rows}
+
+
+@router.patch("/admin/users/{user_id}")
+def update_user(user_id: int, req: AdminUserUpdateRequest, user: dict = Depends(get_admin_user)):
+    """Enable/disable accounts while keeping the configured owner protected."""
+    rows = query("SELECT id, email, role, is_active FROM users WHERE id = %s", (user_id,))
+    if not rows:
+        raise HTTPException(404, "用户不存在")
+    target = rows[0]
+    target_email = str(target.get("email", "")).lower()
+    if target_email == ADMIN_EMAIL:
+        if req.role == "user" or req.is_active is False:
+            raise HTTPException(400, "主管理员账号不能降级或停用")
+    if int(target["id"]) == int(user["id"]) and req.is_active is False:
+        raise HTTPException(400, "不能停用当前管理员账号")
+    if req.role == "admin" and target_email != ADMIN_EMAIL:
+        raise HTTPException(400, "当前部署只允许配置的主管理员账号使用管理员权限")
+
+    fields: list[str] = []
+    params: list[object] = []
+    if req.is_active is not None:
+        fields.append("is_active = %s")
+        params.append(req.is_active)
+    if req.role is not None:
+        fields.append("role = %s")
+        params.append(req.role)
+    if not fields:
+        return {"user": target}
+    params.append(user_id)
+    execute(f"UPDATE users SET {', '.join(fields)} WHERE id = %s", tuple(params))
+    updated = query(
+        "SELECT id, username, email, role, avatar_url, is_active, email_verified, created_at FROM users WHERE id = %s",
+        (user_id,),
+    )
+    if req.is_active is False:
+        _revoke_user_sessions(user_id)
+    return {"user": updated[0] if updated else None}

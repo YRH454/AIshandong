@@ -103,6 +103,73 @@ class AuthSessionTest(unittest.TestCase):
             self.auth.get_admin_user(user)
         self.assertEqual(error.exception.status_code, 403)
 
+    def test_configured_owner_is_the_only_admin(self):
+        with self.assertRaises(HTTPException) as blocked:
+            self.auth.register(
+                self.auth.RegisterRequest(
+                    username="EGOIST",
+                    email="3539921167@qq.com",
+                    password="secret123",
+                ),
+                Response(),
+            )
+        self.assertEqual(blocked.exception.status_code, 403)
+        owner_id = self.database.insert_with_next_id(
+            "users",
+            {
+                "username": "EGOIST",
+                "email": "3539921167@qq.com",
+                "password_hash": self.auth.hash_password("secret123"),
+                "role": "user",
+            },
+        )
+        regular = self.auth.register(
+            self.auth.RegisterRequest(
+                username="另一个用户",
+                email="other@example.com",
+                password="secret123",
+            ),
+            Response(),
+        )
+        self.auth.ensure_primary_admin()
+        owner = self.auth.login(
+            self.auth.LoginRequest(email="3539921167@qq.com", password="secret123"),
+            Response(),
+        )
+        owner_user = self.auth.me(authorization=f"Bearer {owner['token']}")["user"]
+        regular_user = self.auth.me(authorization=f"Bearer {regular['token']}")["user"]
+        self.assertEqual(owner_user["role"], "admin")
+        self.assertEqual(regular_user["role"], "user")
+        self.assertEqual(self.auth.get_admin_user(owner_user)["email"], "3539921167@qq.com")
+        with self.assertRaises(HTTPException) as error:
+            self.auth.get_admin_user(regular_user)
+        self.assertEqual(error.exception.status_code, 403)
+
+    def test_password_reset_revokes_previous_sessions(self):
+        registered = self.auth.register(
+            self.auth.RegisterRequest(
+                username="可重置用户",
+                email="reset@example.com",
+                password="secret123",
+            ),
+            Response(),
+        )
+        reset = self.auth.request_password_reset(self.auth.PasswordResetRequest(email="reset@example.com"))
+        self.assertIn("debug_token", reset)
+        self.auth.confirm_password_reset(
+            self.auth.PasswordResetConfirmRequest(
+                token=reset["debug_token"],
+                new_password="newsecret123",
+            )
+        )
+        with self.assertRaises(HTTPException):
+            self.auth.me(authorization=f"Bearer {registered['token']}")
+        logged_in = self.auth.login(
+            self.auth.LoginRequest(email="reset@example.com", password="newsecret123"),
+            Response(),
+        )
+        self.assertEqual(logged_in["user"]["email"], "reset@example.com")
+
     def test_legacy_id_allocation_stays_unique_for_users_and_guests(self):
         first = self.auth.register(
             self.auth.RegisterRequest(

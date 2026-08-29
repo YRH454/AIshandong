@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from app.services.llm import qwen_tts, qwen_asr
 from app.api.auth import enforce_registered_request
+from app.utils.input_security import validate_media_reference
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def asr(req: ASRRequest):
     """语音 → 文本"""
     if not req.audio:
         raise HTTPException(400, "音频不能为空")
+    validate_media_reference(req.audio, field="音频地址")
     text = qwen_asr(req.audio)
     if not text:
         raise HTTPException(500, "语音识别失败，请确认已配置千问 API Key")

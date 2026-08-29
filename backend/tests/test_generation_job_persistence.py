@@ -60,6 +60,23 @@ class GenerationJobPersistenceTest(unittest.TestCase):
         self.assertEqual(restored["result"], {"artifact_id": 91})
         self.assertIsNone(self.jobs.get_generation_job(job["job_id"], 8))
 
+    def test_incomplete_jobs_become_retryable_after_restart(self):
+        self.jobs.init_tables()
+        self.database.execute(
+            "INSERT INTO generation_jobs "
+            "(job_id, user_id, kind, status, retryable, progress, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
+            ("restart-job", 7, "interactive", "running", True, '{"percent":42}'),
+        )
+        recovered = self.jobs.recover_incomplete_jobs()
+        self.assertEqual(recovered, 1)
+        restored = self.jobs.get_generation_job("restart-job", 7)
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored["status"], "failed")
+        self.assertEqual(restored["error_code"], "worker_restarted")
+        self.assertTrue(restored["retryable"])
+        self.assertEqual(restored["progress"]["phase"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -628,3 +628,7 @@ input:focus-visible {
     transition: none;
   }
 }
+.auth-forgot-link, .auth-reset-back { border: 0; background: transparent; color: #a86832; font: inherit; font-size: 11px; cursor: pointer; }
+.auth-forgot-link { justify-self: end; margin-top: -7px; padding: 0; }
+.auth-reset-back { align-self: flex-start; margin: -4px 0 2px; padding: 0; }
+.auth-reset-message { margin: -2px 0 0; padding: 9px 11px; border-radius: 9px; color: #7c694f; background: #fbf3e6; font-size: 11px; line-height: 1.55; }

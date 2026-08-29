@@ -75,6 +75,96 @@ export async function logoutApi() {
   return res.json() as Promise<{ status: 'logged_out' }>
 }
 
+export async function changePasswordApi(currentPassword: string, newPassword: string) {
+  const res = await apiFetch(`${API_BASE}/auth/change-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+  if (!res.ok) throw (await res.json().catch(() => ({})))
+  return res.json() as Promise<{ status: 'password_changed'; token: string }>
+}
+
+export async function requestPasswordResetApi(email: string) {
+  const res = await apiFetch(`${API_BASE}/auth/password-reset/request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  if (!res.ok) throw (await res.json().catch(() => ({})))
+  return res.json() as Promise<{ status: string; message: string; debug_token?: string }>
+}
+
+export async function confirmPasswordResetApi(token: string, newPassword: string) {
+  const res = await apiFetch(`${API_BASE}/auth/password-reset/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  })
+  if (!res.ok) throw (await res.json().catch(() => ({})))
+  return res.json() as Promise<{ status: 'password_reset' }>
+}
+
+export interface AdminOverview {
+  users: { total: number; active: number; inactive: number }
+  active_sessions: number
+  generation_jobs: Array<{ status: string; count: number }>
+  audit_events: number
+}
+
+export interface AdminUserRecord {
+  id: number
+  username: string
+  email: string
+  role: string
+  avatar_url?: string
+  is_active: boolean | number
+  email_verified?: boolean | number
+  created_at: string
+}
+
+export interface AdminGenerationJobRecord {
+  job_id: string
+  user_id: number
+  kind: string
+  status: string
+  error_code?: string | null
+  retryable?: boolean | number
+  progress?: Record<string, unknown> | string | null
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export async function getAdminOverview() {
+  const res = await apiFetch(`${API_BASE}/auth/admin/overview`)
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '读取管理员概览失败')
+  return res.json() as Promise<AdminOverview>
+}
+
+export async function getAdminUsers(limit = 100, offset = 0) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  const res = await apiFetch(`${API_BASE}/auth/admin/users?${params}`)
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '读取用户列表失败')
+  return res.json() as Promise<{ users: AdminUserRecord[]; total: number; summary: Record<string, number> }>
+}
+
+export async function getAdminGenerationJobs(limit = 80) {
+  const res = await apiFetch(`${API_BASE}/auth/admin/jobs?limit=${limit}`)
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '读取后台任务失败')
+  return res.json() as Promise<{ jobs: AdminGenerationJobRecord[] }>
+}
+
+export async function updateAdminUser(userId: number, updates: { is_active?: boolean; role?: 'user' | 'admin' }) {
+  const res = await apiFetch(`${API_BASE}/auth/admin/users/${userId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '更新用户状态失败')
+  return res.json() as Promise<{ user: AdminUserRecord }>
+}
+
 // ---- 聊天（流式）----
 export interface ImageStudyAnalysis {
   title: string

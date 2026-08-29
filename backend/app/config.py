@@ -66,6 +66,18 @@ JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 1440))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
 COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax").strip().lower()
 
+# There is intentionally one bootstrap administrator for this deployment.
+# Keeping the address in configuration makes the rule explicit and prevents a
+# public registration request from choosing its own role.
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "3539921167@qq.com").strip().lower()
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "EGOIST").strip() or "EGOIST"
+ADMIN_BOOTSTRAP_PASSWORD = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip()
+PASSWORD_RESET_DEBUG = os.getenv(
+    "PASSWORD_RESET_DEBUG", "0" if IS_PRODUCTION else "1"
+).lower() in {"1", "true", "yes"}
+AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "12"))
+AUTH_RATE_WINDOW_SECONDS = int(os.getenv("AUTH_RATE_WINDOW_SECONDS", "300"))
+
 
 def validate_runtime_config() -> None:
     """Fail fast for unsafe production settings.
@@ -82,6 +94,14 @@ def validate_runtime_config() -> None:
         errors.append("COOKIE_SAMESITE=none 时必须同时启用 COOKIE_SECURE=1")
     if JWT_EXPIRE_MINUTES <= 0 or JWT_EXPIRE_MINUTES > 60 * 24 * 30:
         errors.append("JWT_EXPIRE_MINUTES 必须在 1 到 43200 分钟之间")
+    if not ADMIN_EMAIL or "@" not in ADMIN_EMAIL or len(ADMIN_EMAIL) > 160:
+        errors.append("ADMIN_EMAIL 必须是有效邮箱")
+    if ADMIN_BOOTSTRAP_PASSWORD and not 8 <= len(ADMIN_BOOTSTRAP_PASSWORD) <= 128:
+        errors.append("ADMIN_BOOTSTRAP_PASSWORD 必须在 8 到 128 位之间")
+    if AUTH_RATE_LIMIT <= 0 or AUTH_RATE_LIMIT > 1000:
+        errors.append("AUTH_RATE_LIMIT 必须在 1 到 1000 之间")
+    if AUTH_RATE_WINDOW_SECONDS <= 0 or AUTH_RATE_WINDOW_SECONDS > 24 * 60 * 60:
+        errors.append("AUTH_RATE_WINDOW_SECONDS 必须在 1 到 86400 秒之间")
     if DB_BACKEND not in {"sqlite", "mysql"}:
         errors.append("DB_BACKEND 只能是 sqlite 或 mysql")
 

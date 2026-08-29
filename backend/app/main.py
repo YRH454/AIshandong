@@ -3,10 +3,11 @@
 精简后端:只保留 聊天答疑 / 资料生成 / 千问多模态 / 认证 四组能力。
 """
 import os
+from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.api.auth import cleanup_expired_sessions, router as auth_router
+from app.api.auth import cleanup_expired_sessions, ensure_primary_admin, router as auth_router
 from app.api.resources import router as resources_router
 from app.api.tutor import router as tutor_router
 from app.api.vision import router as vision_router
@@ -29,6 +30,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def operational_headers(request, call_next):
+    """Attach a request id and conservative browser security headers."""
+    request_id = request.headers.get("x-request-id") or uuid4().hex
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), geolocation=(), payment=()"
+    if os.getenv("APP_ENV", "development").strip().lower() in {"production", "prod"}:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 app.include_router(auth_router)
 app.include_router(resources_router)
 app.include_router(tutor_router)
@@ -49,9 +65,10 @@ def startup():
     from app.services.map_db import init_tables as init_map_tables
     from app.services.practice_db import init_tables as init_practice_tables
     from app.services.learning_progress_db import init_tables as init_learning_progress_tables
-    from app.services.generation_jobs import init_tables as init_generation_job_tables
+    from app.services.generation_jobs import init_tables as init_generation_job_tables, recover_incomplete_jobs
     from app.services.media_db import prune_video_tasks
     init_core_tables()
+    ensure_primary_admin()
     run_migrations()
     cleanup_expired_sessions()
     init_tables()
@@ -60,6 +77,7 @@ def startup():
     init_practice_tables()
     init_learning_progress_tables()
     init_generation_job_tables()
+    recover_incomplete_jobs()
     prune_video_tasks()
     # 预热 RAG 知识库索引（后台线程，不阻塞启动；失败静默回退关键词检索）
     def _prewarm_rag():

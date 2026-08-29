@@ -4780,3 +4780,6 @@ html[data-page-hidden] *::after { animation-play-state: paused !important; }
     padding: 14px 10px 12px;
   }
 }
+.admin-nav-item { color: #8b5f30; }
+.admin-nav-item:hover { background: rgba(226, 158, 78, .1); color: #75471e; }
+.admin-nav-badge { margin-left: auto; padding: 3px 5px; border: 1px solid rgba(166, 93, 29, .2); border-radius: 5px; color: #a66a32; background: rgba(247, 223, 187, .4); font-size: 8px; font-weight: 800; letter-spacing: .08em; }

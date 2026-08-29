@@ -3,8 +3,8 @@ import type { ChangeEvent, CSSProperties, FormEvent } from 'react'
 import {
   Archive, ArrowLeft, ArrowUp, AudioLines, BookOpen, Check, ChevronRight, CirclePlay, ClipboardCheck,
   Code2, Clock3, FileDown, FileQuestion, FileText, FolderOpen, History, House, Image, LayoutTemplate, Library, Map as MapIcon,
-  Languages, ListChecks, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
-  Ellipsis, LogOut, Pin, Share2, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
+  Languages, ListChecks, LockKeyhole, Menu, Mic, NotebookTabs, Palette, Paperclip, PenLine, Presentation, RotateCcw, Save, Search,
+  Ellipsis, LogOut, Pin, Share2, ShieldCheck, SlidersHorizontal, Sparkles, Star, Tags, Trash2, Trees, Video, Waves, X, ZoomIn,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -21,6 +21,8 @@ type KnowledgeMapSceneComposition = NonNullable<KnowledgeMapSceneDirection['comp
 type KnowledgeMapSceneVisualLanguage = NonNullable<KnowledgeMapSceneDirection['visual_language']>
 import { DynamicExplanationPlayer, type DynamicExplanationProgress } from './components/DynamicExplanationPlayer'
 import { FocusDesk, type FocusDeskSeedTask } from './components/FocusDesk'
+import AdminConsole from './components/AdminConsole'
+import AccountSecurityDialog from './components/AccountSecurityDialog'
 import { LearningDocumentBooklet, type StudyBookletDocument } from './components/LearningDocumentBooklet'
 import { PracticePackBooklet, type PracticePackEntry } from './components/PracticePackBooklet'
 import { parseDynamicExplanation, type DynamicExplanationData, type DynamicExplanationScene } from './components/dynamicExplanation'
@@ -1887,6 +1889,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
   const [solarExplorerOpen, setSolarExplorerOpen] = useState(false)
   const [studyArchiveOpen, setStudyArchiveOpen] = useState(false)
   const [focusDeskOpen, setFocusDeskOpen] = useState(false)
+  const [adminConsoleOpen, setAdminConsoleOpen] = useState(false)
+  const [accountSecurityOpen, setAccountSecurityOpen] = useState(false)
   const [learningGuideOpen, setLearningGuideOpen] = useState(() => localStorage.getItem('rhyme-learning-guide-open') !== 'false')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<SettingsView>('menu')
@@ -7250,6 +7254,13 @@ function App({ currentUser, onLogout }: AppProps = {}) {
             <Clock3 size={18} strokeWidth={1.8} />
             <span>{t('专注工作台', 'Focus desk')}</span>
           </button>
+          {currentUser?.role === 'admin' && currentUser.email?.toLowerCase() === '3539921167@qq.com' && (
+            <button className="nav-item admin-nav-item" title={t('管理员中心', 'Admin center')} onClick={() => { setAdminConsoleOpen(true); setSidebarOpen(false) }}>
+              <ShieldCheck size={18} strokeWidth={1.8} />
+              <span>{t('管理员中心', 'Admin center')}</span>
+              <span className="admin-nav-badge">ADMIN</span>
+            </button>
+          )}
         </nav>
 
         <div className="sidebar-section">
@@ -7381,6 +7392,14 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                   <b>{currentUser?.username || '学习者'}</b>
                   <small>{currentUser?.role === 'admin' ? t('管理员账户', 'Administrator') : t('已登录账户', 'Signed-in account')}</small>
                 </div>
+                {currentUser?.role === 'admin' && currentUser.email?.toLowerCase() === '3539921167@qq.com' && (
+                  <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); setAdminConsoleOpen(true) }}>
+                    <ShieldCheck size={15} strokeWidth={1.9} />{t('管理员中心', 'Admin center')}
+                  </button>
+                )}
+                <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); setAccountSecurityOpen(true) }}>
+                  <LockKeyhole size={15} strokeWidth={1.9} />{t('账户安全', 'Account security')}
+                </button>
                 <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); onLogout() }}>
                   <LogOut size={15} strokeWidth={1.9} />{t('退出登录', 'Sign out')}
                 </button>
@@ -9540,6 +9559,14 @@ function App({ currentUser, onLogout }: AppProps = {}) {
           )}
           {foregroundDynamicTask.running && <i aria-hidden="true"><span /></i>}
         </aside>
+      )}
+
+      {adminConsoleOpen && currentUser?.role === 'admin' && currentUser.email?.toLowerCase() === '3539921167@qq.com' && (
+        <AdminConsole onClose={() => setAdminConsoleOpen(false)} />
+      )}
+
+      {accountSecurityOpen && (
+        <AccountSecurityDialog onClose={() => setAccountSecurityOpen(false)} />
       )}
 
       {notice && (

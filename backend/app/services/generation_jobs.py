@@ -100,6 +100,61 @@ def init_tables() -> None:
     _ensure_job_table()
 
 
+def recover_incomplete_jobs() -> int:
+    """Close jobs whose in-process worker disappeared during a restart.
+
+    The lightweight local worker cannot reconstruct arbitrary Python closures
+    after a process restart.  Leaving those rows as ``running`` is worse: the
+    browser would show an endless spinner forever.  We convert them into an
+    explicit, retryable failure so the original request remains visible and
+    the existing UI can offer a one-click retry.
+    """
+    if not _ensure_job_table():
+        return 0
+    try:
+        from app.database import execute, query
+
+        rows = query(
+            "SELECT job_id, progress FROM generation_jobs "
+            "WHERE status IN ('queued', 'running')"
+        )
+        recovered = 0
+        for row in rows:
+            progress = row.get("progress")
+            if isinstance(progress, str):
+                try:
+                    progress = json.loads(progress)
+                except json.JSONDecodeError:
+                    progress = {}
+            progress = progress if isinstance(progress, dict) else {}
+            progress = {
+                **progress,
+                "phase": "failed",
+                "label": "服务重启后需要重试",
+                "message": "服务在生成过程中重启，原始学习内容已保留，可立即重试。",
+                "error_code": "worker_restarted",
+            }
+            execute(
+                "UPDATE generation_jobs SET status = 'failed', error = %s, "
+                "error_code = 'worker_restarted', retryable = %s, progress = %s, "
+                "finished_at = CURRENT_TIMESTAMP WHERE job_id = %s "
+                "AND status IN ('queued', 'running')",
+                (
+                    "服务在生成过程中重启，原始学习内容已保留，可立即重试。",
+                    True,
+                    _json(progress),
+                    row["job_id"],
+                ),
+            )
+            recovered += 1
+        if recovered:
+            logger.warning("recovered %s incomplete generation jobs after startup", recovered)
+        return recovered
+    except Exception:
+        logger.debug("could not recover incomplete generation jobs", exc_info=True)
+        return 0
+
+
 def _json(value: Any) -> str | None:
     if value is None:
         return None

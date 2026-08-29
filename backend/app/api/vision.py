@@ -10,6 +10,7 @@ from app.services.llm import chat_qwen_vision
 from app.safety.content_filter import filter_content
 from app.safety.garbage_detector import detect_garbage_input
 from app.api.auth import enforce_registered_request
+from app.utils.input_security import validate_remote_media_reference
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,17 @@ def _validate_images(images: list[str]) -> None:
     for img in images:
         if img.startswith("data:"):
             try:
+                header, b64 = img.split(",", 1)
+                if ";base64" not in header or not header.startswith("data:image/"):
+                    raise HTTPException(400, "仅支持 base64 图片数据")
                 b64 = img.split(",", 1)[1]
                 if len(b64) > 8 * 1024 * 1024 * 1.4:  # 原始图 ≤8MB
                     raise HTTPException(400, "图片过大，请压缩后上传")
-                base64.b64decode(b64[:64] + "=" * ((4 - len(b64[:64]) % 4) % 4))
+                base64.b64decode(b64, validate=True)
             except (ValueError, TypeError, IndexError) as e:
                 raise HTTPException(400, f"图片数据格式错误: {e}")
+        else:
+            validate_remote_media_reference(img, field="图片地址")
 
 
 @router.post("/analyze")

@@ -19,8 +19,17 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_token(user_id: int, role: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    issued_at = datetime.now(timezone.utc)
     return jwt.encode(
-        {"sub": str(user_id), "role": role, "exp": expire},
+        {
+            "sub": str(user_id),
+            "role": role,
+            "iat": issued_at,
+            # A unique id prevents two logins in the same second from
+            # colliding with auth_sessions.token_hash's unique constraint.
+            "jti": secrets.token_urlsafe(18),
+            "exp": expire,
+        },
         JWT_SECRET, algorithm=JWT_ALGORITHM,
     )
 

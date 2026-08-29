@@ -8,6 +8,7 @@ export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/
 export async function registerApi(username: string, email: string, password: string) {
   const res = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ username, email, password }),
   })
   if (!res.ok) throw (await res.json().catch(() => ({})))
@@ -17,6 +18,7 @@ export async function registerApi(username: string, email: string, password: str
 export async function loginApi(email: string, password: string) {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ email, password }),
   })
   if (!res.ok) throw (await res.json().catch(() => ({})))
@@ -27,9 +29,22 @@ export async function guestLoginApi() {
   const res = await fetch(`${API_BASE}/auth/guest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
   })
   if (!res.ok) throw (await res.json().catch(() => ({})))
   return res.json()
+}
+
+export async function getCurrentUserApi() {
+  const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' })
+  if (!res.ok) throw (await res.json().catch(() => ({})))
+  return res.json()
+}
+
+export async function logoutApi() {
+  const res = await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' })
+  if (!res.ok) throw (await res.json().catch(() => ({})))
+  return res.json() as Promise<{ status: 'logged_out' }>
 }
 
 // ---- 聊天（流式）----

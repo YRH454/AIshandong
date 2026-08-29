@@ -48,3 +48,4 @@ MIMO_BASE_URL = os.getenv("MIMO_BASE_URL")
 JWT_SECRET = os.getenv("JWT_SECRET", "rhyme-local-demo-secret-change-in-production")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", 1440))
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}

@@ -1,15 +1,15 @@
-"""Small in-process queue for long-running learning-material generation.
+"""Background generation jobs with a durable database snapshot and memory fallback.
 
-The demo runs as one local FastAPI process, so a durable external queue would add
-more operational weight than value.  This queue keeps slow model work off the
-request that created it while still exposing an explicit, pollable job state to
-the UI.  Jobs intentionally contain no prompt text or API credentials.
+The worker remains lightweight for local development, while job status, progress,
+results and safe failures are written to the database when it is available. Jobs
+intentionally contain no prompt text or API credentials.
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 from threading import Lock
 from typing import Any, Callable
@@ -21,10 +21,19 @@ _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="rhyme-generati
 _jobs: dict[str, dict[str, Any]] = {}
 _lock = Lock()
 _expiry = timedelta(hours=1)
+_persistence_enabled: bool | None = None
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value).replace(" ", "T")
 
 
 def _public(job: dict[str, Any]) -> dict[str, Any]:
@@ -32,12 +41,12 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
         "job_id": job["job_id"],
         "kind": job["kind"],
         "status": job["status"],
-        "created_at": job["created_at"].isoformat(),
+        "created_at": _iso(job["created_at"]),
     }
     if job.get("started_at"):
-        response["started_at"] = job["started_at"].isoformat()
+        response["started_at"] = _iso(job["started_at"])
     if job.get("finished_at"):
-        response["finished_at"] = job["finished_at"].isoformat()
+        response["finished_at"] = _iso(job["finished_at"])
     if job["status"] == "completed":
         response["result"] = job.get("result", {})
     if job["status"] == "failed":
@@ -47,6 +56,177 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("progress"):
         response["progress"] = dict(job["progress"])
     return response
+
+
+def _ensure_job_table() -> bool:
+    """Create the durable job table when a database is available.
+
+    Tests and lightweight offline imports may run without a usable database;
+    those callers keep the original in-memory behaviour instead of failing
+    generation solely because persistence is unavailable.
+    """
+    global _persistence_enabled
+    if _persistence_enabled is not None:
+        return _persistence_enabled
+    try:
+        from app.database import execute
+
+        execute("""
+            CREATE TABLE IF NOT EXISTS generation_jobs (
+                job_id VARCHAR(80) PRIMARY KEY,
+                user_id INT NOT NULL,
+                kind VARCHAR(48) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                dedupe_key VARCHAR(240),
+                result JSON,
+                error TEXT,
+                error_code VARCHAR(48),
+                retryable TINYINT NOT NULL DEFAULT 1,
+                progress JSON,
+                created_at DATETIME NOT NULL,
+                started_at DATETIME,
+                finished_at DATETIME
+            )
+        """)
+        _persistence_enabled = True
+    except Exception:
+        logger.debug("generation job persistence unavailable; using memory fallback", exc_info=True)
+        _persistence_enabled = False
+    return _persistence_enabled
+
+
+def init_tables() -> None:
+    """Prepare the job snapshot table during application startup."""
+    _ensure_job_table()
+
+
+def _json(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _reset_persistence_after_schema_error(exc: BaseException) -> bool:
+    """Allow tests/dev reloads that swap the SQLite file at runtime to recover."""
+    message = str(exc).lower()
+    if "no such table" not in message and "doesn't exist" not in message:
+        return False
+    global _persistence_enabled
+    _persistence_enabled = None
+    return True
+
+
+def _db_insert(job: dict[str, Any]) -> None:
+    if not _ensure_job_table():
+        return
+    try:
+        from app.database import execute
+
+        execute(
+            "INSERT INTO generation_jobs "
+            "(job_id, user_id, kind, status, dedupe_key, result, error, error_code, retryable, progress, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                job["job_id"], job["user_id"], job["kind"], job["status"], job.get("dedupe_key"),
+                _json(job.get("result")), job.get("error"), job.get("error_code"),
+                bool(job.get("retryable", True)), _json(job.get("progress", {})),
+                job["created_at"].replace(tzinfo=None),
+            ),
+        )
+    except Exception as exc:
+        if _reset_persistence_after_schema_error(exc) and _ensure_job_table():
+            try:
+                _db_insert(job)
+                return
+            except Exception:
+                pass
+        logger.debug("could not persist generation job %s", job.get("job_id"), exc_info=True)
+
+
+def _db_update(job: dict[str, Any]) -> None:
+    if not _ensure_job_table():
+        return
+    try:
+        from app.database import execute
+
+        execute(
+            "UPDATE generation_jobs SET status = %s, result = %s, error = %s, error_code = %s, "
+            "retryable = %s, progress = %s, started_at = %s, finished_at = %s WHERE job_id = %s",
+            (
+                job["status"], _json(job.get("result")), job.get("error"), job.get("error_code"),
+                bool(job.get("retryable", True)), _json(job.get("progress", {})),
+                job["started_at"].replace(tzinfo=None) if hasattr(job.get("started_at"), "replace") else job.get("started_at"),
+                job["finished_at"].replace(tzinfo=None) if hasattr(job.get("finished_at"), "replace") else job.get("finished_at"),
+                job["job_id"],
+            ),
+        )
+    except Exception as exc:
+        if _reset_persistence_after_schema_error(exc) and _ensure_job_table():
+            try:
+                _db_update(job)
+                return
+            except Exception:
+                pass
+        logger.debug("could not update generation job %s", job.get("job_id"), exc_info=True)
+
+
+def _db_prune() -> None:
+    if not _ensure_job_table():
+        return
+    try:
+        from app.database import execute
+
+        cutoff = (_now() - _expiry).replace(tzinfo=None)
+        execute(
+            "DELETE FROM generation_jobs WHERE finished_at IS NOT NULL AND finished_at < %s",
+            (cutoff,),
+        )
+    except Exception as exc:
+        _reset_persistence_after_schema_error(exc)
+        logger.debug("could not prune persisted generation jobs", exc_info=True)
+
+
+def _db_fetch(job_id: str, user_id: int) -> dict[str, Any] | None:
+    if not _ensure_job_table():
+        return None
+    try:
+        from app.database import query
+
+        rows = query(
+            "SELECT job_id, user_id, kind, status, dedupe_key, result, error, error_code, "
+            "retryable, progress, created_at, started_at, finished_at "
+            "FROM generation_jobs WHERE job_id = %s AND user_id = %s",
+            (job_id, user_id),
+        )
+    except Exception as exc:
+        _reset_persistence_after_schema_error(exc)
+        logger.debug("could not read persisted generation job %s", job_id, exc_info=True)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    try:
+        result = row.get("result")
+        progress = row.get("progress")
+        result = result if isinstance(result, (dict, list)) else json.loads(result) if result else None
+        progress = progress if isinstance(progress, dict) else json.loads(progress) if progress else {}
+    except (TypeError, json.JSONDecodeError):
+        result, progress = None, {}
+    return {
+        "job_id": row["job_id"],
+        "user_id": row["user_id"],
+        "kind": row["kind"],
+        "status": row["status"],
+        "dedupe_key": row.get("dedupe_key"),
+        "result": result,
+        "error": row.get("error"),
+        "error_code": row.get("error_code"),
+        "retryable": bool(row.get("retryable", 1)),
+        "progress": progress,
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+    }
 
 
 def _exception_chain(exc: BaseException) -> list[BaseException]:
@@ -133,6 +313,8 @@ def submit_generation_job(
     with_progress: bool = False,
 ) -> dict[str, Any]:
     """Queue work and return a safe public snapshot immediately."""
+    _ensure_job_table()
+    _db_prune()
     job_id = uuid4().hex
     job = {
         "job_id": job_id,
@@ -160,12 +342,14 @@ def submit_generation_job(
             ), None)
             if existing:
                 return _public(existing)
+        _db_insert(job)
         _jobs[job_id] = job
 
     def run() -> None:
         with _lock:
             job["status"] = "running"
             job["started_at"] = _now()
+            _db_update(job)
         try:
             def report_progress(update: dict[str, Any]) -> None:
                 if not isinstance(update, dict):
@@ -174,6 +358,7 @@ def submit_generation_job(
                     if job["status"] not in {"queued", "running"}:
                         return
                     job["progress"] = {**job.get("progress", {}), **update}
+                    _db_update(job)
 
             result = work(report_progress) if with_progress else work()
         except Exception as exc:  # The API returns a safe failure through polling.
@@ -201,11 +386,13 @@ def submit_generation_job(
                     "error_code": failure["error_code"],
                 }
                 job["finished_at"] = _now()
+                _db_update(job)
             return
         with _lock:
             job["status"] = "completed"
             job["result"] = result
             job["finished_at"] = _now()
+            _db_update(job)
 
     _executor.submit(run)
     return _public(job)
@@ -215,6 +402,9 @@ def get_generation_job(job_id: str, user_id: int) -> dict[str, Any] | None:
     with _lock:
         _prune_locked()
         job = _jobs.get(job_id)
-        if not job or job["user_id"] != user_id:
-            return None
-        return _public(job)
+        if job:
+            if job["user_id"] != user_id:
+                return None
+            return _public(job)
+    persisted = _db_fetch(job_id, user_id)
+    return _public(persisted) if persisted else None

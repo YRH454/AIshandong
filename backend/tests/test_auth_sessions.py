@@ -1,0 +1,98 @@
+"""Regression coverage for persisted login and guest sessions."""
+
+import importlib
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+from fastapi import HTTPException, Response
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+class AuthSessionTest(unittest.TestCase):
+    def setUp(self):
+        handle, self.database_path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        os.environ["DB_BACKEND"] = "sqlite"
+        os.environ["SQLITE_PATH"] = self.database_path
+
+        from app import config
+        from app import database
+        from app.api import auth
+
+        config.DB_BACKEND = "sqlite"
+        config.SQLITE_PATH = self.database_path
+        importlib.reload(database)
+        importlib.reload(auth)
+        database.init_core_tables()
+        self.database = database
+        self.auth = auth
+
+    def tearDown(self):
+        try:
+            os.remove(self.database_path)
+        except FileNotFoundError:
+            pass
+
+    def test_registered_session_is_cookie_backed_and_revocable(self):
+        response = Response()
+        result = self.auth.register(
+            self.auth.RegisterRequest(
+                username="学习者",
+                email="Learner@Example.com",
+                password="secret123",
+            ),
+            response,
+        )
+
+        self.assertIn("rhyme_access_token=", response.headers["set-cookie"])
+        self.assertEqual(result["user"]["email"], "learner@example.com")
+        token = result["token"]
+        current = self.auth.me(authorization=f"Bearer {token}")
+        self.assertEqual(current["user"]["id"], result["user"]["id"])
+
+        self.auth.logout(Response(), authorization=f"Bearer {token}")
+        with self.assertRaises(HTTPException) as error:
+            self.auth.me(authorization=f"Bearer {token}")
+        self.assertEqual(error.exception.status_code, 401)
+
+    def test_guest_session_uses_hash_and_expires(self):
+        response = Response()
+        result = self.auth.guest_login(response)
+        token = result["token"]
+
+        self.assertIn("rhyme_guest_token=", response.headers["set-cookie"])
+        current = self.auth.me(authorization=f"Guest {token}")
+        self.assertEqual(current["user"]["role"], "guest")
+        self.assertEqual(current["user"]["remaining"], 3)
+
+        self.database.execute(
+            "UPDATE guest_sessions SET expires_at = %s WHERE id = %s",
+            ("2000-01-01 00:00:00", result["user"]["session_id"]),
+        )
+        with self.assertRaises(HTTPException) as error:
+            self.auth.me(authorization=f"Guest {token}")
+        self.assertEqual(error.exception.status_code, 401)
+
+    def test_admin_dependency_rejects_regular_user(self):
+        response = Response()
+        result = self.auth.register(
+            self.auth.RegisterRequest(
+                username="普通用户",
+                email="user@example.com",
+                password="secret123",
+            ),
+            response,
+        )
+        user = self.auth.me(authorization=f"Bearer {result['token']}")["user"]
+
+        with self.assertRaises(HTTPException) as error:
+            self.auth.get_admin_user(user)
+        self.assertEqual(error.exception.status_code, 403)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -153,11 +153,24 @@ def init_core_tables():
         CREATE TABLE IF NOT EXISTS guest_sessions (
             id INT PRIMARY KEY,
             session_token VARCHAR(255) NOT NULL,
+            session_token_hash VARCHAR(128),
             remaining_questions INT DEFAULT 3,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             expires_at DATETIME
         )
     """)
+    execute("""
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            token_hash VARCHAR(128) NOT NULL UNIQUE,
+            expires_at DATETIME NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            revoked_at DATETIME NULL
+        )
+    """)
+    _ensure_column("guest_sessions", "session_token_hash", "VARCHAR(128)")
     execute("""
         CREATE TABLE IF NOT EXISTS student_profiles (
             id INT AUTO_INCREMENT PRIMARY KEY,

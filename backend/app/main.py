@@ -70,13 +70,16 @@ def startup():
     init_core_tables()
     ensure_primary_admin()
     run_migrations()
-    cleanup_expired_sessions()
     init_tables()
     init_artifact_tables()
     init_map_tables()
     init_practice_tables()
     init_learning_progress_tables()
     init_generation_job_tables()
+    # Clean guest rows only after every feature table exists; otherwise an
+    # expired session could be removed while its temporary feature data is
+    # left behind in a table that had not been bootstrapped yet.
+    cleanup_expired_sessions()
     recover_incomplete_jobs()
     prune_video_tasks()
     # 预热 RAG 知识库索引（后台线程，不阻塞启动；失败静默回退关键词检索）

@@ -190,6 +190,12 @@ button { color: inherit; }
 }
 .new-chat .icon { color: var(--accent); }
 .new-chat:hover { background: var(--hover); }
+.guest-session-note { display: flex; align-items: flex-start; gap: 8px; margin: 10px 7px 2px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--accent-soft) 70%, transparent); color: var(--accent-deep); }
+.guest-session-note > span { width: 6px; height: 6px; flex: 0 0 6px; margin-top: 4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.guest-session-note > div { min-width: 0; display: grid; gap: 2px; }
+.guest-session-note b, .guest-session-note small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guest-session-note b { font-size: 10px; font-weight: 700; }
+.guest-session-note small { color: var(--muted); font-size: 9px; line-height: 1.4; }
 
 .primary-nav { margin: 10px 0 14px; }
 .nav-item, .history-item {

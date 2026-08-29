@@ -48,7 +48,8 @@ class AuthSessionTest(unittest.TestCase):
             response,
         )
 
-        self.assertIn("rhyme_access_token=", response.headers["set-cookie"])
+        set_cookie_headers = [value.decode("latin-1") for key, value in response.raw_headers if key.lower() == b"set-cookie"]
+        self.assertTrue(any("rhyme_access_token=" in value for value in set_cookie_headers))
         self.assertEqual(result["user"]["email"], "learner@example.com")
         token = result["token"]
         current = self.auth.me(authorization=f"Bearer {token}")
@@ -64,11 +65,20 @@ class AuthSessionTest(unittest.TestCase):
         result = self.auth.guest_login(response)
         token = result["token"]
 
-        self.assertIn("rhyme_guest_token=", response.headers["set-cookie"])
+        set_cookie_headers = [value.decode("latin-1") for key, value in response.raw_headers if key.lower() == b"set-cookie"]
+        self.assertTrue(any("rhyme_guest_token=" in value for value in set_cookie_headers))
         current = self.auth.me(authorization=f"Guest {token}")
         self.assertEqual(current["user"]["role"], "guest")
-        self.assertEqual(current["user"]["remaining"], 3)
+        self.assertLess(current["user"]["id"], 0)
+        self.assertEqual(current["user"]["id"], -result["user"]["session_id"])
+        self.assertIsNone(current["user"]["remaining"])
+        self.assertTrue(all(current["permissions"].get(name) for name in ("profile_build", "resource_generate", "learning_path", "tutoring")))
+        self.assertFalse(current["permissions"]["data_save"])
 
+        self.database.execute(
+            "INSERT INTO chat_sessions (user_id, session_type, messages, learning_state) VALUES (%s, %s, %s, %s)",
+            (-result["user"]["session_id"], "tutoring", "[]", "{}"),
+        )
         self.database.execute(
             "UPDATE guest_sessions SET expires_at = %s WHERE id = %s",
             ("2000-01-01 00:00:00", result["user"]["session_id"]),
@@ -76,16 +86,37 @@ class AuthSessionTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             self.auth.me(authorization=f"Guest {token}")
         self.assertEqual(error.exception.status_code, 401)
+        self.assertFalse(self.database.query(
+            "SELECT id FROM guest_sessions WHERE id = %s",
+            (result["user"]["session_id"],),
+        ))
+        self.assertFalse(self.database.query(
+            "SELECT id FROM chat_sessions WHERE user_id = %s",
+            (-result["user"]["session_id"],),
+        ))
 
     def test_guest_logout_revokes_the_temporary_session(self):
         response = Response()
         result = self.auth.guest_login(response)
         token = result["token"]
 
+        self.database.execute(
+            "INSERT INTO chat_sessions (user_id, session_type, messages, learning_state) VALUES (%s, %s, %s, %s)",
+            (-result["user"]["session_id"], "tutoring", "[]", "{}"),
+        )
+        self.assertTrue(self.database.query(
+            "SELECT id FROM chat_sessions WHERE user_id = %s",
+            (-result["user"]["session_id"],),
+        ))
+
         self.auth.logout(Response(), authorization=f"Guest {token}")
         with self.assertRaises(HTTPException) as error:
             self.auth.me(authorization=f"Guest {token}")
         self.assertEqual(error.exception.status_code, 401)
+        self.assertFalse(self.database.query(
+            "SELECT id FROM chat_sessions WHERE user_id = %s",
+            (-result["user"]["session_id"],),
+        ))
 
     def test_admin_dependency_rejects_regular_user(self):
         response = Response()

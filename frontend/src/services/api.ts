@@ -24,6 +24,7 @@ export interface AuthUser {
   avatar_url?: string
   session_id?: number
   remaining?: number
+  expires_at?: string
 }
 
 export interface AuthResponse {

@@ -53,6 +53,8 @@ type FocusDeskProps = {
   course?: string
   topic?: string
   seedTasks?: FocusDeskSeedTask[]
+  storageScope?: string
+  storageMode?: 'local' | 'session'
   onClose: () => void
 }
 
@@ -102,9 +104,9 @@ function isFocusDeskState(value: unknown): value is FocusDeskState {
     && typeof state.running === 'boolean'
 }
 
-function readState(seedTasks: FocusDeskSeedTask[]) {
+function readState(seedTasks: FocusDeskSeedTask[], storage: Storage, storageKey: string) {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
+    const parsed: unknown = JSON.parse(storage.getItem(storageKey) || 'null')
     if (!isFocusDeskState(parsed)) return createDefaultState(seedTasks)
     const current = parsed as FocusDeskState
     const today = todayKey()
@@ -156,8 +158,10 @@ function localisedTaskText(task: FocusTask, language: FocusDeskLanguage, field: 
   return field === 'title' ? task.title : task.detail
 }
 
-export function FocusDesk({ language, course, topic, seedTasks = [], onClose }: FocusDeskProps) {
-  const [state, setState] = useState<FocusDeskState>(() => readState(seedTasks))
+export function FocusDesk({ language, course, topic, seedTasks = [], storageScope, storageMode = 'local', onClose }: FocusDeskProps) {
+  const storage = storageMode === 'session' ? window.sessionStorage : window.localStorage
+  const storageKey = storageScope ? `${STORAGE_KEY}:${storageScope}` : STORAGE_KEY
+  const [state, setState] = useState<FocusDeskState>(() => readState(seedTasks, storage, storageKey))
   const [clock, setClock] = useState(() => Date.now())
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [phaseMessage, setPhaseMessage] = useState('')
@@ -167,7 +171,7 @@ export function FocusDesk({ language, course, topic, seedTasks = [], onClose }: 
   const seedSignature = useMemo(() => seedTasks.map(task => `${task.id}:${task.title}`).join('|'), [seedTasks])
 
   useEffect(() => {
-    const parsed = readState(seedTasks)
+    const parsed = readState(seedTasks, storage, storageKey)
     setState(current => {
       const existingIds = new Set(current.tasks.map(task => task.id))
       const additions = parsed.tasks.filter(task => !existingIds.has(task.id))
@@ -180,11 +184,11 @@ export function FocusDesk({ language, course, topic, seedTasks = [], onClose }: 
         : current
     })
     // The signature makes newly generated study-plan tasks available without replacing personal tasks.
-  }, [seedSignature, seedTasks])
+  }, [seedSignature, seedTasks, storage, storageKey])
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  }, [state])
+    try { storage.setItem(storageKey, JSON.stringify(state)) } catch { /* storage can be unavailable in private browsing */ }
+  }, [state, storage, storageKey])
 
   useEffect(() => {
     if (!state.running) return

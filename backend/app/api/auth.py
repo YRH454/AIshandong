@@ -26,6 +26,7 @@ from app.config import (
     PASSWORD_RESET_DEBUG,
 )
 from app.database import execute, insert_with_next_id, query
+from app.services.guest_data import guest_user_id, purge_guest_data
 from app.utils.auth import (
     create_token,
     decode_token,
@@ -163,16 +164,20 @@ def _clear_cookies(response: Response) -> None:
 
 
 def _extract_access_token(authorization: str | None, access_cookie: str | None) -> str | None:
-    if authorization and authorization.startswith("Bearer "):
-        return authorization[7:].strip() or None
+    if authorization:
+        if authorization.startswith("Bearer "):
+            return authorization[7:].strip() or None
+        return None
     if isinstance(access_cookie, str) and access_cookie.strip():
         return access_cookie.strip()
     return None
 
 
 def _extract_guest_token(authorization: str | None, guest_cookie: str | None) -> str | None:
-    if authorization and authorization.startswith("Guest "):
-        return authorization[6:].strip() or None
+    if authorization:
+        if authorization.startswith("Guest "):
+            return authorization[6:].strip() or None
+        return None
     if isinstance(guest_cookie, str) and guest_cookie.strip():
         return guest_cookie.strip()
     return None
@@ -213,15 +218,22 @@ def cleanup_expired_sessions() -> None:
         "DELETE FROM auth_sessions WHERE revoked_at IS NOT NULL AND revoked_at < %s",
         (_utc_string(-24 * 30),),
     )
-    execute(
-        "DELETE FROM guest_sessions WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP"
+    expired_guests = query(
+        "SELECT id FROM guest_sessions "
+        "WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP"
     )
+    for row in expired_guests:
+        try:
+            purge_guest_data(guest_user_id(int(row["id"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    execute("DELETE FROM guest_sessions WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP")
 
 
 def _find_guest_session(token: str) -> dict | None:
     hashed = query(
         "SELECT * FROM guest_sessions "
-        "WHERE session_token_hash = %s AND remaining_questions > 0 "
+        "WHERE session_token_hash = %s "
         "AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
         (_token_hash(token),),
     )
@@ -230,21 +242,78 @@ def _find_guest_session(token: str) -> dict | None:
     # Compatibility for guest sessions created before token hashes were added.
     legacy = query(
         "SELECT * FROM guest_sessions "
-        "WHERE session_token = %s AND remaining_questions > 0 "
+        "WHERE session_token = %s "
         "AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
         (token,),
     )
-    return legacy[0] if legacy else None
+    if legacy:
+        return legacy[0]
+
+    # Expiry is checked on every authenticated request, not only at process
+    # startup.  Remove the matching guest's temporary rows immediately so an
+    # expired browser session cannot leave its generated content behind until
+    # the next restart.
+    expired = query(
+        "SELECT id FROM guest_sessions "
+        "WHERE (session_token_hash = %s OR session_token = %s) "
+        "AND expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP",
+        (_token_hash(token), token),
+    )
+    for row in expired:
+        try:
+            session_id = int(row["id"])
+            purge_guest_data(guest_user_id(session_id))
+            execute("DELETE FROM guest_sessions WHERE id = %s", (session_id,))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _purge_guest_token(token: str | None) -> None:
+    """Revoke one guest token and remove every row owned by its session."""
+    if not isinstance(token, str) or not token.strip():
+        return
+    token = token.strip()
+    guest_rows = query(
+        "SELECT id FROM guest_sessions WHERE session_token_hash = %s OR session_token = %s",
+        (_token_hash(token), token),
+    )
+    for row in guest_rows:
+        try:
+            purge_guest_data(guest_user_id(int(row["id"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    execute(
+        "DELETE FROM guest_sessions WHERE session_token_hash = %s OR session_token = %s",
+        (_token_hash(token), token),
+    )
 
 
 def get_current_user(
     authorization: str | None = Header(default=None),
     access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE),
+    guest_cookie: str | None = Cookie(default=None, alias=GUEST_COOKIE),
 ) -> dict:
-    """从 Bearer token 或 HttpOnly cookie 解析当前注册用户。"""
+    """从注册用户凭证或游客凭证解析当前会话用户。"""
     token = _extract_access_token(authorization, access_cookie)
     if not token:
-        raise HTTPException(status_code=401, detail="未登录")
+        guest_token = _extract_guest_token(authorization, guest_cookie)
+        if not guest_token:
+            raise HTTPException(status_code=401, detail="未登录")
+        session = _find_guest_session(guest_token)
+        if not session:
+            raise HTTPException(status_code=401, detail="游客会话已过期，请重新开始体验")
+        session_id = int(session["id"])
+        return {
+            "id": guest_user_id(session_id),
+            "username": "游客",
+            "email": "",
+            "role": "guest",
+            "avatar_url": "",
+            "session_id": session_id,
+            "remaining": session.get("remaining_questions"),
+            "expires_at": session.get("expires_at"),
+        }
 
     payload = _decode_active_access_token(token)
     try:
@@ -321,8 +390,14 @@ async def enforce_registered_request(
     can still parse the same payload for the endpoint after this dependency
     completes.
     """
-    if user.get("role") not in {"user", "admin"}:
-        raise HTTPException(status_code=403, detail="该功能需要注册用户登录")
+    if user.get("role") not in {"user", "admin", "guest"}:
+        raise HTTPException(status_code=403, detail="该功能需要登录")
+    if user.get("role") == "guest":
+        try:
+            if int(user.get("id", 0)) >= 0 or int(user.get("session_id", 0)) != abs(int(user["id"])):
+                raise HTTPException(status_code=403, detail="游客会话无效，请重新开始体验")
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=403, detail="游客会话无效，请重新开始体验") from None
 
     # Credentialed browser requests must originate from a configured frontend.
     # This is a lightweight CSRF boundary for the cookie-backed API and still
@@ -371,6 +446,8 @@ def change_password(
     user: dict = Depends(get_current_user),
 ):
     """Change the current account password and rotate its sessions."""
+    if user.get("role") == "guest":
+        raise HTTPException(403, "游客模式不能修改账户密码")
     _validate_password(req.new_password)
     if req.current_password == req.new_password:
         raise HTTPException(400, "新密码不能与当前密码相同")
@@ -445,7 +522,12 @@ def confirm_password_reset(req: PasswordResetConfirmRequest):
 
 
 @router.post("/register")
-def register(req: RegisterRequest, response: Response, request: Request = None):
+def register(
+    req: RegisterRequest,
+    response: Response,
+    request: Request = None,
+    guest_cookie: str | None = Cookie(default=None, alias=GUEST_COOKIE),
+):
     """注册新用户并建立登录会话。"""
     _enforce_auth_rate_limit(request, "register")
     username = " ".join(req.username.strip().split())
@@ -474,7 +556,9 @@ def register(req: RegisterRequest, response: Response, request: Request = None):
         "users",
         {"username": username, "email": email, "password_hash": password_hash, "role": role},
     )
+    _purge_guest_token(guest_cookie)
     token = _issue_access_token(user_id, role, response)
+    response.delete_cookie(GUEST_COOKIE, path="/")
     return {
         "token": token,
         "user": {
@@ -488,7 +572,12 @@ def register(req: RegisterRequest, response: Response, request: Request = None):
 
 
 @router.post("/login")
-def login(req: LoginRequest, response: Response, request: Request = None):
+def login(
+    req: LoginRequest,
+    response: Response,
+    request: Request = None,
+    guest_cookie: str | None = Cookie(default=None, alias=GUEST_COOKIE),
+):
     """用户登录并建立可撤销的会话。"""
     _enforce_auth_rate_limit(request, "login")
     email = req.email.strip().lower()
@@ -502,7 +591,9 @@ def login(req: LoginRequest, response: Response, request: Request = None):
 
     user = rows[0]
     user["role"] = _effective_user_role(user)
+    _purge_guest_token(guest_cookie)
     token = _issue_access_token(user["id"], user["role"], response)
+    response.delete_cookie(GUEST_COOKIE, path="/")
     return {
         "token": token,
         "user": {
@@ -516,9 +607,14 @@ def login(req: LoginRequest, response: Response, request: Request = None):
 
 
 @router.post("/guest")
-def guest_login(response: Response, request: Request = None):
-    """游客模式：无需注册，生成 24 小时临时会话。"""
+def guest_login(
+    response: Response,
+    request: Request = None,
+    guest_cookie: str | None = Cookie(default=None, alias=GUEST_COOKIE),
+):
+    """游客模式：无需注册，生成可完整使用功能的 24 小时临时会话。"""
     _enforce_auth_rate_limit(request, "guest")
+    _purge_guest_token(guest_cookie)
     token = generate_guest_token()
     expires_at = _utc_string(24)
     session_id = insert_with_next_id(
@@ -526,15 +622,24 @@ def guest_login(response: Response, request: Request = None):
         {
             "session_token": "",
             "session_token_hash": _token_hash(token),
-            "remaining_questions": 3,
+            "remaining_questions": -1,
             "expires_at": expires_at,
         },
     )
+    # Do not let a stale registered-user cookie take precedence over the new
+    # guest session in the same browser.
+    response.delete_cookie(ACCESS_COOKIE, path="/")
     _set_cookie(response, GUEST_COOKIE, token, 24 * 60 * 60)
     return {
         "token": token,
-        "user": {"id": 0, "username": "游客", "role": "guest", "session_id": session_id},
-        "notice": "游客模式可体验3个维度的画像构建，数据24小时后自动清除",
+        "user": {
+            "id": guest_user_id(session_id),
+            "username": "游客",
+            "role": "guest",
+            "session_id": session_id,
+            "remaining": None,
+        },
+        "notice": "游客可使用完整学习功能；本次数据仅在临时会话中保留，退出或24小时后自动清除",
         "expires_at": expires_at,
     }
 
@@ -556,13 +661,9 @@ def logout(
         )
     guest_token = _extract_guest_token(authorization, guest_cookie)
     if guest_token:
-        # Guest sessions are intentionally disposable. Removing the row on
-        # logout makes a copied guest token invalid immediately instead of
-        # leaving it usable until the normal 24-hour expiry.
-        execute(
-            "DELETE FROM guest_sessions WHERE session_token_hash = %s OR session_token = %s",
-            (_token_hash(guest_token), guest_token),
-        )
+        # Guest sessions are intentionally disposable. Purge all temporary
+        # feature data before revoking the token so a later login starts clean.
+        _purge_guest_token(guest_token)
     _clear_cookies(response)
     return {"status": "logged_out"}
 
@@ -601,13 +702,14 @@ def me(
             raise HTTPException(status_code=401, detail="游客会话已过期，请重新开始体验")
         return {
             "user": {
-                "id": 0,
+                "id": guest_user_id(int(session["id"])),
                 "username": "游客",
                 "role": "guest",
                 "session_id": session["id"],
-                "remaining": session["remaining_questions"],
+                "remaining": None,
+                "expires_at": session.get("expires_at"),
             },
-            "permissions": {"profile_build": True, "resource_generate": False},
+            "permissions": dict(ROLE_PERMISSIONS["guest"]),
         }
 
     return {"user": {"role": "anonymous"}, "notice": "请登录或使用游客模式"}

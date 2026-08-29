@@ -1797,6 +1797,7 @@ type AppProps = {
 
 function App({ currentUser, onLogout }: AppProps = {}) {
   const LOCAL_USER_ID = currentUser?.id ?? DEMO_USER_ID
+  const isGuest = currentUser?.role === 'guest'
   const [view, setView] = useState<View>('welcome')
   const [input, setInput] = useState('')
   const [turns, setTurns] = useState<ChatTurn[]>([])
@@ -7238,6 +7239,12 @@ function App({ currentUser, onLogout }: AppProps = {}) {
           <Icon name="pen" size={17} />
           <span>{t('新学习对话', 'New learning chat')}</span>
         </button>
+        {isGuest && (
+          <div className="guest-session-note" role="status">
+            <span aria-hidden="true" />
+            <div><b>{t('游客完整体验', 'Full guest access')}</b><small>{t('退出后清除本次数据', 'Data clears when you exit')}</small></div>
+          </div>
+        )}
 
         <nav className="primary-nav" aria-label={t('学习空间', 'Learning space')}>
           <button className={view === 'library' ? 'nav-item active' : 'nav-item'} title={t('资料库', 'Library')} onClick={() => { setView('library'); setLibraryPreviewId(null); setLibraryTopic(null); setSidebarOpen(false) }}>
@@ -7390,16 +7397,16 @@ function App({ currentUser, onLogout }: AppProps = {}) {
               <div className="profile-menu" role="menu" aria-label={t('账户菜单', 'Account menu')}>
                 <div className="profile-menu-summary">
                   <b>{currentUser?.username || '学习者'}</b>
-                  <small>{currentUser?.role === 'admin' ? t('管理员账户', 'Administrator') : t('已登录账户', 'Signed-in account')}</small>
+                  <small>{currentUser?.role === 'admin' ? t('管理员账户', 'Administrator') : isGuest ? t('临时游客会话', 'Temporary guest session') : t('已登录账户', 'Signed-in account')}</small>
                 </div>
                 {currentUser?.role === 'admin' && currentUser.email?.toLowerCase() === '3539921167@qq.com' && (
                   <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); setAdminConsoleOpen(true) }}>
                     <ShieldCheck size={15} strokeWidth={1.9} />{t('管理员中心', 'Admin center')}
                   </button>
                 )}
-                <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); setAccountSecurityOpen(true) }}>
+                {!isGuest && <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); setAccountSecurityOpen(true) }}>
                   <LockKeyhole size={15} strokeWidth={1.9} />{t('账户安全', 'Account security')}
-                </button>
+                </button>}
                 <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); onLogout() }}>
                   <LogOut size={15} strokeWidth={1.9} />{t('退出登录', 'Sign out')}
                 </button>
@@ -9497,6 +9504,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
           course={learningState.subject}
           topic={learningState.current_topic}
           seedTasks={focusDeskSeedTasks}
+          storageScope={String(LOCAL_USER_ID)}
+          storageMode={isGuest ? 'session' : 'local'}
           onClose={() => setFocusDeskOpen(false)}
         />
       )}

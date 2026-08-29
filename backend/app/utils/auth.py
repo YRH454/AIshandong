@@ -48,10 +48,10 @@ def generate_guest_token() -> str:
 # ---- Permission Matrix ----
 ROLE_PERMISSIONS = {
     "guest": {
-        "profile_build": True,      # 可以试用画像（限3维度）
-        "resource_generate": False,  # 不能生成资源
-        "learning_path": False,      # 不能使用学习路径
-        "tutoring": False,           # 不能使用辅导
+        "profile_build": True,
+        "resource_generate": True,   # 游客也可完整体验，数据只在临时会话内保留
+        "learning_path": True,
+        "tutoring": True,
         "data_save": False,          # 数据不持久化（24h过期）
         "admin_access": False,
     },

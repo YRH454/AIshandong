@@ -69,10 +69,18 @@ class RequestIdentityGuardTest(unittest.TestCase):
             asyncio.run(self.guard(request, self.user))
         self.assertEqual(error.exception.status_code, 403)
 
-    def test_guest_is_not_allowed_on_persistent_routers(self):
-        request = make_request("POST", {"user_id": 0})
+    def test_guest_can_use_persistent_router_with_session_scoped_id(self):
+        guest = {"id": -12, "username": "游客", "role": "guest", "session_id": 12}
+        request = make_request("POST", {"user_id": -12}, "user_id=-12")
+        result = asyncio.run(self.guard(request, guest))
+        self.assertEqual(result, guest)
+        self.assertEqual(request.state.current_user["id"], -12)
+
+    def test_guest_cannot_impersonate_another_session(self):
+        guest = {"id": -12, "username": "游客", "role": "guest", "session_id": 12}
+        request = make_request("POST", {"user_id": -13})
         with self.assertRaises(HTTPException) as error:
-            asyncio.run(self.guard(request, {"id": 0, "username": "游客", "role": "guest"}))
+            asyncio.run(self.guard(request, guest))
         self.assertEqual(error.exception.status_code, 403)
 
     def test_unconfigured_browser_origin_is_rejected(self):

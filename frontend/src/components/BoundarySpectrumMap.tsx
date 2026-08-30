@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import type { KnowledgeMapData, KnowledgeMapNode } from './EditableKnowledgeMap'
+import { FormulaText } from './FormulaText'
 import type { KnowledgeMapSemanticRole } from './knowledgeMapSemantic'
 
 type BoundarySpectrumMapProps = {
@@ -60,8 +61,8 @@ function NodeAction({ node, className, icon, title, description, onOpen }: {
     <span className="boundary-node-icon" aria-hidden="true">{icon}</span>
     <span className="boundary-node-copy">
       <small>{title}</small>
-      <strong>{node.label}</strong>
-      <p>{brief(description || node.detail, 126)}</p>
+      <strong><FormulaText>{node.label}</FormulaText></strong>
+      <p><FormulaText>{brief(description || node.detail, 126)}</FormulaText></p>
     </span>
     <ChevronRight className="boundary-node-arrow" size={18} aria-hidden="true" />
   </button>
@@ -110,9 +111,9 @@ export function BoundarySpectrumMap({ data, language = 'zh-CN', onNodeSelect, on
     <header className="boundary-spectrum-head">
       <button type="button" className="boundary-spectrum-topic" onClick={() => open(root)}>
         <span>{copy.source}</span>
-        <strong>{root.label}</strong>
+        <strong><FormulaText>{root.label}</FormulaText></strong>
       </button>
-      <p>{brief(root.detail, 152)}</p>
+      <p><FormulaText>{brief(root.detail, 152)}</FormulaText></p>
       {onEdit && <button type="button" className="boundary-spectrum-edit" onClick={onEdit}><PenLine size={15} />{copy.edit}</button>}
     </header>
 
@@ -121,8 +122,8 @@ export function BoundarySpectrumMap({ data, language = 'zh-CN', onNodeSelect, on
         <button type="button" onClick={() => definition && open(definition)}>
           <span><Brackets size={21} strokeWidth={1.8} /></span>
           <small>{copy.definition}</small>
-          <strong>{definition?.label || root.label}</strong>
-          <p>{brief(definition?.detail || root.detail, 178)}</p>
+          <strong><FormulaText>{definition?.label || root.label}</FormulaText></strong>
+          <p><FormulaText>{brief(definition?.detail || root.detail, 178)}</FormulaText></p>
         </button>
       </div>
 
@@ -140,8 +141,8 @@ export function BoundarySpectrumMap({ data, language = 'zh-CN', onNodeSelect, on
           <button type="button" onClick={() => condition && open(condition)}>
             <span><ShieldCheck size={22} strokeWidth={1.8} /></span>
             <small>{copy.condition}</small>
-            <strong>{condition?.label || copy.threshold}</strong>
-            <p>{brief(condition?.detail, 104)}</p>
+            <strong><FormulaText>{condition?.label || copy.threshold}</FormulaText></strong>
+            <p><FormulaText>{brief(condition?.detail, 104)}</FormulaText></p>
           </button>
           <em>{copy.threshold}</em>
         </section>
@@ -170,7 +171,7 @@ export function BoundarySpectrumMap({ data, language = 'zh-CN', onNodeSelect, on
           <ScanSearch size={23} strokeWidth={1.8} />
           <span><small>{copy.check}</small><strong>{check?.label || copy.check}</strong></span>
         </button>
-        <ol>{steps.map((step, index) => <li key={`${step}-${index}`}><b>{index + 1}</b><span>{clean(step)}</span></li>)}</ol>
+        <ol>{steps.map((step, index) => <li key={`${step}-${index}`}><b>{index + 1}</b><span><FormulaText>{clean(step)}</FormulaText></span></li>)}</ol>
       </section>
 
       <p className="boundary-spectrum-hint">{copy.hint}</p>
@@ -179,9 +180,9 @@ export function BoundarySpectrumMap({ data, language = 'zh-CN', onNodeSelect, on
         <button type="button" className="boundary-detail-close" onClick={() => setActiveNode(null)} aria-label={copy.close}><X size={19} /></button>
         <span className="boundary-detail-group">{activeNode.group || copy.source}</span>
         <h3>{activeNode.label}</h3>
-        <p>{clean(activeNode.detail)}</p>
-        {activeNode.example && <div><strong>{copy.example}</strong><p>{clean(activeNode.example)}</p></div>}
-        {activeNode.mistake && <div className="is-warning"><strong>{copy.mistake}</strong><p>{clean(activeNode.mistake)}</p></div>}
+        <p><FormulaText>{clean(activeNode.detail)}</FormulaText></p>
+        {activeNode.example && <div><strong>{copy.example}</strong><p><FormulaText>{clean(activeNode.example)}</FormulaText></p></div>}
+        {activeNode.mistake && <div className="is-warning"><strong>{copy.mistake}</strong><p><FormulaText>{clean(activeNode.mistake)}</FormulaText></p></div>}
       </aside>}
     </div>
   </section>

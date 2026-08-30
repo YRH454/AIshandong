@@ -1,6 +1,7 @@
 import { BadgeCheck, CircuitBoard, Gauge, KeyRound, PenLine, RotateCcw, ShieldAlert } from 'lucide-react'
 import { type KnowledgeMapData, type KnowledgeMapNode } from './EditableKnowledgeMap'
 import { createSemanticNodePicker } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 type CausalMechanismLabProps = {
   data: KnowledgeMapData
@@ -31,9 +32,9 @@ function Chamber({ node, className, label, icon, onSelect, inspectOnly }: {
   return <button type="button" className={className} onClick={() => onSelect(node.id)} aria-label={`${label}: ${node.label}`}>
     <span className="causal-chamber-icon" aria-hidden="true">{icon}</span>
     <span className="causal-chamber-label">{label}</span>
-    <strong>{node.label}</strong>
-    <small>{compact(node.visual?.formula || node.detail, 72)}</small>
-    <em>{node.example ? compact(node.example, 34) : inspectOnly ? '点击查看节点说明' : '点击拆解这一环'}</em>
+    <strong><FormulaText>{node.label}</FormulaText></strong>
+    <small><FormulaText>{compact(node.visual?.formula || node.detail, 72)}</FormulaText></small>
+    <em>{node.example ? <FormulaText>{compact(node.example, 34)}</FormulaText> : inspectOnly ? '点击查看节点说明' : '点击拆解这一环'}</em>
   </button>
 }
 
@@ -64,8 +65,8 @@ export function CausalMechanismLab({ data, language = 'zh-CN', onNodeSelect, onE
 
   return <section className="causal-machine-map" aria-label={copy.map}>
     <header className="causal-machine-head">
-      <button type="button" className="causal-machine-topic" onClick={() => onNodeSelect(root.id)}><span>{copy.center}</span><strong>{root.label}</strong></button>
-      <p>{compact(root.detail, 116)}</p>
+      <button type="button" className="causal-machine-topic" onClick={() => onNodeSelect(root.id)}><span>{copy.center}</span><strong><FormulaText>{root.label}</FormulaText></strong></button>
+      <p><FormulaText>{compact(root.detail, 116)}</FormulaText></p>
       {onEdit && <button type="button" className="causal-machine-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
 

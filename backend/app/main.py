@@ -7,7 +7,12 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.api.auth import cleanup_expired_sessions, ensure_primary_admin, router as auth_router
+from app.api.auth import (
+    cleanup_expired_sessions,
+    ensure_primary_admin,
+    mark_legacy_demo_accounts,
+    router as auth_router,
+)
 from app.api.resources import router as resources_router
 from app.api.tutor import router as tutor_router
 from app.api.vision import router as vision_router
@@ -69,6 +74,7 @@ def startup():
     from app.services.media_db import prune_video_tasks
     init_core_tables()
     ensure_primary_admin()
+    mark_legacy_demo_accounts()
     run_migrations()
     init_tables()
     init_artifact_tables()

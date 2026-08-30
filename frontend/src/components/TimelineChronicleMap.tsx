@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import type { KnowledgeMapData, KnowledgeMapNode } from './EditableKnowledgeMap'
 import { createSemanticNodePicker } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 type TimelineChronicleMapProps = {
   data: KnowledgeMapData
@@ -161,9 +162,9 @@ export function TimelineChronicleMap({ data, language = 'zh-CN', onNodeSelect, o
     <header className="chronicle-head">
       <button type="button" className="chronicle-topic" onClick={() => onNodeSelect(root.id)}>
         <History size={21} aria-hidden="true" />
-        <span><small>{copy.chronicle}</small><strong>{root.label}</strong></span>
+        <span><small>{copy.chronicle}</small><strong><FormulaText>{root.label}</FormulaText></strong></span>
       </button>
-      <p>{compact(root.detail, 150)}</p>
+      <p><FormulaText>{compact(root.detail, 150)}</FormulaText></p>
       {onEdit && <button type="button" className="chronicle-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
 
@@ -171,7 +172,7 @@ export function TimelineChronicleMap({ data, language = 'zh-CN', onNodeSelect, o
       <div className="chronicle-stage-index" aria-hidden="true">{String(safeIndex + 1).padStart(2, '0')}</div>
       <aside className={`chronicle-neighbor chronicle-before ${previousStage ? '' : 'is-empty'}`}>
         <span>{copy.before}</span>
-        {previousStage ? <button type="button" onClick={() => moveTo(safeIndex - 1)}><ArrowLeft size={16} /><strong>{previousStage.node.label}</strong><small>{compact(previousStage.node.detail, 82)}</small></button> : <p>{copy.noBefore}</p>}
+        {previousStage ? <button type="button" onClick={() => moveTo(safeIndex - 1)}><ArrowLeft size={16} /><strong><FormulaText>{previousStage.node.label}</FormulaText></strong><small><FormulaText>{compact(previousStage.node.detail, 82)}</FormulaText></small></button> : <p>{copy.noBefore}</p>}
       </aside>
 
       <article className="chronicle-active-chapter" key={active.node.id}>
@@ -180,10 +181,10 @@ export function TimelineChronicleMap({ data, language = 'zh-CN', onNodeSelect, o
           <em>{active.role}</em>
         </div>
         <div className="chronicle-chapter-icon" aria-hidden="true">{active.icon}</div>
-        <h2>{active.node.label}</h2>
-        <p>{active.node.detail}</p>
-        {active.node.visual?.formula && <code>{active.node.visual.formula}</code>}
-        {active.node.example && <blockquote><Sparkles size={15} /><span>{active.node.example}</span></blockquote>}
+        <h2><FormulaText>{active.node.label}</FormulaText></h2>
+        <p><FormulaText>{active.node.detail}</FormulaText></p>
+        {active.node.visual?.formula && <code><FormulaText>{active.node.visual.formula}</FormulaText></code>}
+        {active.node.example && <blockquote><Sparkles size={15} /><span><FormulaText>{active.node.example}</FormulaText></span></blockquote>}
         <button type="button" className="chronicle-evidence" onClick={() => onNodeSelect(active.node.id)}><Eye size={15} />{copy.evidence}</button>
       </article>
 
@@ -195,7 +196,7 @@ export function TimelineChronicleMap({ data, language = 'zh-CN', onNodeSelect, o
 
       <aside className={`chronicle-neighbor chronicle-after ${nextStage ? '' : 'is-empty'}`}>
         <span>{copy.after}</span>
-        {nextStage ? <button type="button" onClick={() => moveTo(safeIndex + 1)}><strong>{nextStage.node.label}</strong><small>{compact(nextStage.node.detail, 82)}</small><ArrowRight size={16} /></button> : <p>{copy.completed}</p>}
+        {nextStage ? <button type="button" onClick={() => moveTo(safeIndex + 1)}><strong><FormulaText>{nextStage.node.label}</FormulaText></strong><small><FormulaText>{compact(nextStage.node.detail, 82)}</FormulaText></small><ArrowRight size={16} /></button> : <p>{copy.completed}</p>}
       </aside>
 
       <section className="chronicle-change-strip" aria-label={copy.shift}>

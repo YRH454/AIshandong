@@ -54,7 +54,9 @@ function Connection(config){
 	self.drawRelationship = function(ctx){
 		if(!self.shouldShowRelationship()) return;
 
-		var label = self.relationship.label;
+		var label = window.RHYME_MATH && window.RHYME_MATH.readable
+			? window.RHYME_MATH.readable(self.relationship.label)
+			: String(self.relationship.label || "").replace(/\\([A-Za-z]+)/g, "$1");
 		if(!label) return;
 		var dx = self.to.x-self.from.x;
 		var dy = self.to.y-self.from.y;

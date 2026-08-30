@@ -176,6 +176,43 @@ class AuthSessionTest(unittest.TestCase):
             self.auth.get_admin_user(regular_user)
         self.assertEqual(error.exception.status_code, 403)
 
+    def test_admin_views_exclude_legacy_fixture_accounts(self):
+        self.database.insert_with_next_id(
+            "users",
+            {
+                "username": "EGOIST",
+                "email": "3539921167@qq.com",
+                "password_hash": self.auth.hash_password("secret123"),
+                "role": "admin",
+            },
+        )
+        self.database.insert_with_next_id(
+            "users",
+            {
+                "username": "fbuser41",
+                "email": "fb41@t.com",
+                "password_hash": self.auth.hash_password("secret123"),
+                "role": "user",
+            },
+        )
+        self.database.insert_with_next_id(
+            "users",
+            {
+                "username": "真实学习者",
+                "email": "learner@example.com",
+                "password_hash": self.auth.hash_password("secret123"),
+                "role": "user",
+            },
+        )
+
+        self.assertEqual(self.auth.mark_legacy_demo_accounts(), 1)
+        admin = {"id": 1, "email": "3539921167@qq.com", "role": "admin"}
+        visible = self.auth.list_users(admin)
+        self.assertEqual(visible["total"], 2)
+        self.assertEqual({row["email"] for row in visible["users"]}, {"3539921167@qq.com", "learner@example.com"})
+        overview = self.auth.admin_overview(admin)
+        self.assertEqual(overview["users"]["total"], 2)
+
     def test_password_reset_revokes_previous_sessions(self):
         registered = self.auth.register(
             self.auth.RegisterRequest(

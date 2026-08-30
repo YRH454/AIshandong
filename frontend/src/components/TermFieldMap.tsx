@@ -1,5 +1,6 @@
 import { BookMarked, Braces, Languages, PenLine, ScanText, Tags, TextQuote } from 'lucide-react'
 import type { KnowledgeMapData, KnowledgeMapNode } from './EditableKnowledgeMap'
+import { FormulaText } from './FormulaText'
 
 type TermFieldMapProps = {
   data: KnowledgeMapData
@@ -31,7 +32,7 @@ function TermEntry({ node, index, label, className, onSelect }: {
   if (!node) return null
   return <button type="button" className={className} onClick={() => onSelect(node.id)} aria-label={`${label}: ${node.label}`}>
     <span>{String(index).padStart(2, '0')}</span>
-    <div><small>{label}</small><strong>{node.label}</strong><p>{brief(node.detail, 78)}</p></div>
+    <div><small>{label}</small><strong><FormulaText>{node.label}</FormulaText></strong><p><FormulaText>{brief(node.detail, 78)}</FormulaText></p></div>
   </button>
 }
 
@@ -59,13 +60,13 @@ export function TermFieldMap({ data, language = 'zh-CN', onNodeSelect, onEdit }:
 
   return <section className="term-field-map" aria-label={copy.map}>
     <header className="term-field-head">
-      <button type="button" className="term-field-topic" onClick={() => onNodeSelect(root.id)}><span>{copy.source}</span><strong>{root.label}</strong></button>
-      <p>{brief(root.detail, 124)}</p>
+      <button type="button" className="term-field-topic" onClick={() => onNodeSelect(root.id)}><span>{copy.source}</span><strong><FormulaText>{root.label}</FormulaText></strong></button>
+      <p><FormulaText>{brief(root.detail, 124)}</FormulaText></p>
       {onEdit && <button type="button" className="term-field-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
     <div className="term-field-stage">
       <aside className="term-field-index" aria-hidden="true"><BookMarked size={20} /><span>TERM INDEX</span><i>NAME</i><i>MEANING</i><i>USAGE</i></aside>
-      <button type="button" className="term-field-core" onClick={() => onNodeSelect(root.id)}><Tags size={20} /><small>{copy.source}</small><strong>{root.label}</strong><p>{brief(root.detail, 94)}</p></button>
+      <button type="button" className="term-field-core" onClick={() => onNodeSelect(root.id)}><Tags size={20} /><small>{copy.source}</small><strong><FormulaText>{root.label}</FormulaText></strong><p><FormulaText>{brief(root.detail, 94)}</FormulaText></p></button>
       <div className="term-field-column term-field-column-name">
         <Languages size={17} aria-hidden="true" />
         <TermEntry node={original} index={1} label={copy.original} className="term-entry term-entry-primary" onSelect={onNodeSelect} />
@@ -81,7 +82,7 @@ export function TermFieldMap({ data, language = 'zh-CN', onNodeSelect, onEdit }:
         <TermEntry node={signal} index={5} label={copy.signal} className="term-entry term-entry-primary" onSelect={onNodeSelect} />
         <TermEntry node={confusing} index={6} label={copy.confusing} className="term-entry" onSelect={onNodeSelect} />
       </div>
-      <button type="button" className="term-field-retell" onClick={() => retell && onNodeSelect(retell.id)} disabled={!retell}><Braces size={18} /><span><small>{copy.retell}</small><strong>{retell?.label}</strong><p>{brief(retell?.detail, 90)}</p></span></button>
+      <button type="button" className="term-field-retell" onClick={() => retell && onNodeSelect(retell.id)} disabled={!retell}><Braces size={18} /><span><small>{copy.retell}</small><strong><FormulaText>{retell?.label}</FormulaText></strong><p><FormulaText>{brief(retell?.detail, 90)}</FormulaText></p></span></button>
       <p className="term-field-hint">{copy.hint}</p>
     </div>
   </section>

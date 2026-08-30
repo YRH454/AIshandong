@@ -195,6 +195,7 @@ def init_core_tables():
             role VARCHAR(20) DEFAULT 'user',
             avatar_url VARCHAR(500) DEFAULT '',
             is_active TINYINT DEFAULT 1,
+            is_demo TINYINT DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -221,6 +222,10 @@ def init_core_tables():
     """)
     _ensure_column("guest_sessions", "session_token_hash", "VARCHAR(128)")
     _ensure_column("users", "email_verified", "TINYINT DEFAULT 0")
+    # Keep the provenance of legacy local fixtures separate from real
+    # accounts.  The column is intentionally additive so existing databases
+    # can be upgraded without rewriting user rows.
+    _ensure_column("users", "is_demo", "TINYINT DEFAULT 0")
     execute("""
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
             id INT AUTO_INCREMENT PRIMARY KEY,

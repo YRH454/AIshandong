@@ -28,6 +28,7 @@ import type {
   DynamicExplanationScene,
   DynamicExplanationSceneEngine,
 } from './dynamicExplanation'
+import { FormulaText } from './FormulaText'
 
 type DynamicProcessTheaterProps = {
   scene: DynamicExplanationScene
@@ -270,7 +271,7 @@ export function DynamicProcessTheater({ scene, language, learningMode = 'guided'
     <section className={`process-theater engine-${engine} ${faultMode ? 'is-fault-mode' : ''}`} aria-label={tr('知识过程剧场', 'Knowledge process theater')}>
       <header className="process-theater-head">
         <div>
-          <h2>{baseModel.subject}</h2>
+          <h2><FormulaText>{baseModel.subject}</FormulaText></h2>
           <p>{learningMode === 'challenge'
             ? tr('先预测下一次变化，再让过程给出答案。', 'Predict the next change before the process reveals it.')
             : tr('观察对象如何变化，并亲手控制每一个因果节拍。', 'Observe state changes and control every causal beat.')}</p>
@@ -306,7 +307,7 @@ export function DynamicProcessTheater({ scene, language, learningMode = 'guided'
           <div className="process-stage-grid" aria-hidden="true" />
           <div className="process-stage-heading">
             <span>{faultMode ? tr('错误分支正在运行', 'Fault branch running') : tr('实时状态', 'Live state')}</span>
-            <strong>{activeBeat?.label || scene.title}</strong>
+            <strong><FormulaText>{activeBeat?.label || scene.title}</FormulaText></strong>
           </div>
 
           {recursion ? (
@@ -341,58 +342,58 @@ export function DynamicProcessTheater({ scene, language, learningMode = 'guided'
               <div className="runtime-value-panel">
                 <span>{faultMode ? tr('风险状态', 'Risk state') : descending ? tr('当前参数', 'Current argument') : tr('正在合并', 'Merging result')}</span>
                 <strong>{faultMode && activeFrame <= 1 ? 'STACK ↗' : descending ? activeFrame : factorial(Math.max(1, activeFrame))}</strong>
-                <p>{activeBeat?.detail}</p>
+                <p><FormulaText>{activeBeat?.detail}</FormulaText></p>
               </div>
             </div>
           ) : engine === 'comparison' ? (
             <div className="semantic-runtime comparison-runtime" key={`${scene.id}-${safeStep}`}>
-              <section className="comparison-side before"><span>{tr('条件 A', 'Condition A')}</span><strong>{scene.visual.before || baseModel.actors[0]?.label || scene.title}</strong><div>{baseModel.actors.slice(0, comparisonSplit).map((actor, index) => <button type="button" className={index === activeActorIndex ? 'active' : ''} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{index + 1}</i><span>{actor.label}</span></button>)}</div></section>
+              <section className="comparison-side before"><span>{tr('条件 A', 'Condition A')}</span><strong><FormulaText>{scene.visual.before || baseModel.actors[0]?.label || scene.title}</FormulaText></strong><div>{baseModel.actors.slice(0, comparisonSplit).map((actor, index) => <button type="button" className={index === activeActorIndex ? 'active' : ''} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{index + 1}</i><span><FormulaText>{actor.label}</FormulaText></span></button>)}</div></section>
               <div className={`comparison-balance ${activeActorIndex < comparisonSplit ? 'leans-before' : 'leans-after'}`} aria-hidden="true"><Scale size={34} /><i /><small>{activeAction}</small></div>
-              <section className="comparison-side after"><span>{tr('条件 B', 'Condition B')}</span><strong>{scene.visual.after || baseModel.actors.at(-1)?.label || scene.key_point}</strong><div>{baseModel.actors.slice(comparisonSplit).map((actor, index) => <button type="button" className={visitedActors.has(actor.id) ? 'active' : ''} key={actor.id} onClick={() => moveStep(Math.min(index + comparisonSplit, beats.length - 1))}><i>{index + 1}</i><span>{actor.label}</span></button>)}</div></section>
-              <p>{showNarration ? activeBeat?.detail || scene.narration : tr('先判断哪一侧会改变，以及为什么。', 'Predict which side changes and why.')}</p>
+              <section className="comparison-side after"><span>{tr('条件 B', 'Condition B')}</span><strong><FormulaText>{scene.visual.after || baseModel.actors.at(-1)?.label || scene.key_point}</FormulaText></strong><div>{baseModel.actors.slice(comparisonSplit).map((actor, index) => <button type="button" className={visitedActors.has(actor.id) ? 'active' : ''} key={actor.id} onClick={() => moveStep(Math.min(index + comparisonSplit, beats.length - 1))}><i>{index + 1}</i><span><FormulaText>{actor.label}</FormulaText></span></button>)}</div></section>
+              <p><FormulaText>{showNarration ? activeBeat?.detail || scene.narration : tr('先判断哪一侧会改变，以及为什么。', 'Predict which side changes and why.')}</FormulaText></p>
             </div>
           ) : engine === 'timeline' ? (
             <div className="semantic-runtime timeline-runtime" key={`${scene.id}-${safeStep}`}>
               <div className="timeline-track" aria-hidden="true"><i style={{ '--timeline-scale': (safeStep + 1) / Math.max(beats.length, 1) } as CSSProperties} /></div>
-              <div className="timeline-events">{beats.map((beat, index) => <button type="button" className={index === safeStep ? 'active' : index < safeStep ? 'completed' : ''} key={beat.id} onClick={() => moveStep(index)}><i>{index < safeStep ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}</i><span><small>{String(index + 1).padStart(2, '0')}</small><strong>{beat.label}</strong><p>{index === safeStep && showNarration ? beat.detail : tr('沿时间继续观察变化', 'Continue along the timeline')}</p></span></button>)}</div>
+              <div className="timeline-events">{beats.map((beat, index) => <button type="button" className={index === safeStep ? 'active' : index < safeStep ? 'completed' : ''} key={beat.id} onClick={() => moveStep(index)}><i>{index < safeStep ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}</i><span><small>{String(index + 1).padStart(2, '0')}</small><strong><FormulaText>{beat.label}</FormulaText></strong><p><FormulaText>{index === safeStep && showNarration ? beat.detail : tr('沿时间继续观察变化', 'Continue along the timeline')}</FormulaText></p></span></button>)}</div>
               <div className="timeline-causal-caption"><GitBranch size={15} /><span>{transitionPath}</span><strong>{activeBeat?.value || activeAction}</strong></div>
             </div>
           ) : engine === 'spatial' ? (
             <div className="semantic-runtime spatial-runtime" key={`${scene.id}-${safeStep}`}>
-              <div className="spatial-core"><Network size={23} /><span>{tr('核心关系', 'Core relationship')}</span><strong>{baseModel.subject}</strong></div>
+              <div className="spatial-core"><Network size={23} /><span>{tr('核心关系', 'Core relationship')}</span><strong><FormulaText>{baseModel.subject}</FormulaText></strong></div>
               {baseModel.actors.map((actor, index) => {
                 const angle = (Math.PI * 2 * index) / Math.max(baseModel.actors.length, 1) - Math.PI / 2
                 const x = 50 + Math.cos(angle) * 36
                 const y = 50 + Math.sin(angle) * 34
-                return <button type="button" className={`${index === activeActorIndex ? 'active' : ''}${visitedActors.has(actor.id) ? ' visited' : ''}`} style={{ '--spatial-x': `${x}%`, '--spatial-y': `${y}%`, '--spatial-angle': `${angle + Math.PI}rad` } as CSSProperties} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{index + 1}</i><strong>{actor.label}</strong><span>{actor.role || tr('关联对象', 'Related object')}</span></button>
+                return <button type="button" className={`${index === activeActorIndex ? 'active' : ''}${visitedActors.has(actor.id) ? ' visited' : ''}`} style={{ '--spatial-x': `${x}%`, '--spatial-y': `${y}%`, '--spatial-angle': `${angle + Math.PI}rad` } as CSSProperties} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{index + 1}</i><strong><FormulaText>{actor.label}</FormulaText></strong><span>{actor.role || tr('关联对象', 'Related object')}</span></button>
               })}
-              <p>{showNarration ? activeBeat?.detail || scene.narration : tr('先预测当前对象会与哪一个区域建立关系。', 'Predict which region connects next.')}</p>
+              <p><FormulaText>{showNarration ? activeBeat?.detail || scene.narration : tr('先预测当前对象会与哪一个区域建立关系。', 'Predict which region connects next.')}</FormulaText></p>
             </div>
           ) : engine === 'experiment' ? (
             <div className="semantic-runtime experiment-runtime" key={`${scene.id}-${safeStep}`}>
-              <section className="experiment-input"><SlidersHorizontal size={22} /><span>{scene.simulation?.input_label || tr('当前输入', 'Current input')}</span><strong>{scene.simulation?.initial_input ?? activeBeat?.value ?? safeStep + 1}</strong><p>{scene.simulation?.experiment?.description || scene.visual.example || scene.narration}</p></section>
+              <section className="experiment-input"><SlidersHorizontal size={22} /><span>{scene.simulation?.input_label || tr('当前输入', 'Current input')}</span><strong><FormulaText>{scene.simulation?.initial_input ?? activeBeat?.value ?? safeStep + 1}</FormulaText></strong><p><FormulaText>{scene.simulation?.experiment?.description || scene.visual.example || scene.narration}</FormulaText></p></section>
               <div className="experiment-transfer"><ArrowRight size={24} /><i /><span>{activeAction}</span><small>{transitionPath}</small></div>
-              <section className="experiment-result"><Boxes size={22} /><span>{tr('观察结果', 'Observed result')}</span><strong>{activeBeat?.label || scene.key_point}</strong><p>{showNarration ? activeBeat?.detail || scene.key_point : tr('先改变条件并预测结果。', 'Change the condition and predict the result.')}</p></section>
+              <section className="experiment-result"><Boxes size={22} /><span>{tr('观察结果', 'Observed result')}</span><strong><FormulaText>{activeBeat?.label || scene.key_point}</FormulaText></strong><p><FormulaText>{showNarration ? activeBeat?.detail || scene.key_point : tr('先改变条件并预测结果。', 'Change the condition and predict the result.')}</FormulaText></p></section>
               <div className="experiment-actors">{baseModel.actors.map((actor, index) => <button type="button" className={index === activeActorIndex ? 'active' : ''} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{index + 1}</i><span>{actor.label}</span></button>)}</div>
             </div>
           ) : engine === 'story' ? (
             <div className="semantic-runtime story-runtime" key={`${scene.id}-${safeStep}`}>
               <BookOpen size={28} />
               <span>{tr('当前叙事节点', 'Current story beat')}</span>
-              <h3>{activeBeat?.label || scene.title}</h3>
+              <h3><FormulaText>{activeBeat?.label || scene.title}</FormulaText></h3>
               <small className="story-transition"><GitBranch size={14} />{transitionPath}</small>
-              <p>{showNarration ? activeBeat?.detail || scene.narration : tr('先用自己的话猜一猜，这个故事节点想解释什么。', 'Predict what this story beat is trying to explain.')}</p>
-              <div>{beats.map((beat, index) => <button type="button" className={index === safeStep ? 'active' : index < safeStep ? 'completed' : ''} key={beat.id} onClick={() => moveStep(index)}><i>{index + 1}</i><span>{beat.label}</span></button>)}</div>
+              <p><FormulaText>{showNarration ? activeBeat?.detail || scene.narration : tr('先用自己的话猜一猜，这个故事节点想解释什么。', 'Predict what this story beat is trying to explain.')}</FormulaText></p>
+              <div>{beats.map((beat, index) => <button type="button" className={index === safeStep ? 'active' : index < safeStep ? 'completed' : ''} key={beat.id} onClick={() => moveStep(index)}><i>{index + 1}</i><span><FormulaText>{beat.label}</FormulaText></span></button>)}</div>
             </div>
           ) : engine === 'state' ? (
             <div className="semantic-runtime state-runtime" key={`${scene.id}-${safeStep}`}>
-              <div className="state-board">{baseModel.actors.map((actor, index) => <button type="button" className={`${index === activeActorIndex ? 'active' : ''}${visitedActors.has(actor.id) ? ' visited' : ''}`} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><span>{actor.role || tr('状态对象', 'State object')}</span><strong>{actor.label}</strong><i>{index === activeActorIndex ? activeBeat?.value || tr('变化中', 'Changing') : visitedActors.has(actor.id) ? tr('已更新', 'Updated') : tr('等待', 'Waiting')}</i>{index === activeActorIndex && <em>{activeAction}</em>}</button>)}</div>
-              <p>{showNarration ? activeBeat?.detail || scene.narration : tr('观察哪些状态已经改变，再预测下一项。', 'Inspect changed states and predict the next one.')}</p>
+              <div className="state-board">{baseModel.actors.map((actor, index) => <button type="button" className={`${index === activeActorIndex ? 'active' : ''}${visitedActors.has(actor.id) ? ' visited' : ''}`} key={actor.id} onClick={() => moveStep(Math.min(index, beats.length - 1))}><span>{actor.role || tr('状态对象', 'State object')}</span><strong><FormulaText>{actor.label}</FormulaText></strong><i>{index === activeActorIndex ? activeBeat?.value || tr('变化中', 'Changing') : visitedActors.has(actor.id) ? tr('已更新', 'Updated') : tr('等待', 'Waiting')}</i>{index === activeActorIndex && <em>{activeAction}</em>}</button>)}</div>
+              <p><FormulaText>{showNarration ? activeBeat?.detail || scene.narration : tr('观察哪些状态已经改变，再预测下一项。', 'Inspect changed states and predict the next one.')}</FormulaText></p>
             </div>
           ) : (
             <div className="semantic-runtime process-runtime" key={`${scene.id}-${safeStep}`}>
-              <div className="process-lane">{baseModel.actors.map((actor, index) => <div className="process-lane-item" key={actor.id}><button type="button" className={`${index === activeActorIndex ? 'active' : ''}${visitedActors.has(actor.id) ? 'visited' : ''}`} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{visitedActors.has(actor.id) ? <CheckCircle2 size={15} /> : index + 1}</i><strong>{actor.label}</strong><span>{actor.role || tr('过程节点', 'Process node')}</span></button>{index < baseModel.actors.length - 1 && <div className={`process-lane-transfer ${index === Math.max(0, activeActorIndex - 1) ? 'active' : ''}`} aria-hidden="true"><i /><ArrowRight size={20} /></div>}</div>)}</div>
-              <div className="process-current"><span>{activeAction}</span><strong>{activeBeat?.label || scene.title}</strong><small>{transitionPath}</small><p>{showNarration ? activeBeat?.detail || scene.narration : tr('先预测下一个对象会发生什么变化。', 'Predict what changes next.')}</p></div>
+              <div className="process-lane">{baseModel.actors.map((actor, index) => <div className="process-lane-item" key={actor.id}><button type="button" className={`${index === activeActorIndex ? 'active' : ''}${visitedActors.has(actor.id) ? 'visited' : ''}`} onClick={() => moveStep(Math.min(index, beats.length - 1))}><i>{visitedActors.has(actor.id) ? <CheckCircle2 size={15} /> : index + 1}</i><strong><FormulaText>{actor.label}</FormulaText></strong><span>{actor.role || tr('过程节点', 'Process node')}</span></button>{index < baseModel.actors.length - 1 && <div className={`process-lane-transfer ${index === Math.max(0, activeActorIndex - 1) ? 'active' : ''}`} aria-hidden="true"><i /><ArrowRight size={20} /></div>}</div>)}</div>
+              <div className="process-current"><span>{activeAction}</span><strong><FormulaText>{activeBeat?.label || scene.title}</FormulaText></strong><small><FormulaText>{transitionPath}</FormulaText></small><p><FormulaText>{showNarration ? activeBeat?.detail || scene.narration : tr('先预测下一个对象会发生什么变化。', 'Predict what changes next.')}</FormulaText></p></div>
             </div>
           )}
         </main>
@@ -401,18 +402,18 @@ export function DynamicProcessTheater({ scene, language, learningMode = 'guided'
           <div className="process-panel-title"><GitBranch size={15} /><span>{tr('状态检查器', 'State inspector')}</span></div>
           <div className="process-inspector-status">
             <span>{tr('当前动作', 'Current action')}</span>
-            <strong>{activeAction}</strong>
+            <strong><FormulaText>{activeAction}</FormulaText></strong>
             {showNarration
-              ? <p>{activeBeat?.detail || scene.narration}</p>
+              ? <p><FormulaText>{activeBeat?.detail || scene.narration}</FormulaText></p>
               : <div className="process-hidden-explanation"><p>{tr('先观察当前对象和状态，预测下一次变化。', 'Observe the current object and predict the next change.')}</p>{onRevealNarration && <button type="button" onClick={onRevealNarration}><Eye size={14} />{tr('揭晓过程', 'Reveal process')}</button>}</div>}
           </div>
           <div className="process-state-table">
-            <div><span>{tr('对象', 'Object')}</span><strong>{activeBeat?.target || baseModel.subject}</strong></div>
+            <div><span>{tr('对象', 'Object')}</span><strong><FormulaText>{activeBeat?.target || baseModel.subject}</FormulaText></strong></div>
             <div><span>{tr('状态', 'State')}</span><strong>{faultMode ? tr('异常增长', 'Overflowing') : activeBeat?.value || tr('变化中', 'Changing')}</strong></div>
-            <div><span>{tr('下一步', 'Next')}</span><strong>{predictionRevealed ? (nextBeat?.label || tr('过程完成', 'Complete')) : '••••••'}</strong></div>
+            <div><span>{tr('下一步', 'Next')}</span><strong><FormulaText>{predictionRevealed ? (nextBeat?.label || tr('过程完成', 'Complete')) : '••••••'}</FormulaText></strong></div>
           </div>
           <button className="process-predict" type="button" disabled={!nextBeat} onClick={() => setPredictionRevealed(value => !value)}><Eye size={14} />{predictionRevealed ? tr('隐藏下一步', 'Hide next step') : tr('预测后再揭晓', 'Predict, then reveal')}</button>
-          <div className="process-takeaway"><Sparkles size={15} /><span>{tr('本幕要带走的关系', 'Relationship to remember')}</span><p>{showNarration ? scene.key_point : tr('完成预测后再揭晓本幕结论。', 'Reveal the conclusion after making a prediction.')}</p></div>
+          <div className="process-takeaway"><Sparkles size={15} /><span>{tr('本幕要带走的关系', 'Relationship to remember')}</span><p><FormulaText>{showNarration ? scene.key_point : tr('完成预测后再揭晓本幕结论。', 'Reveal the conclusion after making a prediction.')}</FormulaText></p></div>
         </aside>
       </div>
 

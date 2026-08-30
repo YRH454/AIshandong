@@ -46,6 +46,24 @@
 	font-family: "PatrickHand", "ZcoolHappy-Subset", "Microsoft Yahei", "微软雅黑", sans-serif;
 }
 
+/* The semantic layer is appended to #container while the original stage
+   remains a fixed 960 × 540 composition. Keeping the two cards in the
+   viewport layer prevents the stage's transformed coordinate system from
+   moving them above the visible canvas on some browsers. */
+#rhyme_stage_caption,
+#rhyme_stage_focus {
+	position: fixed;
+}
+
+/* Chapter controls are anchored to the bottom of the stage. Some browsers
+   try to scroll the absolutely positioned #container when a chapter receives
+   focus, which shifts the 960 × 540 canvas and makes overlays appear clipped.
+   `clip` keeps the intended viewport crop without exposing a scroll position. */
+#container {
+	overflow: clip;
+	overscroll-behavior: none;
+}
+
 #rhyme_stage_caption[hidden],
 #rhyme_stage_focus[hidden],
 #rhyme_stage_next[hidden] {
@@ -166,13 +184,15 @@
 }
 
 #container[data-rhyme-stage="semantic"] #slideshow .sim_ui {
-	left: 397px !important;
+	position: fixed !important;
+	left: 50% !important;
 	right: auto !important;
-	top: 500px !important;
-	bottom: auto !important;
+	top: auto !important;
+	bottom: 76px !important;
 	width: 166px;
 	height: 54px;
 	z-index: 41;
+	transform: translateX(-50%);
 }
 
 #container[data-rhyme-stage="semantic"] #slideshow .sim_ui > #start_button {
@@ -196,26 +216,82 @@
 	}
 
 	#rhyme_stage_caption {
-		top: 14px;
+		position: fixed;
+		top: 54px;
 		left: 14px;
-		width: calc(100% - 28px);
+		right: 14px;
+		width: auto;
+		/* The desktop card is centered with translateX(-50%).  Keep the
+		   mobile card anchored to its inset instead of shifting half a card
+		   off the left edge of the viewport. */
+		transform: none;
 	}
 
 	#rhyme_stage_focus {
+		position: fixed;
+		top: auto;
 		left: 14px;
-		bottom: 16px;
+		right: auto;
+		bottom: 108px;
 		width: min(260px, calc(100% - 28px));
+		/* Same correction as the caption card above. */
+		transform: none;
 	}
 
 	#rhyme_stage_next {
+		position: fixed;
 		right: 14px;
-		bottom: 16px;
+		bottom: 108px;
 		min-width: 132px;
 		font-size: 18px;
 	}
 
 	#container[data-rhyme-stage="semantic"] #slideshow .sim_ui {
-		right: 14px !important;
-		bottom: 82px !important;
+		left: 50% !important;
+		right: auto !important;
+		bottom: 72px !important;
+	}
+
+	/* The hand-drawn pencil follows the pointer and is decorative only. It
+	   covers the chapter dots on short/mobile viewports, so leave the canvas
+	   controls unobstructed there. */
+	#pencil_container,
+	#pencil {
+		display: none !important;
+	}
+
+	/* The original Rhyme navigation reserves a 600px desktop strip. On a
+	   phone that strip is centered at a negative x coordinate, which makes
+	   the first and last chapter controls impossible to reach. Use compact
+	   icon-only controls that fit the actual navigation container. */
+	#navigation {
+		left: 8px !important;
+		width: calc(100% - 16px) !important;
+		box-sizing: border-box;
+		transform: none !important;
+		display: flex !important;
+		align-items: center;
+		justify-content: center;
+		gap: 2px;
+	}
+
+	#navigation > div {
+		box-sizing: border-box;
+		flex: 0 0 29px;
+		width: 29px;
+		height: 29px;
+		margin: 0 !important;
+		line-height: 28px;
+	}
+
+	#navigation > div > span:nth-child(1) {
+		line-height: 28px;
+		font-size: 14px;
+	}
+
+	#navigation > div > span:nth-child(2),
+	#navigation > span#nav_bubble,
+	#navigation > span.nav_divider {
+		display: none !important;
 	}
 }

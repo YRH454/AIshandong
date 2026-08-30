@@ -153,8 +153,14 @@ function Sim(config){
 		if(fallbackRelations.length===0) return null;
 		return fallbackRelations[Math.abs((fromIndex*17)+toIndex)%fallbackRelations.length];
 	};
+	function _readableKnowledgeText(value){
+		var text = String(value || "");
+		return window.RHYME_MATH && window.RHYME_MATH.readable
+			? window.RHYME_MATH.readable(text)
+			: text.replace(/\\([A-Za-z]+)/g, "$1");
+	}
 	function _compactKnowledgeText(value, limit){
-		var text = String(value || "").replace(/\s+/g, " ").trim();
+		var text = _readableKnowledgeText(value).replace(/\s+/g, " ").trim();
 		if(!text) return "";
 		if(limit && text.length>limit){
 			return text.slice(0, Math.max(1, limit-1)).replace(/[，、；;：: ]+$/, "") + "…";
@@ -216,69 +222,98 @@ function Sim(config){
 		return peep.x>slot.x-padding && peep.x<slot.x+slot.w+padding &&
 			peep.y>slot.y-padding && peep.y<slot.y+slot.h+padding;
 	}
+	function _getVisibleStageBounds(){
+		var boardWidth = 960;
+		var boardHeight = 540;
+		var stage = document.getElementById("simulations");
+		var viewport = document.getElementById("simulations_container");
+		if(!stage || !viewport) return {left:0, top:0, right:boardWidth, bottom:boardHeight};
+		var stageRect = stage.getBoundingClientRect();
+		var viewportRect = viewport.getBoundingClientRect();
+		var scaleX = stageRect.width/boardWidth || 1;
+		var scaleY = stageRect.height/boardHeight || 1;
+		var left = (viewportRect.left-stageRect.left)/scaleX;
+		var top = (viewportRect.top-stageRect.top)/scaleY;
+		var right = (viewportRect.right-stageRect.left)/scaleX;
+		var bottom = (viewportRect.bottom-stageRect.top)/scaleY;
+		left = Math.max(0, Math.min(boardWidth, left));
+		top = Math.max(0, Math.min(boardHeight, top));
+		right = Math.max(left, Math.min(boardWidth, right));
+		bottom = Math.max(top, Math.min(boardHeight, bottom));
+		return {left:left, top:top, right:right, bottom:bottom};
+	}
 	function _getKnowledgeCalloutSlots(count){
-		// Non-overlapping perimeter positions turn the entire 960 × 540 sheet into
-		// a reading surface. Dense scenes switch to smaller cards, but still keep
-		// one labelled card for every peep instead of silently dropping atoms.
+		// Keep every card inside the part of the 960 × 540 artboard that is
+		// actually visible. The original demo assumes a desktop-wide viewport;
+		// on a narrower window the stage is wider than the viewport, so using the
+		// full board here would silently clip the right-hand cards.
 		var stageOffsetX = config.x || 0;
 		var stageOffsetY = config.y || 0;
+		var boardWidth = 960;
+		var boardHeight = 540;
+		var visible = _getVisibleStageBounds();
+		var visibleWidth = Math.max(80, visible.right-visible.left);
+		var visibleHeight = Math.max(120, visible.bottom-visible.top);
+		var margin = Math.min(12, Math.max(6, Math.floor(Math.min(visibleWidth, visibleHeight)*0.025)));
+		var safeSlot = function(id, x, y, w, h, side, tilt, dense, titleLineCount, detailLineCount){
+			var safeX = Math.max(visible.left+margin, Math.min(visible.right-margin-w, x));
+			var safeY = Math.max(visible.top+margin, Math.min(visible.bottom-margin-h, y));
+			return {id:id, x:safeX-stageOffsetX, y:safeY-stageOffsetY, w:w, h:h, side:side, tilt:tilt || 0, dense:!!dense, titleLineCount:titleLineCount, detailLineCount:detailLineCount};
+		};
+		var standardGap = 8;
+		var standardWidth = Math.min(184, Math.max(54, Math.floor((visibleWidth-margin*2-standardGap*2)/3)));
+		var standardHeight = Math.min(70, Math.max(54, Math.floor((visibleHeight-margin*2-standardGap*3)/5)));
+		var standardLeft = visible.left+margin;
+		var standardRight = visible.right-margin-standardWidth;
+		var standardCenter = visible.left+(visibleWidth-standardWidth)/2;
+		var standardTop = visible.top+margin;
+		var standardBottom = visible.bottom-margin-standardHeight;
+		var standardSideTop = Math.min(standardBottom-standardHeight-standardGap, standardTop+standardHeight+standardGap);
+		var standardSideBottom = Math.max(standardSideTop, standardBottom-standardHeight-standardGap);
 		var standard = [
-			{id:"top-left", x:18-stageOffsetX, y:82-stageOffsetY, w:184, h:70, side:"bottom", tilt:-0.010},
-			{id:"top-right", x:758-stageOffsetX, y:82-stageOffsetY, w:184, h:70, side:"bottom", tilt:0.008},
-			{id:"left-upper", x:18-stageOffsetX, y:174-stageOffsetY, w:184, h:70, side:"right", tilt:0.009},
-			{id:"right-upper", x:758-stageOffsetX, y:174-stageOffsetY, w:184, h:70, side:"left", tilt:-0.008},
-			{id:"left-lower", x:18-stageOffsetX, y:304-stageOffsetY, w:184, h:70, side:"right", tilt:-0.007},
-			{id:"right-lower", x:758-stageOffsetX, y:304-stageOffsetY, w:184, h:70, side:"left", tilt:0.009},
-			{id:"bottom-left", x:190-stageOffsetX, y:452-stageOffsetY, w:182, h:70, side:"top", tilt:0.008},
-			{id:"bottom-center", x:389-stageOffsetX, y:452-stageOffsetY, w:182, h:70, side:"top", tilt:-0.006},
-			{id:"bottom-right", x:588-stageOffsetX, y:452-stageOffsetY, w:182, h:70, side:"top", tilt:0.007}
+			safeSlot("top-left", standardLeft, standardTop, standardWidth, standardHeight, "bottom", -0.010, false, 1, 2),
+			safeSlot("top-right", standardRight, standardTop, standardWidth, standardHeight, "bottom", 0.008, false, 1, 2),
+			safeSlot("left-upper", standardLeft, standardSideTop, standardWidth, standardHeight, "right", 0.009, false, 1, 2),
+			safeSlot("right-upper", standardRight, standardSideTop, standardWidth, standardHeight, "left", -0.008, false, 1, 2),
+			safeSlot("left-lower", standardLeft, standardSideBottom, standardWidth, standardHeight, "right", -0.007, false, 1, 2),
+			safeSlot("right-lower", standardRight, standardSideBottom, standardWidth, standardHeight, "left", 0.009, false, 1, 2),
+			safeSlot("bottom-left", standardLeft, standardBottom, standardWidth, standardHeight, "top", 0.008, false, 1, 2),
+			safeSlot("bottom-center", standardCenter, standardBottom, standardWidth, standardHeight, "top", -0.006, false, 1, 2),
+			safeSlot("bottom-right", standardRight, standardBottom, standardWidth, standardHeight, "top", 0.007, false, 1, 2)
 		];
 		if(count<=standard.length) return standard.slice(0, count);
-		if(count>14){
-			var expanded = [];
-			var stageContainer = document.getElementById("container");
-			var availableHeight = Math.max(540, stageContainer ? stageContainer.clientHeight : 540);
-			var expandedBottomY = Math.max(448, Math.min(550, availableHeight-288));
-			for(var expandedRow=0; expandedRow<2; expandedRow++){
-				for(var expandedColumn=0; expandedColumn<5; expandedColumn++){
-					expanded.push({
-						id:"expanded-top-"+expandedRow+"-"+expandedColumn,
-						x:8+expandedColumn*190-stageOffsetX,
-						y:34+expandedRow*120-stageOffsetY,
-						w:184, h:112, side:"bottom",
-						tilt:(expandedColumn%2 ? 0.004 : -0.004), dense:true,
-						titleLineCount:3, detailLineCount:3
-					});
-				}
-			}
-			[286, 414].forEach(function(sideY, sideIndex){
-				expanded.push({id:"expanded-left-"+sideIndex, x:8-stageOffsetX, y:sideY-stageOffsetY, w:188, h:112, side:"right", tilt:(sideIndex ? -0.004 : 0.004), dense:true, titleLineCount:3, detailLineCount:3});
-				expanded.push({id:"expanded-right-"+sideIndex, x:764-stageOffsetX, y:sideY-stageOffsetY, w:188, h:112, side:"left", tilt:(sideIndex ? 0.004 : -0.004), dense:true, titleLineCount:3, detailLineCount:3});
-			});
-			for(var expandedBottom=0; expandedBottom<4; expandedBottom++){
-				expanded.push({id:"expanded-bottom-"+expandedBottom, x:30+expandedBottom*225-stageOffsetX, y:expandedBottomY-stageOffsetY, w:216, h:112, side:"top", tilt:(expandedBottom%2 ? -0.004 : 0.004), dense:true, titleLineCount:3, detailLineCount:3});
-			}
-			return expanded.slice(0, count);
-		}
 
+		var columns = count>26 ? 10 : count>18 ? 8 : 6;
+		var cardWidth = count>26 ? 88 : count>18 ? 108 : 142;
+		var cardHeight = count>18 ? 82 : 78;
+		var gap = 8;
+		var usableWidth = visibleWidth - margin*2;
+		cardWidth = Math.min(cardWidth, Math.floor((usableWidth-gap*(columns-1))/columns));
 		var dense = [];
-		var columns = 5;
-		var cardWidth = 150;
-		var cardHeight = 60;
-		var startX = 30;
-		var gapX = 180;
+		cardHeight = Math.min(cardHeight, Math.max(54, Math.floor((visibleHeight-margin*2-gap*3)/4)));
+		var topY = visible.top+margin;
+		var bottomY = visible.bottom-cardHeight-margin;
+		var horizontalSpan = visibleWidth-margin*2-cardWidth;
+		var horizontalStep = columns>1 ? horizontalSpan/Math.max(1, columns-1) : 0;
 		for(var topIndex=0; topIndex<columns; topIndex++){
-			dense.push({id:"dense-top-"+topIndex, x:startX+topIndex*gapX-stageOffsetX, y:70-stageOffsetY, w:cardWidth, h:cardHeight, side:"bottom", tilt:(topIndex%2 ? 0.006 : -0.006), dense:true, titleLineCount:1, detailLineCount:1});
+			var topX = margin+topIndex*horizontalStep;
+			topX += visible.left;
+			dense.push(safeSlot("dense-top-"+topIndex, topX, topY, cardWidth, cardHeight, "bottom", topIndex%2 ? 0.004 : -0.004, true, 2, 2));
 		}
 		for(var bottomIndex=0; bottomIndex<columns; bottomIndex++){
-			dense.push({id:"dense-bottom-"+bottomIndex, x:startX+bottomIndex*gapX-stageOffsetX, y:470-stageOffsetY, w:cardWidth, h:cardHeight, side:"top", tilt:(bottomIndex%2 ? -0.006 : 0.006), dense:true, titleLineCount:1, detailLineCount:1});
+			var bottomX = margin+bottomIndex*horizontalStep;
+			bottomX += visible.left;
+			dense.push(safeSlot("dense-bottom-"+bottomIndex, bottomX, bottomY, cardWidth, cardHeight, "top", bottomIndex%2 ? -0.004 : 0.004, true, 2, 2));
 		}
 		var sideRows = Math.ceil(Math.max(0, count-dense.length)/2);
-		var sideGap = sideRows>1 ? 190/Math.max(1, sideRows-1) : 0;
+		var sideStart = topY+cardHeight+12;
+		var sideEnd = bottomY-cardHeight-12;
+		var sideStep = sideRows>1 ? (sideEnd-sideStart)/Math.max(1, sideRows-1) : 0;
 		for(var sideIndex=0; sideIndex<sideRows; sideIndex++){
-			var sideY = 175+sideIndex*sideGap;
-			dense.push({id:"dense-left-"+sideIndex, x:10-stageOffsetX, y:sideY-stageOffsetY, w:cardWidth, h:cardHeight, side:"right", tilt:(sideIndex%2 ? -0.006 : 0.006), dense:true, titleLineCount:1, detailLineCount:1});
-			dense.push({id:"dense-right-"+sideIndex, x:950-cardWidth-stageOffsetX, y:sideY-stageOffsetY, w:cardWidth, h:cardHeight, side:"left", tilt:(sideIndex%2 ? 0.006 : -0.006), dense:true, titleLineCount:1, detailLineCount:1});
+			var sideY = sideRows===1 ? (boardHeight-cardHeight)/2 : sideStart+sideIndex*sideStep;
+			if(sideRows===1) sideY = visible.top+(visibleHeight-cardHeight)/2;
+			dense.push(safeSlot("dense-left-"+sideIndex, visible.left+margin, sideY, cardWidth, cardHeight, "right", sideIndex%2 ? -0.004 : 0.004, true, 2, 2));
+			dense.push(safeSlot("dense-right-"+sideIndex, visible.right-margin-cardWidth, sideY, cardWidth, cardHeight, "left", sideIndex%2 ? 0.004 : -0.004, true, 2, 2));
 		}
 		return dense.slice(0, count);
 	}
@@ -377,11 +412,14 @@ function Sim(config){
 	function _knowledgeLeaderPoints(callout, start){
 		var anchor = callout.anchor;
 		var side = callout.slot.side;
+		var visible = _getVisibleStageBounds();
 		if(side==="left" || side==="right"){
 			var gutterX = anchor.x + (side==="left" ? -28 : 28);
+			gutterX = Math.max(visible.left-(config.x || 0)+4, Math.min(visible.right-(config.x || 0)-4, gutterX));
 			return [start, {x:gutterX, y:start.y}, {x:gutterX, y:anchor.y}, anchor];
 		}
 		var gutterY = anchor.y + (side==="top" ? -25 : 25);
+		gutterY = Math.max(visible.top-(config.y || 0)+4, Math.min(visible.bottom-(config.y || 0)-4, gutterY));
 		return [start, {x:start.x, y:gutterY}, {x:anchor.x, y:gutterY}, anchor];
 	}
 	function _drawKnowledgeCalloutLeaders(ctx){
@@ -456,6 +494,11 @@ function Sim(config){
 			ctx.arc(dense ? 18 : 23, dense ? 14 : 16, dense ? 2.7 : 3.2, 0, Math.TAU);
 			ctx.fillStyle = callout.color;
 			ctx.fill();
+			// Text is clipped to the card's inner paper so a long generated atom
+			// can never paint over the neighbouring card or outside the board.
+			ctx.save();
+			_roundKnowledgeRect(ctx, 7, 7, slot.w-14, height-14, 7);
+			ctx.clip();
 			ctx.font = (dense ? "14px" : "13px") + " PatrickHand";
 			ctx.textAlign = "left";
 			ctx.textBaseline = "middle";
@@ -463,18 +506,25 @@ function Sim(config){
 			var titleX = dense ? 25 : 31;
 			var titleStartY = dense ? 14 : 17;
 			var titleStep = dense ? 15 : 14;
-			(callout.titleLines || ["知识原子"]).forEach(function(line, titleIndex){
+			var maxTitleLines = Math.max(1, Math.floor((height-(dense ? 26 : 25))/titleStep));
+			var titleLines = (callout.titleLines || ["知识原子"]).slice(0, maxTitleLines);
+			titleLines.forEach(function(line, titleIndex){
 				ctx.fillText(line, titleX, titleStartY+titleIndex*titleStep);
 			});
-			var roleY = dense ? titleStartY+(callout.titleLines || ["知识原子"]).length*titleStep+1 : 32;
+			var roleY = dense ? titleStartY+titleLines.length*titleStep+1 : 32;
+			roleY = Math.min(height-25, roleY);
 			ctx.font = (dense ? "10.5px" : "9px") + " PatrickHand";
 			ctx.fillStyle = callout.color;
 			ctx.fillText(callout.role, dense ? 18 : 23, roleY);
 			ctx.font = (dense ? "11.5px" : "10px") + " PatrickHand";
 			ctx.fillStyle = "#595959";
-			callout.detailLines.forEach(function(line, lineIndex){
-				ctx.fillText(line, dense ? 18 : 23, roleY+(dense ? 13 : 13)+lineIndex*(dense ? 12.5 : 12));
+			var detailStep = dense ? 12.5 : 12;
+			var detailStart = roleY+(dense ? 13 : 13);
+			var maxDetailLines = Math.max(1, Math.floor((height-detailStart-5)/detailStep));
+			callout.detailLines.slice(0, maxDetailLines).forEach(function(line, lineIndex){
+				ctx.fillText(line, dense ? 18 : 23, detailStart+lineIndex*detailStep);
 			});
+			ctx.restore();
 			ctx.restore();
 		});
 	}
@@ -577,16 +627,24 @@ function Sim(config){
 		});
 		var sourceWidth = Math.max(1, maxX-minX);
 		var sourceHeight = Math.max(1, maxY-minY);
-		var target = points.length>14
-			? {x:218, y:290, w:524, h:210}
-			: {x:228, y:148, w:504, h:246};
+		var visible = _getVisibleStageBounds();
+		var visibleWidth = Math.max(220, visible.right-visible.left);
+		var visibleHeight = Math.max(180, visible.bottom-visible.top);
+		var targetWidth = Math.min(points.length>14 ? 524 : 504, visibleWidth-24);
+		var targetHeight = Math.min(points.length>14 ? 210 : 246, visibleHeight-24);
+		var target = {
+			x: visible.left+(visibleWidth-targetWidth)/2,
+			y: visible.top+(visibleHeight-targetHeight)/2,
+			w: Math.max(180, targetWidth),
+			h: Math.max(150, targetHeight)
+		};
 		var scale = Math.min(target.w/sourceWidth, target.h/sourceHeight, 1);
 		var sourceCenterX = (minX+maxX)/2;
 		var sourceCenterY = (minY+maxY)/2;
 		return function(point){
 			return {
-				x:target.x+target.w/2+(point[0]-sourceCenterX)*scale,
-				y:target.y+target.h/2+(point[1]-sourceCenterY)*scale
+				x:target.x+target.w/2+(point[0]-sourceCenterX)*scale-(config.x || 0),
+				y:target.y+target.h/2+(point[1]-sourceCenterY)*scale-(config.y || 0)
 			};
 		};
 	}

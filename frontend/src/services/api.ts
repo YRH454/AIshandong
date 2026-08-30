@@ -127,6 +127,7 @@ export interface AdminUserRecord {
 export interface AdminGenerationJobRecord {
   job_id: string
   user_id: number
+  username?: string | null
   kind: string
   status: string
   error_code?: string | null

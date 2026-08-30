@@ -24,6 +24,7 @@ import type {
   DynamicExplanationScene,
   DynamicExplanationStageKind,
 } from './dynamicExplanation'
+import { FormulaText } from './FormulaText'
 
 type UniversalActor = {
   id: string
@@ -367,7 +368,7 @@ function CacheComparisonLab({ scene, dimensions, activeIndex, comparisonFocus, m
       <div className="cache-lab-watermark" aria-hidden="true" />
       <button type="button" className={`cache-address-token left${comparisonFocus === 'left' ? ' active' : ''} ${storyboardAtomClass({ label: leftTitle }, comparisonFocus === 'left')}`} onClick={() => { onExplore({ label: leftTitle }); choose('left') }} aria-pressed={comparisonFocus === 'left'}>
         <span>{tr('对象 A', 'Object A')}</span>
-        <strong>{leftTitle}</strong>
+        <strong><FormulaText>{leftTitle}</FormulaText></strong>
         <div aria-label={tr('地址 A 的地址分段', 'Address A fields')}><i><small>TAG</small><b>{field('left', 0)}</b></i><i><small>INDEX</small><b>{field('left', 1)}</b></i><i><small>V</small><b>{field('left', 2)}</b></i></div>
       </button>
 
@@ -383,18 +384,18 @@ function CacheComparisonLab({ scene, dimensions, activeIndex, comparisonFocus, m
         </div>
         <div className="cache-probe-path" aria-hidden="true"><i className="cache-probe left" /><i className="cache-probe right" /><span><CircleDot size={15} /></span></div>
         {!activeHit && <div className="cache-fallback-store" aria-label={resultText}><Database size={19} /><span>{tr('下探', 'Descend')}</span></div>}
-        <div className={`cache-result-beacon ${activeHit ? 'hit' : 'miss'}`} aria-live="polite" aria-label={`${activeHit ? tr('命中', 'Hit') : tr('未命中', 'Miss')}：${resultText}`}><i>{activeHit ? <Check size={18} /> : <ArrowRight size={18} />}</i><strong>{activeHit ? tr('命中', 'Hit') : tr('未命中', 'Miss')}</strong><span>{resultText}</span></div>
+        <div className={`cache-result-beacon ${activeHit ? 'hit' : 'miss'}`} aria-live="polite" aria-label={`${activeHit ? tr('命中', 'Hit') : tr('未命中', 'Miss')}：${resultText}`}><i>{activeHit ? <Check size={18} /> : <ArrowRight size={18} />}</i><strong>{activeHit ? tr('命中', 'Hit') : tr('未命中', 'Miss')}</strong><span><FormulaText>{resultText}</FormulaText></span></div>
       </div>
 
       <button type="button" className={`cache-address-token right${comparisonFocus === 'right' ? ' active' : ''} ${storyboardAtomClass({ label: rightTitle }, comparisonFocus === 'right')}`} onClick={() => { onExplore({ label: rightTitle }); choose('right') }} aria-pressed={comparisonFocus === 'right'}>
         <span>{tr('对象 B', 'Object B')}</span>
-        <strong>{rightTitle}</strong>
+        <strong><FormulaText>{rightTitle}</FormulaText></strong>
         <div aria-label={tr('地址 B 的地址分段', 'Address B fields')}><i><small>TAG</small><b>{field('right', 0)}</b></i><i><small>INDEX</small><b>{field('right', 1)}</b></i><i><small>V</small><b>{field('right', 2)}</b></i></div>
       </button>
 
       <div className="cache-lab-insight">
-        <div><small>{selected?.label || tr('决定条件', 'Deciding field')}</small><strong>{selected?.deciding_factor || scene.key_point}</strong></div>
-        {visibleDimensions.length > 1 && <nav aria-label={tr('切换比较条件', 'Switch comparison condition')}>{visibleDimensions.map((item, index) => <button type="button" className={`${index === activeIndex ? 'active' : ''} ${storyboardAtomClass(item, index === activeIndex)}`} aria-pressed={index === activeIndex} onClick={() => { onExplore(item); chooseDimension(index) }} key={item.id || item.label}>{item.label}</button>)}</nav>}
+        <div><small><FormulaText>{selected?.label || tr('决定条件', 'Deciding field')}</FormulaText></small><strong><FormulaText>{selected?.deciding_factor || scene.key_point}</FormulaText></strong></div>
+        {visibleDimensions.length > 1 && <nav aria-label={tr('切换比较条件', 'Switch comparison condition')}>{visibleDimensions.map((item, index) => <button type="button" className={`${index === activeIndex ? 'active' : ''} ${storyboardAtomClass(item, index === activeIndex)}`} aria-pressed={index === activeIndex} onClick={() => { onExplore(item); chooseDimension(index) }} key={item.id || item.label}><FormulaText>{item.label}</FormulaText></button>)}</nav>}
       </div>
     </div>
   )
@@ -509,7 +510,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
       <div className={`universal-scene concept-constellation-scene ${motionClass} ${storyboardSurfaceClass}`} data-motion={motionAction}>
         <SubjectStageScaffold mood={sceneMood} />
         <div className="constellation-field" style={constellationStyle} aria-label={tr('概念星图', 'Concept constellation')}>
-          <div className={`constellation-core ${storyboardAtomClass({ label: payload?.core || scene.visual.headline || scene.title })}`}><Atom size={31} /><strong>{payload?.core || scene.visual.headline || scene.title}</strong><span>{payload?.core_detail || scene.key_point}</span></div>
+          <div className={`constellation-core ${storyboardAtomClass({ label: payload?.core || scene.visual.headline || scene.title })}`}><Atom size={31} /><strong><FormulaText>{payload?.core || scene.visual.headline || scene.title}</FormulaText></strong><span><FormulaText>{payload?.core_detail || scene.key_point}</FormulaText></span></div>
           <i className="constellation-focus-ray" aria-hidden="true" />
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {branches.map((_, index) => {
@@ -524,10 +525,10 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
           </svg>
           {branches.map((node, index) => {
             const point = orbitPositions[index % orbitPositions.length]
-            return <button type="button" className={`${index === activeIndex ? 'active motion-target' : index < activeIndex ? 'visited' : ''} ${storyboardAtomClass(node, index === activeIndex)}`} style={{ '--node-x': `${point.x}%`, '--node-y': `${point.y}%`, '--node-delay': `${index * 55}ms`, '--node-origin-x': `${Math.round((50 - point.x) * 5.1)}px`, '--node-origin-y': `${Math.round((50 - point.y) * 4.4)}px` } as CSSProperties} onClick={() => interactFor(index, branches.length, { label: node.label, detail: node.detail, value: node.relation, signal: 'complete' })} key={node.id}><small>{node.relation || tr('关联概念', 'Related idea')}</small><strong>{node.label}</strong></button>
+            return <button type="button" className={`${index === activeIndex ? 'active motion-target' : index < activeIndex ? 'visited' : ''} ${storyboardAtomClass(node, index === activeIndex)}`} style={{ '--node-x': `${point.x}%`, '--node-y': `${point.y}%`, '--node-delay': `${index * 55}ms`, '--node-origin-x': `${Math.round((50 - point.x) * 5.1)}px`, '--node-origin-y': `${Math.round((50 - point.y) * 4.4)}px` } as CSSProperties} onClick={() => interactFor(index, branches.length, { label: node.label, detail: node.detail, value: node.relation, signal: 'complete' })} key={node.id}><small><FormulaText>{node.relation || tr('关联概念', 'Related idea')}</FormulaText></small><strong><FormulaText>{node.label}</FormulaText></strong></button>
           })}
         </div>
-        <aside className="universal-reading-strip"><CircleDot size={17} /><span>{focused?.label || activeBeat?.label || scene.title}</span><strong>{focused?.detail || activeBeat?.detail || scene.narration}</strong>{payload?.boundary_conditions[0] && <small>{tr('边界：', 'Boundary: ')}{payload.boundary_conditions[0]}</small>}</aside>
+        <aside className="universal-reading-strip"><CircleDot size={17} /><span><FormulaText>{focused?.label || activeBeat?.label || scene.title}</FormulaText></span><strong><FormulaText>{focused?.detail || activeBeat?.detail || scene.narration}</FormulaText></strong>{payload?.boundary_conditions[0] && <small>{tr('边界：', 'Boundary: ')}<FormulaText>{payload.boundary_conditions[0]}</FormulaText></small>}</aside>
       </div>
     )
   }
@@ -598,7 +599,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
       <div className={`universal-scene causal-flux-stage ${motionClass}${causalBlocked ? ' is-blocked' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} data-causal-mood={sceneMood} aria-label={tr('因果机制传导台', 'Causal mechanism transmission desk')}>
         <SubjectStageScaffold mood={sceneMood} />
         <div className="causal-flux-world" aria-label={tr('因果机制流动演示', 'Causal mechanism flow demonstration')}>
-          <div className="causal-flux-title" aria-hidden="true"><GitBranch size={15} /><span>{scene.stage?.focal_question || scene.title}</span></div>
+          <div className="causal-flux-title" aria-hidden="true"><GitBranch size={15} /><span><FormulaText>{scene.stage?.focal_question || scene.title}</FormulaText></span></div>
           <div className={`causal-flux-focus-field role-${focused?.role || 'step'}`} style={{ '--causal-focus-x': `${focusedPoint.x}%`, '--causal-focus-y': `${focusedPoint.y}%` } as CSSProperties} key={`focus-${scene.id}-${activeIndex}-${causalBlocked ? 'blocked' : 'flow'}`} aria-hidden="true"><i /><i /><b /></div>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {causalNodes.slice(0, -1).map((_, index) => {
@@ -633,16 +634,16 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
             const stateLabel = node.state_after || node.observable || node.effect
             const roleLabel = node.role === 'trigger' ? tr('触发条件', 'Trigger') : node.role === 'outcome' ? tr('形成结果', 'Outcome') : tr('状态变化', 'State change')
             return <button type="button" className={`causal-flux-node causal-flux-node--${node.role} ${isActive ? 'active motion-target' : isVisited ? 'visited' : ''}${isDownstream ? ' blocked-downstream' : ''} ${storyboardAtomClass(node, isActive)}`} style={{ '--causal-node-x': `${point.x}%`, '--causal-node-y': `${point.y}%`, '--causal-node-delay': `${index * 55}ms` } as CSSProperties} onClick={() => interactFor(index, causalNodes.length, { label: node.label, detail: node.mechanism, value: stateLabel || node.effect || node.label, signal: 'complete' })} disabled={isDownstream} key={node.id}>
-              <span className="causal-flux-node-mark" aria-hidden="true"><i /></span><small>{roleLabel}</small><strong>{node.label}</strong>{stateLabel && <em>{stateLabel}</em>}
+              <span className="causal-flux-node-mark" aria-hidden="true"><i /></span><small>{roleLabel}</small><strong><FormulaText>{node.label}</FormulaText></strong>{stateLabel && <em>{stateLabel}</em>}
             </button>
           })}
           <div className="causal-flux-state-transform" key={`state-${scene.id}-${activeIndex}-${causalBlocked ? 'blocked' : 'flow'}`} aria-live="polite">
-            <span className="causal-flux-state-token causal-flux-state-token--before"><i aria-hidden="true" /><small>{tr('前一状态', 'Before')}</small><strong title={stateBefore}>{stateBefore}</strong></span>
+            <span className="causal-flux-state-token causal-flux-state-token--before"><i aria-hidden="true" /><small>{tr('前一状态', 'Before')}</small><strong title={stateBefore}><FormulaText>{stateBefore}</FormulaText></strong></span>
             <span className="causal-flux-state-arrow" aria-hidden="true"><ArrowRight size={18} /></span>
-            <span className="causal-flux-state-token causal-flux-state-token--after"><i aria-hidden="true" /><small>{causalBlocked ? tr('未形成', 'Blocked') : tr('可观察变化', 'After')}</small><strong title={causalBlocked ? payload?.blockers[0] || stateAfter : stateAfter}>{causalBlocked ? payload?.blockers[0] || stateAfter : stateAfter}</strong></span>
+            <span className="causal-flux-state-token causal-flux-state-token--after"><i aria-hidden="true" /><small>{causalBlocked ? tr('未形成', 'Blocked') : tr('可观察变化', 'After')}</small><strong title={causalBlocked ? payload?.blockers[0] || stateAfter : stateAfter}><FormulaText>{causalBlocked ? payload?.blockers[0] || stateAfter : stateAfter}</FormulaText></strong></span>
           </div>
         </div>
-        <aside className="causal-flux-insight"><div><span>{focused?.label || activeBeat?.label || scene.title}{stateChange ? ` · ${stateChange}` : ''}</span><strong>{currentExplanation}</strong></div><nav className="causal-flux-actions" aria-label={tr('机制控制', 'Mechanism controls')}>{payload?.blockers[0] && <button type="button" className={causalBlocked ? 'active' : ''} aria-pressed={causalBlocked} onClick={() => { const blocked = !causalBlocked; setCausalBlocked(blocked); onInteraction?.({ kind, label: blocked ? tr('因果链已被阻断', 'Causal chain blocked') : tr('因果链已恢复', 'Causal chain restored'), detail: blocked ? payload.blockers[0] : payload.outcome || scene.key_point, value: blocked ? tr('结果未形成', 'Outcome prevented') : payload.outcome || scene.key_point, signal: blocked ? 'blocked' : 'complete' }) }}><ShieldAlert size={14} />{causalBlocked ? tr('恢复流动', 'Restore flow') : tr('切断条件', 'Cut condition')}</button>}<button type="button" className="causal-flux-replay" onClick={replay}><RotateCcw size={14} />{tr('从头观察', 'Replay')}</button></nav></aside>
+        <aside className="causal-flux-insight"><div><span><FormulaText>{focused?.label || activeBeat?.label || scene.title}{stateChange ? ` · ${stateChange}` : ''}</FormulaText></span><strong><FormulaText>{currentExplanation}</FormulaText></strong></div><nav className="causal-flux-actions" aria-label={tr('机制控制', 'Mechanism controls')}>{payload?.blockers[0] && <button type="button" className={causalBlocked ? 'active' : ''} aria-pressed={causalBlocked} onClick={() => { const blocked = !causalBlocked; setCausalBlocked(blocked); onInteraction?.({ kind, label: blocked ? tr('因果链已被阻断', 'Causal chain blocked') : tr('因果链已恢复', 'Causal chain restored'), detail: blocked ? payload.blockers[0] : payload.outcome || scene.key_point, value: blocked ? tr('结果未形成', 'Outcome prevented') : payload.outcome || scene.key_point, signal: blocked ? 'blocked' : 'complete' }) }}><ShieldAlert size={14} />{causalBlocked ? tr('恢复流动', 'Restore flow') : tr('切断条件', 'Cut condition')}</button>}<button type="button" className="causal-flux-replay" onClick={replay}><RotateCcw size={14} />{tr('从头观察', 'Replay')}</button></nav></aside>
       </div>
     )
   }
@@ -657,17 +658,17 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     return (
       <div className={`universal-scene timeline-river-scene ${motionClass} ${storyboardSurfaceClass}`} style={{ '--timeline-x': `${activeX}%`, '--timeline-y': `${activeY}%` } as CSSProperties} data-motion={motionAction}>
         <SubjectStageScaffold mood={sceneMood} />
-        <div className="timeline-river-heading"><Timer size={22} /><strong>{payload?.period_label || scene.visual.headline || scene.title}</strong><span>{scene.stage?.focal_question}</span></div>
+        <div className="timeline-river-heading"><Timer size={22} /><strong><FormulaText>{payload?.period_label || scene.visual.headline || scene.title}</FormulaText></strong><span><FormulaText>{scene.stage?.focal_question}</FormulaText></span></div>
         <div className="timeline-river-flow">
           <svg viewBox="0 0 1000 260" preserveAspectRatio="none" aria-hidden="true"><path d="M20 150 C180 40 260 235 430 128 C610 18 720 238 980 92" /><path className="active" pathLength="1" strokeDasharray="1" strokeDashoffset={1 - progress} d="M20 150 C180 40 260 235 430 128 C610 18 720 238 980 92" /></svg>
           <i className="timeline-advance-signal" aria-hidden="true" />
           {events.map((event, index) => {
             const x = 7 + index * (86 / Math.max(1, events.length - 1))
             const y = index % 3 === 0 ? 54 : index % 3 === 1 ? 28 : 68
-            return <button type="button" className={`${index === activeIndex ? 'active motion-target' : index < activeIndex ? 'visited' : ''}${event.is_turning_point ? ' turning-point' : ''} ${storyboardAtomClass(event, index === activeIndex)}`} style={{ '--river-x': `${x}%`, '--river-y': `${y}%` } as CSSProperties} onClick={() => interactFor(index, events.length, { label: event.title, detail: event.impact, value: event.change, signal: 'complete' })} key={event.id}><i>{event.is_turning_point ? '↗' : index + 1}</i><small>{event.marker || tr('阶段', 'Stage')}</small><strong>{event.title}</strong></button>
+            return <button type="button" className={`${index === activeIndex ? 'active motion-target' : index < activeIndex ? 'visited' : ''}${event.is_turning_point ? ' turning-point' : ''} ${storyboardAtomClass(event, index === activeIndex)}`} style={{ '--river-x': `${x}%`, '--river-y': `${y}%` } as CSSProperties} onClick={() => interactFor(index, events.length, { label: event.title, detail: event.impact, value: event.change, signal: 'complete' })} key={event.id}><i>{event.is_turning_point ? '↗' : index + 1}</i><small><FormulaText>{event.marker || tr('阶段', 'Stage')}</FormulaText></small><strong><FormulaText>{event.title}</FormulaText></strong></button>
           })}
         </div>
-        <div className="timeline-river-caption"><span>{focused?.title || activeBeat?.label || scene.title}</span><p><b>{tr('变化：', 'Change: ')}</b>{focused?.change || activeBeat?.detail || scene.narration}<br /><small>{tr('阶段影响：', 'Impact: ')}{focused?.impact || payload?.retrospective || scene.key_point}</small></p></div>
+        <div className="timeline-river-caption"><span><FormulaText>{focused?.title || activeBeat?.label || scene.title}</FormulaText></span><p><b>{tr('变化：', 'Change: ')}</b><FormulaText>{focused?.change || activeBeat?.detail || scene.narration}</FormulaText><br /><small>{tr('阶段影响：', 'Impact: ')}<FormulaText>{focused?.impact || payload?.retrospective || scene.key_point}</FormulaText></small></p></div>
       </div>
     )
   }
@@ -700,15 +701,15 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
       <div className={`universal-scene comparison-decision-stage focus-${comparisonFocus} ${motionClass} ${storyboardSurfaceClass}`} style={{ '--comparison-bias': comparisonFocus === 'left' ? '-1' : '1' } as CSSProperties} data-motion={motionAction}>
         <SubjectStageScaffold mood={sceneMood} />
         <div className="comparison-decision-halo" aria-hidden="true" />
-        <button type="button" className={`comparison-candidate left ${storyboardAtomClass({ label: leftTitle }, comparisonFocus === 'left')}`} onClick={() => choose('left')} aria-pressed={comparisonFocus === 'left'}><Scale size={21} /><span>{tr('方案 A', 'Option A')}</span><strong>{leftTitle}</strong><i>{selected?.left || tr('等待对比', 'Ready to compare')}</i></button>
+        <button type="button" className={`comparison-candidate left ${storyboardAtomClass({ label: leftTitle }, comparisonFocus === 'left')}`} onClick={() => choose('left')} aria-pressed={comparisonFocus === 'left'}><Scale size={21} /><span>{tr('方案 A', 'Option A')}</span><strong><FormulaText>{leftTitle}</FormulaText></strong><i><FormulaText>{selected?.left || tr('等待对比', 'Ready to compare')}</FormulaText></i></button>
         <section className="comparison-decision-core" aria-label={tr('对比决策台', 'Comparison decision desk')}>
-          <div className="comparison-condition"><span>{tr('保持不变', 'Held constant')}</span><strong>{payload?.shared_condition || scene.visual.headline}</strong></div>
+          <div className="comparison-condition"><span>{tr('保持不变', 'Held constant')}</span><strong><FormulaText>{payload?.shared_condition || scene.visual.headline}</FormulaText></strong></div>
           <div className="comparison-balance" aria-hidden="true"><i /><span><Sparkles size={16} /></span></div>
-          <div className="comparison-focus-readout"><small>{selected?.label || tr('当前维度', 'Current dimension')}</small><strong>{selected?.deciding_factor || activeBeat?.detail || scene.key_point}</strong></div>
-          <nav aria-label={tr('选择比较维度', 'Select comparison dimension')}>{dimensions.slice(0, 5).map((item, index) => <button type="button" className={`${index === activeComparisonIndex ? 'active motion-target' : ''} ${storyboardAtomClass(item, index === activeComparisonIndex)}`} aria-pressed={index === activeComparisonIndex} onClick={() => chooseDimension(index)} key={item.id || item.label}>{item.label}</button>)}</nav>
+          <div className="comparison-focus-readout"><small><FormulaText>{selected?.label || tr('当前维度', 'Current dimension')}</FormulaText></small><strong><FormulaText>{selected?.deciding_factor || activeBeat?.detail || scene.key_point}</FormulaText></strong></div>
+          <nav aria-label={tr('选择比较维度', 'Select comparison dimension')}>{dimensions.slice(0, 5).map((item, index) => <button type="button" className={`${index === activeComparisonIndex ? 'active motion-target' : ''} ${storyboardAtomClass(item, index === activeComparisonIndex)}`} aria-pressed={index === activeComparisonIndex} onClick={() => chooseDimension(index)} key={item.id || item.label}><FormulaText>{item.label}</FormulaText></button>)}</nav>
         </section>
-        <button type="button" className={`comparison-candidate right ${storyboardAtomClass({ label: rightTitle }, comparisonFocus === 'right')}`} onClick={() => choose('right')} aria-pressed={comparisonFocus === 'right'}><Waypoints size={21} /><span>{tr('方案 B', 'Option B')}</span><strong>{rightTitle}</strong><i>{selected?.right || tr('等待对比', 'Ready to compare')}</i></button>
-        <footer className="comparison-verdict"><Check size={15} /><strong>{payload?.recommendation || selected?.deciding_factor || activeBeat?.detail || scene.narration}</strong></footer>
+        <button type="button" className={`comparison-candidate right ${storyboardAtomClass({ label: rightTitle }, comparisonFocus === 'right')}`} onClick={() => choose('right')} aria-pressed={comparisonFocus === 'right'}><Waypoints size={21} /><span>{tr('方案 B', 'Option B')}</span><strong><FormulaText>{rightTitle}</FormulaText></strong><i><FormulaText>{selected?.right || tr('等待对比', 'Ready to compare')}</FormulaText></i></button>
+        <footer className="comparison-verdict"><Check size={15} /><strong><FormulaText>{payload?.recommendation || selected?.deciding_factor || activeBeat?.detail || scene.narration}</FormulaText></strong></footer>
       </div>
     )
   }
@@ -725,13 +726,13 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     return (
       <div className={`universal-scene system-network-scene ${motionClass} ${storyboardSurfaceClass}`} data-motion={motionAction}>
         <SubjectStageScaffold mood={sceneMood} />
-        <header><Network size={22} /><strong>{scene.visual.headline || scene.title}</strong><span>{tr('输入', 'Input')} · {payload?.inputs.join(' / ') || scene.stage?.focal_question}</span></header>
+        <header><Network size={22} /><strong><FormulaText>{scene.visual.headline || scene.title}</FormulaText></strong><span>{tr('输入', 'Input')} · <FormulaText>{payload?.inputs.join(' / ') || scene.stage?.focal_question}</FormulaText></span></header>
         <div className="system-network-field">
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">{networkEdges.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); return from && to ? <g className={tracedEdges.has(index) ? 'trace-active' : ''} key={`${edge.from}-${edge.to}-${index}`}><line className={tracedEdges.has(index) ? 'active' : ''} x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{edge.label}</text></g> : null })}{payload?.feedback_loops.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); return from && to ? <line className={`feedback${focused?.id === edge.from ? ' active' : ''}`} strokeDasharray="2 2" x1={from.x} y1={from.y} x2={to.x} y2={to.y} key={`feedback-${index}`} /> : null })}</svg>
-          {networkNodes.map((node, index) => { const point = networkPositions[index % networkPositions.length]; const isFocused = node.id === focused?.id; const downstream = networkEdges.filter(edge => edge.from === node.id).map(edge => networkNodes.find(item => item.id === edge.to)?.label || edge.to).join(' → '); return <button type="button" className={`${isFocused ? 'active motion-target' : tracedEdges.size && [...tracedEdges].some(edgeIndex => networkEdges[edgeIndex]?.to === node.id) ? 'visited' : ''} ${storyboardAtomClass(node, isFocused)}`} style={{ '--network-x': `${point.x}%`, '--network-y': `${point.y}%` } as CSSProperties} onClick={() => { setNetworkFocusId(node.id); interactFor(index, networkNodes.length, { label: node.label, detail: node.detail, value: downstream || payload?.outputs.join(' / ') || scene.key_point, signal: 'complete' }) }} key={node.id}><i>{isFocused ? <Sparkles size={15} /> : <CircleDot size={13} />}</i><small>{node.role || tr('节点', 'Node')}</small><strong>{node.label}</strong></button> })}
+          {networkNodes.map((node, index) => { const point = networkPositions[index % networkPositions.length]; const isFocused = node.id === focused?.id; const downstream = networkEdges.filter(edge => edge.from === node.id).map(edge => networkNodes.find(item => item.id === edge.to)?.label || edge.to).join(' → '); return <button type="button" className={`${isFocused ? 'active motion-target' : tracedEdges.size && [...tracedEdges].some(edgeIndex => networkEdges[edgeIndex]?.to === node.id) ? 'visited' : ''} ${storyboardAtomClass(node, isFocused)}`} style={{ '--network-x': `${point.x}%`, '--network-y': `${point.y}%` } as CSSProperties} onClick={() => { setNetworkFocusId(node.id); interactFor(index, networkNodes.length, { label: node.label, detail: node.detail, value: downstream || payload?.outputs.join(' / ') || scene.key_point, signal: 'complete' }) }} key={node.id}><i>{isFocused ? <Sparkles size={15} /> : <CircleDot size={13} />}</i><small>{node.role || tr('节点', 'Node')}</small><strong><FormulaText>{node.label}</FormulaText></strong></button> })}
           <div className="network-pulse" style={{ '--network-x': `${focusedPoint.x}%`, '--network-y': `${focusedPoint.y}%` } as CSSProperties}><ArrowRight size={15} /></div>
         </div>
-        <aside><span>{focused?.label || activeBeat?.label}</span><strong>{focused?.detail || activeBeat?.detail || scene.narration}</strong><small>{tr('输出', 'Output')} · {payload?.outputs.join(' / ') || scene.key_point}</small></aside>
+        <aside><span><FormulaText>{focused?.label || activeBeat?.label}</FormulaText></span><strong><FormulaText>{focused?.detail || activeBeat?.detail || scene.narration}</FormulaText></strong><small>{tr('输出', 'Output')} · <FormulaText>{payload?.outputs.join(' / ') || scene.key_point}</FormulaText></small></aside>
       </div>
     )
   }
@@ -751,7 +752,7 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
     return (
       <div className={`universal-scene state-route-stage ${motionClass}${showExceptionPath ? ' exception-open' : ''} ${storyboardSurfaceClass}`} data-motion={motionAction} aria-label={tr('状态切换路线', 'State transition route')}>
         <SubjectStageScaffold mood={sceneMood} />
-        <header className="state-route-heading"><CircleDot size={18} /><strong>{scene.visual.headline || scene.title}</strong><span>{scene.stage?.focal_question}</span></header>
+        <header className="state-route-heading"><CircleDot size={18} /><strong><FormulaText>{scene.visual.headline || scene.title}</FormulaText></strong><span><FormulaText>{scene.stage?.focal_question}</FormulaText></span></header>
         <div className="state-route-field">
           <div className="state-route-wash" aria-hidden="true" />
           <svg className="state-route-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -768,16 +769,16 @@ export function UniversalKnowledgeScene(props: UniversalKnowledgeSceneProps) {
               return from && to ? <g className={showExceptionPath ? 'exception active' : 'exception'} key={`exception-${index}`}><line x1={from.x} y1={from.y} x2={to.x} y2={to.y} /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{transition.trigger}</text></g> : null
             })}
           </svg>
-          <div className="state-route-current" aria-live="polite"><span>{tr('当前停靠', 'Current stop')}</span><strong>{focused?.label || activeBeat?.label || scene.title}</strong><small>{focusedTransition?.trigger || tr('等待条件', 'Waiting for condition')}</small></div>
+          <div className="state-route-current" aria-live="polite"><span>{tr('当前停靠', 'Current stop')}</span><strong><FormulaText>{focused?.label || activeBeat?.label || scene.title}</FormulaText></strong><small><FormulaText>{focusedTransition?.trigger || tr('等待条件', 'Waiting for condition')}</FormulaText></small></div>
           <i className="state-route-runner" style={{ '--state-runner-x': `${routeRunnerPoint.x}%`, '--state-runner-y': `${routeRunnerPoint.y}%` } as CSSProperties} aria-hidden="true"><ArrowRight size={15} /></i>
           {states.map((state, index) => {
             const point = routeLayout[index % routeLayout.length]
             const stateRole = state.id === payload?.initial_state ? tr('起始', 'Start') : payload?.terminal_states.includes(state.id) ? tr('终点', 'End') : tr('状态', 'State')
             const transition = transitions.find(item => item.from === state.id)
-            return <button type="button" className={`${state.id === focused?.id ? 'active motion-target' : index < activeIndex ? 'visited' : ''} ${storyboardAtomClass(state, state.id === focused?.id)}`} style={{ '--state-x': `${point.x}%`, '--state-y': `${point.y}%`, '--state-delay': `${index * 55}ms` } as CSSProperties} onClick={() => { setSelectedStateId(state.id); setShowExceptionPath(false); interactFor(index, states.length, { label: state.label, detail: transition?.effect || state.description, value: transition?.trigger, signal: 'complete' }) }} key={state.id}><i>{stateRole}</i><strong>{state.label}</strong></button>
+            return <button type="button" className={`${state.id === focused?.id ? 'active motion-target' : index < activeIndex ? 'visited' : ''} ${storyboardAtomClass(state, state.id === focused?.id)}`} style={{ '--state-x': `${point.x}%`, '--state-y': `${point.y}%`, '--state-delay': `${index * 55}ms` } as CSSProperties} onClick={() => { setSelectedStateId(state.id); setShowExceptionPath(false); interactFor(index, states.length, { label: state.label, detail: transition?.effect || state.description, value: transition?.trigger, signal: 'complete' }) }} key={state.id}><i>{stateRole}</i><strong><FormulaText>{state.label}</FormulaText></strong></button>
           })}
         </div>
-        <footer className="state-route-caption"><div><span>{focusedTransition?.trigger || tr('触发条件', 'Trigger')}</span><strong>{showExceptionPath ? payload?.exception_paths[0]?.effect : focusedTransition?.effect || focused?.description || scene.narration}</strong></div>{payload?.exception_paths.length ? <button type="button" className={showExceptionPath ? 'active' : ''} aria-pressed={showExceptionPath} onClick={() => { const showing = !showExceptionPath; setShowExceptionPath(showing); const exception = payload.exception_paths[0]; onInteraction?.({ kind, label: showing ? tr('异常路径', 'Exception route') : tr('主路线', 'Main route'), detail: showing ? exception.effect : focusedTransition?.effect || scene.key_point, value: showing ? exception.trigger : focusedTransition?.trigger, signal: showing ? 'boundary' : 'complete' }) }}><ShieldAlert size={14} />{showExceptionPath ? tr('回到主路线', 'Return to main route') : tr('查看异常路径', 'View exception')}</button> : null}</footer>
+        <footer className="state-route-caption"><div><span><FormulaText>{focusedTransition?.trigger || tr('触发条件', 'Trigger')}</FormulaText></span><strong><FormulaText>{showExceptionPath ? payload?.exception_paths[0]?.effect : focusedTransition?.effect || focused?.description || scene.narration}</FormulaText></strong></div>{payload?.exception_paths.length ? <button type="button" className={showExceptionPath ? 'active' : ''} aria-pressed={showExceptionPath} onClick={() => { const showing = !showExceptionPath; setShowExceptionPath(showing); const exception = payload.exception_paths[0]; onInteraction?.({ kind, label: showing ? tr('异常路径', 'Exception route') : tr('主路线', 'Main route'), detail: showing ? exception.effect : focusedTransition?.effect || scene.key_point, value: showing ? exception.trigger : focusedTransition?.trigger, signal: showing ? 'boundary' : 'complete' }) }}><ShieldAlert size={14} />{showExceptionPath ? tr('回到主路线', 'Return to main route') : tr('查看异常路径', 'View exception')}</button> : null}</footer>
       </div>
     )
   }

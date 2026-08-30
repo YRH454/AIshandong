@@ -1,6 +1,7 @@
 import { BadgeCheck, ClipboardCheck, FileInput, Flag, GitBranch, History, PenLine, Play, RefreshCcw, ScanSearch } from 'lucide-react'
 import { type KnowledgeMapData, type KnowledgeMapNode } from './EditableKnowledgeMap'
 import { createSemanticNodePicker } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 type ProcessRouteMapProps = {
   data: KnowledgeMapData
@@ -33,8 +34,8 @@ function RouteStation({ node, number, label, icon, className = '', onSelect, ins
     <span className="route-station-number">{String(number).padStart(2, '0')}</span>
     <span className="route-station-icon" aria-hidden="true">{icon}</span>
     <span className="route-station-role">{label}</span>
-    <strong>{node.label}</strong>
-    <small>{brief(node.detail, 70)}</small>
+    <strong><FormulaText>{node.label}</FormulaText></strong>
+    <small><FormulaText>{brief(node.detail, 70)}</FormulaText></small>
     <em>{node.example ? brief(node.example, 34) : inspectOnly ? '点击查看节点说明' : '点击进入这一步'}</em>
   </button>
 }
@@ -69,8 +70,8 @@ export function ProcessRouteMap({ data, language = 'zh-CN', onNodeSelect, onEdit
 
   return <section className="process-track-map" aria-label={copy.map}>
     <header className="process-track-head">
-      <button type="button" className="process-track-topic" onClick={() => onNodeSelect(root.id)}><span>{copy.origin}</span><strong>{root.label}</strong></button>
-      <p>{brief(root.detail, 116)}</p>
+      <button type="button" className="process-track-topic" onClick={() => onNodeSelect(root.id)}><span>{copy.origin}</span><strong><FormulaText>{root.label}</FormulaText></strong></button>
+      <p><FormulaText>{brief(root.detail, 116)}</FormulaText></p>
       {onEdit && <button type="button" className="process-track-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
 
@@ -87,10 +88,10 @@ export function ProcessRouteMap({ data, language = 'zh-CN', onNodeSelect, onEdit
 
       <div className="process-decision-legend" aria-hidden="true"><span>{copy.continue}</span><span>{copy.stop}</span></div>
       {review && <button type="button" className="process-review-loop" onClick={() => onNodeSelect(review.id)} aria-label={`${copy.review}: ${review.label}`}>
-        <ClipboardCheck size={18} /><span><b>{copy.review}</b><strong>{review.label}</strong><small>{brief(review.detail, 72)}</small></span>
+        <ClipboardCheck size={18} /><span><b>{copy.review}</b><strong><FormulaText>{review.label}</FormulaText></strong><small><FormulaText>{brief(review.detail, 72)}</FormulaText></small></span>
       </button>}
       {timeline && <button type="button" className="process-history-link" onClick={() => onNodeSelect(timeline.id)} aria-label={`${copy.timeline}: ${timeline.label}`}>
-        <History size={18} /><span><b>{copy.timeline}</b><strong>{timeline.label}</strong><small>{copy.timelineHint}</small></span>
+        <History size={18} /><span><b>{copy.timeline}</b><strong><FormulaText>{timeline.label}</FormulaText></strong><small><FormulaText>{copy.timelineHint}</FormulaText></small></span>
       </button>}
       <p className="process-track-hint"><ScanSearch size={14} />{copy.hint}</p>
     </div>

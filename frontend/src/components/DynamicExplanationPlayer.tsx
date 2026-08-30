@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import { createPortal } from 'react-dom'
 import { ArrowDown, ArrowUp, CirclePause, CirclePlay, FastForward, Gauge, GripVertical, Maximize2, Save, Sparkles, Target, X } from 'lucide-react'
 import type { DynamicExplanationBranchCondition, DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExplanationInteractionOutcome, DynamicExplanationScene } from './dynamicExplanation'
+import { FormulaText } from './FormulaText'
 
 export type { DynamicExplanationData, DynamicExplanationScene } from './dynamicExplanation'
 
@@ -170,13 +171,13 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
             onClick={() => clickItem(items.indexOf(item))}
           >
             <span>{index + 1}</span>
-            <strong>{item}</strong>
+            <strong><FormulaText>{item}</FormulaText></strong>
           </button>
         ))}
         <div className="journey-focus">
           <span>{scene.visual_type === 'sequence' ? tr('可拖动排序，按你的理解整理步骤', 'Drag to sort the steps your way') : tr('当前推演', 'Current step')}</span>
-          <strong>{selected}</strong>
-          <p>{visual.example || scene.key_point}</p>
+          <strong><FormulaText>{selected}</FormulaText></strong>
+          <p><FormulaText>{visual.example || scene.key_point}</FormulaText></p>
         </div>
       </div>
     )
@@ -185,7 +186,7 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'stack') {
     return (
       <div className="presentation-visual presentation-stack" aria-label={tr('层级过程', 'Layered process')}>
-        <div className="stack-caption"><span>{visual.headline}</span><strong>{tr('逐层展开，再逐层返回', 'Expand layer by layer, then return')}</strong></div>
+        <div className="stack-caption"><span><FormulaText>{visual.headline}</FormulaText></span><strong>{tr('逐层展开，再逐层返回', 'Expand layer by layer, then return')}</strong></div>
         <div className="stack-layers">
           {items.map((item, index) => (
             <button
@@ -195,11 +196,11 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
               type="button"
               onClick={() => clickItem(index)}
             >
-              <span>{items.length - index}</span><strong>{item}</strong>
+              <span>{items.length - index}</span><strong><FormulaText>{item}</FormulaText></strong>
             </button>
           ))}
         </div>
-        <p className="stack-detail">{visual.example || selected}</p>
+        <p className="stack-detail"><FormulaText>{visual.example || selected}</FormulaText></p>
       </div>
     )
   }
@@ -207,15 +208,15 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'code-trace') {
     return (
       <div className="presentation-visual presentation-code-trace" aria-label={tr('代码与状态推演', 'Code and state trace')}>
-        <div className="code-trace-heading"><span>{tr('逐步执行', 'Trace it')}</span><strong>{visual.headline}</strong></div>
+        <div className="code-trace-heading"><span>{tr('逐步执行', 'Trace it')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong></div>
         <div className="code-trace-lines">
           {items.map((item, index) => (
             <button className={index === selectedItem ? 'code-trace-line active' : 'code-trace-line'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
-              <i>{String(index + 1).padStart(2, '0')}</i><code>{item}</code>
+              <i>{String(index + 1).padStart(2, '0')}</i><code><FormulaText>{item}</FormulaText></code>
             </button>
           ))}
         </div>
-        <div className="code-trace-inspector"><span>{tr('当前状态', 'Current state')}</span><strong>{visual.example || selected}</strong></div>
+        <div className="code-trace-inspector"><span>{tr('当前状态', 'Current state')}</span><strong><FormulaText>{visual.example || selected}</FormulaText></strong></div>
       </div>
     )
   }
@@ -223,16 +224,16 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'timeline') {
     return (
       <div className="presentation-visual presentation-timeline" aria-label={tr('时间与阶段脉络', 'Timeline and stages')}>
-        <div className="timeline-heading"><span>{tr('按顺序理解', 'Read in order')}</span><strong>{visual.headline}</strong></div>
+        <div className="timeline-heading"><span>{tr('按顺序理解', 'Read in order')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong></div>
         <div className="timeline-track" aria-hidden="true" />
         <div className="timeline-stops">
           {items.map((item, index) => (
             <button className={index === selectedItem ? 'timeline-stop active' : 'timeline-stop'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
-              <i>{index + 1}</i><span>{item}</span>
+              <i>{index + 1}</i><span><FormulaText>{item}</FormulaText></span>
             </button>
           ))}
         </div>
-        <p>{visual.example || selected}</p>
+        <p><FormulaText>{visual.example || selected}</FormulaText></p>
       </div>
     )
   }
@@ -240,16 +241,16 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'network') {
     return (
       <div className="presentation-visual presentation-network" aria-label={tr('节点流动图', 'Network flow')}>
-        <div className="network-core"><span>{tr('流动的核心', 'Flow center')}</span><strong>{visual.headline}</strong></div>
+        <div className="network-core"><span>{tr('流动的核心', 'Flow center')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong></div>
         <div className="network-routes" aria-hidden="true"><i /><i /><i /></div>
         <div className="network-nodes">
           {items.map((item, index) => (
             <button className={index === selectedItem ? 'network-node active' : 'network-node'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
-              <i>{index + 1}</i><span>{item}</span>
+              <i>{index + 1}</i><span><FormulaText>{item}</FormulaText></span>
             </button>
           ))}
         </div>
-        <p>{visual.example || selected}</p>
+        <p><FormulaText>{visual.example || selected}</FormulaText></p>
       </div>
     )
   }
@@ -259,12 +260,12 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
       <div className="presentation-visual presentation-contrast" aria-label={tr('对比演示', 'Comparison')}>
         <button className={selectedItem === 0 ? 'contrast-field is-active' : 'contrast-field'} type="button" onClick={() => clickItem(0)}>
           <span>{tr('开始时', 'Before')}</span>
-          <strong>{visual.before || items[0]}</strong>
+          <strong><FormulaText>{visual.before || items[0]}</FormulaText></strong>
         </button>
         <div className="contrast-pivot" aria-hidden="true"><span>{tr('理解发生在这里', 'The shift happens here')}</span></div>
         <button className={selectedItem === 1 ? 'contrast-field is-active' : 'contrast-field'} type="button" onClick={() => clickItem(1)}>
           <span>{tr('看清后', 'After')}</span>
-          <strong>{visual.after || scene.key_point}</strong>
+          <strong><FormulaText>{visual.after || scene.key_point}</FormulaText></strong>
         </button>
       </div>
     )
@@ -273,15 +274,15 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'example' || scene.visual_type === 'lab') {
     return (
       <div className="presentation-visual presentation-lab" aria-label={tr('例子实验台', 'Example workspace')}>
-        <div className="lab-heading"><span>{tr('把概念放进一个具体场景', 'Put the idea into a concrete situation')}</span><strong>{visual.headline}</strong></div>
+        <div className="lab-heading"><span>{tr('把概念放进一个具体场景', 'Put the idea into a concrete situation')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong></div>
         <div className="lab-tokens">
           {items.map((item, index) => (
             <button key={`${item}-${index}`} type="button" className={index === selectedItem ? 'lab-token active' : 'lab-token'} onClick={() => clickItem(index)}>
-              <i>{index + 1}</i>{item}
+              <i>{index + 1}</i><FormulaText>{item}</FormulaText>
             </button>
           ))}
         </div>
-        <div className="lab-answer"><span>{tr('观察', 'Observation')}</span><strong>{visual.example || selected}</strong></div>
+        <div className="lab-answer"><span>{tr('观察', 'Observation')}</span><strong><FormulaText>{visual.example || selected}</FormulaText></strong></div>
       </div>
     )
   }
@@ -289,9 +290,9 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'pitfall' || scene.visual_type === 'error-lab') {
     return (
       <div className="presentation-visual presentation-pitfall" aria-label={tr('易错点实验', 'Common pitfall')}>
-        <div className="pitfall-route danger"><span>{tr('容易走偏', 'The wrong path')}</span><strong>{visual.headline}</strong><p>{items[0] || scene.key_point}</p></div>
+        <div className="pitfall-route danger"><span>{tr('容易走偏', 'The wrong path')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong><p><FormulaText>{items[0] || scene.key_point}</FormulaText></p></div>
         <div className="pitfall-turn" aria-hidden="true"><i /></div>
-        <div className="pitfall-route safe"><span>{tr('回到判断', 'The recovery')}</span><strong>{visual.after || scene.key_point}</strong><p>{visual.example || tr('找到能停止或校正的条件，再继续往下推。', 'Find the condition that stops or corrects the process, then continue.')}</p></div>
+        <div className="pitfall-route safe"><span>{tr('回到判断', 'The recovery')}</span><strong><FormulaText>{visual.after || scene.key_point}</FormulaText></strong><p><FormulaText>{visual.example || tr('找到能停止或校正的条件，再继续往下推。', 'Find the condition that stops or corrects the process, then continue.')}</FormulaText></p></div>
       </div>
     )
   }
@@ -299,15 +300,15 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
   if (scene.visual_type === 'map' || scene.visual_type === 'recap') {
     return (
       <div className="presentation-visual presentation-map" aria-label={tr('知识收束图', 'Knowledge recap')}>
-        <div className="map-center"><span>{tr('带走这一句', 'Take this with you')}</span><strong>{visual.headline}</strong></div>
+        <div className="map-center"><span>{tr('带走这一句', 'Take this with you')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong></div>
         <div className="map-branches">
           {items.map((item, index) => (
             <button className={index === selectedItem ? 'map-branch active' : 'map-branch'} key={`${item}-${index}`} type="button" onClick={() => clickItem(index)}>
-              <i>{index + 1}</i><span>{item}</span>
+              <i>{index + 1}</i><span><FormulaText>{item}</FormulaText></span>
             </button>
           ))}
         </div>
-        <p>{visual.example || selected}</p>
+        <p><FormulaText>{visual.example || selected}</FormulaText></p>
       </div>
     )
   }
@@ -316,7 +317,7 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
     <div className="presentation-visual presentation-constellation" aria-label={tr('概念关系图', 'Concept constellation')}>
       <div className="constellation-orbit orbit-one" aria-hidden="true" />
       <div className="constellation-orbit orbit-two" aria-hidden="true" />
-      <div className="constellation-core"><span>{tr('核心', 'Core')}</span><strong>{visual.headline}</strong></div>
+      <div className="constellation-core"><span>{tr('核心', 'Core')}</span><strong><FormulaText>{visual.headline}</FormulaText></strong></div>
       {items.slice(0, 5).map((item, index) => {
         const [x, y] = constellationPositions[index]
         return (
@@ -327,11 +328,11 @@ const SceneVisual = memo(function SceneVisual({ scene, language, selectedItem, o
             type="button"
             onClick={() => clickItem(index)}
           >
-            <i>{index + 1}</i><span>{item}</span>
+            <i>{index + 1}</i><span><FormulaText>{item}</FormulaText></span>
           </button>
         )
       })}
-      <p className="constellation-detail">{visual.example || selected}</p>
+      <p className="constellation-detail"><FormulaText>{visual.example || selected}</FormulaText></p>
     </div>
   )
 })
@@ -838,9 +839,9 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
             <span>{tr(`${presentation.scenes.length} 个场景，${formatDuration(totalSeconds, language)}`, `${presentation.scenes.length} scenes, ${formatDuration(totalSeconds, language)}`)}</span>
           </div>
           <strong>{tr('讲解已经编排完成', 'Your lesson is ready')}</strong>
-          <p>{tr(`从“${scene.title}”开始，进入后可切换学习节奏、播放推演并完成理解检查。`, `Begin with “${scene.title}”, then change pace, play the walkthrough, and complete understanding checks.`)}</p>
+          <p><FormulaText>{tr(`从“${scene.title}”开始，进入后可切换学习节奏、播放推演并完成理解检查。`, `Begin with “${scene.title}”, then change pace, play the walkthrough, and complete understanding checks.`)}</FormulaText></p>
         <div className="dynamic-compact-scenes" aria-label={tr('讲解场景预览', 'Lesson scene preview')}>
-            {compactSceneIndexes.map(index => <span key={presentation.scenes[index].id}>{presentation.scenes[index].title}</span>)}
+            {compactSceneIndexes.map(index => <span key={presentation.scenes[index].id}><FormulaText>{presentation.scenes[index].title}</FormulaText></span>)}
             {visibleSceneIndexes.length > compactSceneIndexes.length && <span>{tr(`还有 ${visibleSceneIndexes.length - compactSceneIndexes.length} 个场景`, `${visibleSceneIndexes.length - compactSceneIndexes.length} more scenes`)}</span>}
           </div>
         </div>
@@ -859,7 +860,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
         <div>
           <span>{tr(`${presentation.scenes.length} 个场景 · ${formatDuration(totalSeconds, language)}${completedSceneCount ? ` · 已完成 ${completedSceneCount}/${presentation.scenes.length}` : ''}`, `${presentation.scenes.length} scenes · ${formatDuration(totalSeconds, language)}${completedSceneCount ? ` · ${completedSceneCount}/${presentation.scenes.length} complete` : ''}`)}</span>
           <h2>{presentation.title}</h2>
-          <p>{presentation.summary}</p>
+          <p><FormulaText>{presentation.summary}</FormulaText></p>
         </div>
         <button className="presentation-open" type="button" onClick={openRhymeExplainer}><Maximize2 size={16} />{tr(activeIndex > 0 && !completedExplanation.current ? '继续学习' : '沉浸学习', activeIndex > 0 && !completedExplanation.current ? 'Continue learning' : 'Open immersive view')}</button>
       </header>
@@ -867,7 +868,7 @@ export function DynamicExplanationPlayer({ data, language, onSceneStarted, onSce
       {learningModeControl('preview')}
 
       <div className={`presentation-preview-canvas learning-mode-${learningMode}`}>
-        <div className="presentation-preview-copy"><span>{tr('当前场景', 'Current scene')}</span><strong>{scene.title}</strong><p>{scene.key_point}</p></div>
+        <div className="presentation-preview-copy"><span>{tr('当前场景', 'Current scene')}</span><strong><FormulaText>{scene.title}</FormulaText></strong><p><FormulaText>{scene.key_point}</FormulaText></p></div>
         <SceneVisual scene={scene} language={language} selectedItem={selectedVisualItem} onSelectItem={setSelectedVisualItem} />
       </div>
 

@@ -22,7 +22,11 @@
 	var nextButton = null;
 
 	function compactText(value, limit){
-		var text = String(value || "").replace(/\s+/g, " ").trim();
+		var raw = String(value || "");
+		var text = window.RHYME_MATH && window.RHYME_MATH.readable
+			? window.RHYME_MATH.readable(raw)
+			: raw.replace(/\\([A-Za-z]+)/g, "$1");
+		text = text.replace(/\s+/g, " ").trim();
 		if(!text) return "";
 		if(limit && text.length>limit) return text.slice(0, Math.max(1, limit-1)).replace(/[，、；;：: ]+$/, "") + "…";
 		return text;

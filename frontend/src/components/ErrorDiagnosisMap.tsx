@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import type { KnowledgeMapData, KnowledgeMapNode } from './EditableKnowledgeMap'
 import { createSemanticNodePicker } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 type ErrorDiagnosisMapProps = {
   data: KnowledgeMapData
@@ -193,9 +194,9 @@ export function ErrorDiagnosisMap({ data, language = 'zh-CN', onNodeSelect, onEd
     <header className="diagnosis-map-head">
       <button type="button" className="diagnosis-map-topic" onClick={() => onNodeSelect(root.id)}>
         <Stethoscope size={21} aria-hidden="true" />
-        <span><small>{copy.map}</small><strong>{root.label}</strong></span>
+        <span><small>{copy.map}</small><strong><FormulaText>{root.label}</FormulaText></strong></span>
       </button>
-      <p>{compact(root.detail, 150)}</p>
+      <p><FormulaText>{compact(root.detail, 150)}</FormulaText></p>
       {onEdit && <button type="button" className="diagnosis-map-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
 
@@ -217,14 +218,14 @@ export function ErrorDiagnosisMap({ data, language = 'zh-CN', onNodeSelect, onEd
               onClick={() => chooseSymptom(key)}
             >
               <span>{option.icon}</span>
-              <span><strong>{option.label}</strong><small>{compact(option.node?.detail || option.node?.label, 74)}</small></span>
+              <span><strong><FormulaText>{option.label}</FormulaText></strong><small><FormulaText>{compact(option.node?.detail || option.node?.label, 74)}</FormulaText></small></span>
             </button>
           })}
         </div>
         <section className="diagnosis-current-symptom">
           <span>{copy.symptom}</span>
-          <strong>{activeSymptom.node?.label || root.label}</strong>
-          <p>{compact(firstMeaningful(activeSymptom.node?.mistake, activeSymptom.node?.detail, root.detail), 160)}</p>
+          <strong><FormulaText>{activeSymptom.node?.label || root.label}</FormulaText></strong>
+          <p><FormulaText>{compact(firstMeaningful(activeSymptom.node?.mistake, activeSymptom.node?.detail, root.detail), 160)}</FormulaText></p>
           {activeSymptom.node && <button type="button" onClick={() => onNodeSelect(activeSymptom.node!.id)}><Eye size={14} />{copy.openEvidence}</button>}
         </section>
       </aside>
@@ -244,7 +245,7 @@ export function ErrorDiagnosisMap({ data, language = 'zh-CN', onNodeSelect, onEd
               return <li className={`${reached ? 'reached' : ''} ${active ? 'active' : ''}`} key={step.id}>
                 <button type="button" onClick={() => step.node && onNodeSelect(step.node.id)}>
                   <span className="route-index">{String(index + 1).padStart(2, '0')}</span>
-                  <span><small>{step.stage}</small><strong>{step.node?.label}</strong><p>{compact(firstMeaningful(step.node?.mistake, step.node?.detail), 92)}</p></span>
+                  <span><small>{step.stage}</small><strong><FormulaText>{step.node?.label}</FormulaText></strong><p><FormulaText>{compact(firstMeaningful(step.node?.mistake, step.node?.detail), 92)}</FormulaText></p></span>
                 </button>
                 {index < errorSteps.length - 1 && <ArrowRight size={18} aria-hidden="true" />}
               </li>
@@ -265,7 +266,7 @@ export function ErrorDiagnosisMap({ data, language = 'zh-CN', onNodeSelect, onEd
               return <li className={`${reached ? 'reached' : ''} ${active ? 'active' : ''}`} key={step.id}>
                 <button type="button" onClick={() => step.node && onNodeSelect(step.node.id)}>
                   <span className="route-index">{String(index + 1).padStart(2, '0')}</span>
-                  <span><small>{step.stage}</small><strong>{step.node?.label}</strong><p>{compact(firstMeaningful(step.node?.example, step.node?.detail), 106)}</p></span>
+                  <span><small>{step.stage}</small><strong><FormulaText>{step.node?.label}</FormulaText></strong><p><FormulaText>{compact(firstMeaningful(step.node?.example, step.node?.detail), 106)}</FormulaText></p></span>
                 </button>
                 {index < repairSteps.length - 1 && <ArrowRight size={18} aria-hidden="true" />}
               </li>
@@ -296,15 +297,15 @@ export function ErrorDiagnosisMap({ data, language = 'zh-CN', onNodeSelect, onEd
         <dl>
           <div className={errorIndex >= 1 ? 'revealed' : ''}>
             <dt>{copy.causeLabel}</dt>
-            <dd>{errorIndex >= 1 ? compact(missingCondition?.detail || missingCondition?.label, 135) : copy.pending}</dd>
+            <dd><FormulaText>{errorIndex >= 1 ? compact(missingCondition?.detail || missingCondition?.label, 135) : copy.pending}</FormulaText></dd>
           </div>
           <div className={repairIndex >= 1 ? 'revealed' : ''}>
             <dt>{copy.actionLabel}</dt>
-            <dd>{repairIndex >= 1 ? compact(correction?.detail || correction?.label, 135) : copy.pending}</dd>
+            <dd><FormulaText>{repairIndex >= 1 ? compact(correction?.detail || correction?.label, 135) : copy.pending}</FormulaText></dd>
           </div>
           <div className={diagnosisState === 'verified' ? 'revealed success' : ''}>
             <dt>{copy.resultLabel}</dt>
-            <dd>{diagnosisState === 'verified' ? compact(resultCheck?.detail || resultCheck?.label, 135) : copy.pending}</dd>
+            <dd><FormulaText>{diagnosisState === 'verified' ? compact(resultCheck?.detail || resultCheck?.label, 135) : copy.pending}</FormulaText></dd>
           </div>
         </dl>
         {diagnosisState === 'verified' && resultCheck && <button type="button" className="diagnosis-report-evidence" onClick={() => onNodeSelect(resultCheck.id)}><CheckCircle2 size={15} />{copy.openEvidence}</button>}

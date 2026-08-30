@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import { FormulaText } from './FormulaText'
 
 export type StudyBookletTemplate =
   | 'quick_overview'
@@ -158,7 +159,7 @@ export function LearningDocumentBooklet({
                 <p>{language === 'en' ? activeMeta.hintEn : activeMeta.hint}</p>
                 {activeDocument.details.length > 0 && (
                   <div className="study-booklet-keypoints">
-                    {activeDocument.details.slice(0, 5).map(detail => <span key={detail}>{detail}</span>)}
+                    {activeDocument.details.slice(0, 5).map(detail => <span key={detail}><FormulaText>{detail}</FormulaText></span>)}
                   </div>
                 )}
               </section>

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { type KnowledgeMapData, type KnowledgeMapNode } from './EditableKnowledgeMap'
 import { createSemanticNodePicker } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 type ApplicationValidationLabProps = {
   data: KnowledgeMapData
@@ -201,9 +202,9 @@ export function ApplicationValidationLab({ data, language = 'zh-CN', onNodeSelec
     <header className="application-lab-head">
       <button type="button" className="application-lab-topic" onClick={() => onNodeSelect(root.id)}>
         <FlaskConical size={20} aria-hidden="true" />
-        <strong>{root.label}</strong>
+        <strong><FormulaText>{root.label}</FormulaText></strong>
       </button>
-      <p>{compact(root.detail, 128)}</p>
+      <p><FormulaText>{compact(root.detail, 128)}</FormulaText></p>
       {onEdit && <button type="button" className="application-lab-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
 
@@ -264,8 +265,8 @@ export function ApplicationValidationLab({ data, language = 'zh-CN', onNodeSelec
             return <li key={step.id} className={`${reached ? 'reached' : ''} ${active ? 'active' : ''}`}>
               <button type="button" disabled={!step.node} onClick={() => step.node && onNodeSelect(step.node.id)} aria-label={`${step.label}: ${step.node?.label || step.detail}`}>
                 <span className="application-step-icon">{step.icon}</span>
-                <strong>{step.label}</strong>
-                <small>{step.node?.label || compact(step.detail, 32)}</small>
+                <strong><FormulaText>{step.label}</FormulaText></strong>
+                <small><FormulaText>{step.node?.label || compact(step.detail, 32)}</FormulaText></small>
               </button>
             </li>
           })}
@@ -274,18 +275,18 @@ export function ApplicationValidationLab({ data, language = 'zh-CN', onNodeSelec
         <section className="application-observation-window" aria-live="polite">
           <div className="application-observation-mark" aria-hidden="true">{currentStep?.icon || <Eye size={22} />}</div>
           <div>
-            <h4>{currentStep?.label || copy.stage}</h4>
-            <strong>{currentStep?.node?.label || root.label}</strong>
-            <p>{compact(currentStep?.detail || root.detail, 220)}</p>
-            {currentStep?.node?.visual?.formula && <code>{currentStep.node.visual.formula}</code>}
+            <h4><FormulaText>{currentStep?.label || copy.stage}</FormulaText></h4>
+            <strong><FormulaText>{currentStep?.node?.label || root.label}</FormulaText></strong>
+            <p><FormulaText>{compact(currentStep?.detail || root.detail, 220)}</FormulaText></p>
+            {currentStep?.node?.visual?.formula && <code><FormulaText>{currentStep.node.visual.formula}</FormulaText></code>}
           </div>
           {currentStep?.node && <button type="button" onClick={() => onNodeSelect(currentStep.node!.id)}>{copy.evidence}</button>}
           <div className="application-observation-flow">
-            <span><small>{copy.input}</small><strong>{compact(inputValue, 72)}</strong></span>
+            <span><small>{copy.input}</small><strong><FormulaText>{compact(inputValue, 72)}</FormulaText></strong></span>
             <ArrowRight size={18} aria-hidden="true" />
-            <span><small>{copy.execution}</small><strong>{compact(appliedRule, 72)}</strong></span>
+            <span><small>{copy.execution}</small><strong><FormulaText>{compact(appliedRule, 72)}</FormulaText></strong></span>
             <ArrowRight size={18} aria-hidden="true" />
-            <span className={runState === 'complete' ? 'revealed' : ''}><small>{copy.observed}</small><strong>{compact(visibleOutput, 84)}</strong></span>
+            <span className={runState === 'complete' ? 'revealed' : ''}><small>{copy.observed}</small><strong><FormulaText>{compact(visibleOutput, 84)}</FormulaText></strong></span>
           </div>
         </section>
       </main>
@@ -295,11 +296,11 @@ export function ApplicationValidationLab({ data, language = 'zh-CN', onNodeSelec
         <h3>{runState === 'complete' ? (verdictTone === 'review' ? copy.needsReview : verdictTone === 'caution' ? copy.caution : copy.pass) : copy.waiting}</h3>
         <section>
           <span>{copy.expected}</span>
-          <p>{compact(expectedResult, 170) || copy.waiting}</p>
+          <p><FormulaText>{compact(expectedResult, 170) || copy.waiting}</FormulaText></p>
         </section>
         <section>
           <span>{copy.observed}</span>
-          <p className={runState === 'complete' ? 'revealed' : ''}>{runState === 'complete' ? compact(visibleOutput, 190) : copy.waiting}</p>
+          <p className={runState === 'complete' ? 'revealed' : ''}><FormulaText>{runState === 'complete' ? compact(visibleOutput, 190) : copy.waiting}</FormulaText></p>
         </section>
         {activeScenario.node && <button type="button" onClick={() => onNodeSelect(activeScenario.node!.id)}><Eye size={14} />{copy.evidence}</button>}
         <small>{inspectOnly ? copy.inspect : activeScenario.summary}</small>

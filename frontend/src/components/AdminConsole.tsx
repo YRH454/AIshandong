@@ -92,8 +92,9 @@ export default function AdminConsole({ onClose }: AdminConsoleProps) {
   }, [onClose])
 
   const jobCounts = useMemo(() => {
+    if (!overview) return null
     const counts = { queued: 0, running: 0, completed: 0, failed: 0 }
-    for (const item of overview?.generation_jobs || []) {
+    for (const item of overview.generation_jobs || []) {
       const key = item.status.toLowerCase() as keyof typeof counts
       if (key in counts) counts[key] += Number(item.count || 0)
     }
@@ -148,15 +149,15 @@ export default function AdminConsole({ onClose }: AdminConsoleProps) {
 
         <div className="admin-console-scroll">
           <div className="admin-console-kpis">
-            <article><span className="kpi-icon warm"><Users size={18} /></span><div><small>账户总数</small><strong>{overview?.users.total ?? '—'}</strong><em>{overview?.users.active ?? 0} 个正常使用</em></div></article>
+            <article><span className="kpi-icon warm"><Users size={18} /></span><div><small>账户总数</small><strong>{overview?.users.total ?? '—'}</strong><em>{overview ? `${overview.users.active} 个正常使用` : '等待读取真实数据'}</em></div></article>
             <article><span className="kpi-icon green"><UserCheck size={18} /></span><div><small>活跃会话</small><strong>{overview?.active_sessions ?? '—'}</strong><em>已登录设备</em></div></article>
-            <article><span className="kpi-icon blue"><Activity size={18} /></span><div><small>后台任务</small><strong>{jobCounts.queued + jobCounts.running}</strong><em>{jobCounts.running} 个正在生成</em></div></article>
-            <article><span className="kpi-icon rose"><Database size={18} /></span><div><small>待处理任务</small><strong>{jobCounts.failed}</strong><em>{overview?.audit_events ?? 0} 条审计记录</em></div></article>
+            <article><span className="kpi-icon blue"><Activity size={18} /></span><div><small>后台任务</small><strong>{jobCounts ? jobCounts.queued + jobCounts.running : '—'}</strong><em>{jobCounts ? `${jobCounts.running} 个正在生成` : '等待读取真实数据'}</em></div></article>
+            <article><span className="kpi-icon rose"><Database size={18} /></span><div><small>待处理任务</small><strong>{jobCounts ? jobCounts.failed : '—'}</strong><em>{overview ? `${overview.audit_events} 条审计记录` : '等待读取真实数据'}</em></div></article>
           </div>
 
           <div className="admin-console-grid">
             <section className="admin-card admin-users-card">
-              <header className="admin-card-header"><div><p>ACCOUNT DIRECTORY</p><h2>账户管理</h2></div><span>{users.length} / {overview?.users.total ?? users.length}</span></header>
+              <header className="admin-card-header"><div><p>ACCOUNT DIRECTORY</p><h2>账户管理</h2></div><span>{overview ? `${users.length} / ${overview.users.total}` : '—'}</span></header>
               {loading && users.length === 0 ? <div className="admin-console-empty"><RefreshCw className="is-spinning" size={18} />正在读取账户…</div> : users.length === 0 ? <div className="admin-console-empty">暂无账户记录</div> : (
                 <div className="admin-users-table-wrap">
                   <table className="admin-users-table">
@@ -178,11 +179,11 @@ export default function AdminConsole({ onClose }: AdminConsoleProps) {
             </section>
 
             <section className="admin-card admin-jobs-card">
-              <header className="admin-card-header"><div><p>GENERATION QUEUE</p><h2>生成任务</h2></div><span><Clock3 size={14} />最近 {jobs.length} 条</span></header>
-              <div className="admin-job-summary"><span><i className="queued" />排队 {jobCounts.queued}</span><span><i className="running" />运行 {jobCounts.running}</span><span><i className="failed" />失败 {jobCounts.failed}</span><span><i className="completed" />完成 {jobCounts.completed}</span></div>
-              {jobs.length === 0 ? <div className="admin-console-empty">暂无后台生成记录</div> : <div className="admin-jobs-list">{jobs.slice(0, 12).map(job => <article key={job.job_id}>
+              <header className="admin-card-header"><div><p>GENERATION QUEUE</p><h2>生成任务</h2></div><span><Clock3 size={14} />{loading && jobs.length === 0 ? '读取中…' : `最近 ${jobs.length} 条`}</span></header>
+              {jobCounts ? <div className="admin-job-summary"><span><i className="queued" />排队 {jobCounts.queued}</span><span><i className="running" />运行 {jobCounts.running}</span><span><i className="failed" />失败 {jobCounts.failed}</span><span><i className="completed" />完成 {jobCounts.completed}</span></div> : <div className="admin-job-summary"><span>等待读取真实数据</span></div>}
+              {loading && jobs.length === 0 ? <div className="admin-console-empty"><RefreshCw className="is-spinning" size={18} />正在读取任务…</div> : jobs.length === 0 ? <div className="admin-console-empty">暂无后台生成记录</div> : <div className="admin-jobs-list">{jobs.slice(0, 12).map(job => <article key={job.job_id}>
                 <div className={`admin-job-dot ${job.status.toLowerCase()}`}><Activity size={13} /></div>
-                <div className="admin-job-copy"><b>{jobLabels[job.kind] || job.kind}</b><small>{job.job_id.slice(0, 12)} · 用户 #{job.user_id}</small></div>
+                <div className="admin-job-copy"><b>{jobLabels[job.kind] || job.kind}</b><small>{job.job_id.slice(0, 12)} · {job.username || (job.user_id < 0 ? '游客' : `用户 #${job.user_id}`)}</small></div>
                 <div className={`admin-job-status ${job.status.toLowerCase()}`}><strong>{statusLabel(job.status)}</strong><small>{formatDate(job.finished_at || job.created_at)}</small></div>
               </article>)}</div>}
             </section>

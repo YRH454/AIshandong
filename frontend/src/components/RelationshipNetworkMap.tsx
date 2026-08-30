@@ -1,6 +1,7 @@
 import { ArrowLeftRight, CheckCircle2, Link2, PenLine, Scale, ShieldQuestion, Split } from 'lucide-react'
 import { type KnowledgeMapData, type KnowledgeMapNode } from './EditableKnowledgeMap'
 import { createSemanticNodePicker } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 type RelationshipNetworkMapProps = {
   data: KnowledgeMapData
@@ -35,9 +36,9 @@ function RelationshipNode({
   return <button type="button" className={className} onClick={() => onSelect(node.id)} aria-label={`${label}: ${node.label}`}>
     <span className="relationship-node-icon" aria-hidden="true">{icon}</span>
     <span className="relationship-node-role">{label}</span>
-    <strong>{node.label}</strong>
-    <small>{compact(node.detail, 76)}</small>
-    <em>{node.example ? compact(node.example, 38) : inspectOnly ? '点击查看节点说明' : '点击展开这条关系'}</em>
+    <strong><FormulaText>{node.label}</FormulaText></strong>
+    <small><FormulaText>{compact(node.detail, 76)}</FormulaText></small>
+    <em>{node.example ? <FormulaText>{compact(node.example, 38)}</FormulaText> : inspectOnly ? '点击查看节点说明' : '点击展开这条关系'}</em>
   </button>
 }
 
@@ -74,9 +75,9 @@ export function RelationshipNetworkMap({ data, language = 'zh-CN', onNodeSelect,
     <header className="relationship-map-head">
       <button type="button" className="relationship-map-topic" onClick={() => onNodeSelect(root.id)}>
         <span>{copy.center}</span>
-        <strong>{root.label}</strong>
+        <strong><FormulaText>{root.label}</FormulaText></strong>
       </button>
-      <p>{compact(root.detail, 116)}</p>
+      <p><FormulaText>{compact(root.detail, 116)}</FormulaText></p>
       {onEdit && <button type="button" className="relationship-map-edit" onClick={onEdit}><PenLine size={14} />{copy.edit}</button>}
     </header>
 
@@ -88,8 +89,8 @@ export function RelationshipNetworkMap({ data, language = 'zh-CN', onNodeSelect,
 
       {direction && <button type="button" className="relationship-direction" onClick={() => onNodeSelect(direction.id)} aria-label={`${copy.direction}: ${direction.label}`}>
         <span>{copy.direction}</span>
-        <strong>{direction.label}</strong>
-        <small>{compact(direction.visual?.formula || direction.detail, 70)}</small>
+        <strong><FormulaText>{direction.label}</FormulaText></strong>
+        <small><FormulaText>{compact(direction.visual?.formula || direction.detail, 70)}</FormulaText></small>
         <i><b>{copy.positive}</b><b>{copy.negative}</b></i>
       </button>}
 

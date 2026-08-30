@@ -30,6 +30,8 @@ import type {
   KnowledgeMapCollaborationSuggestion,
   KnowledgeMapNodeStatus,
 } from '../services/api'
+import { FormulaText, readableFormulaText } from './FormulaText'
+import { knowledgeMapViewCount, type KnowledgeMapViewId } from './knowledgeMapViewCatalog'
 import './G6KnowledgeMap.css'
 
 type G6KnowledgeMapProps = {
@@ -80,13 +82,6 @@ type GraphProfile = {
     | 'quadrant' | 'pyramid' | 'spectrum' | 'heatmap'
   plugins?: Array<Record<string, unknown>>
 }
-
-type KnowledgeMapViewId =
-  | 'mindmap' | 'dendrogram' | 'compact-box' | 'fishbone' | 'indented' | 'org-chart' | 'radial-tree' | 'outline-tree'
-  | 'dagre-lr' | 'dagre-tb' | 'snake' | 'timeline-river' | 'funnel-flow' | 'cycle-loop' | 'swimlane' | 'staircase'
-  | 'circular' | 'concentric' | 'radial' | 'force' | 'd3-bubble' | 'fruchterman' | 'atlas2' | 'mds'
-  | 'orbit' | 'honeycomb' | 'bipartite' | 'chord-ring'
-  | 'grid' | 'arc-dependency' | 'edge-bundling' | 'split-comparison' | 'quadrant' | 'pyramid' | 'spectrum' | 'matrix-heat'
 
 type FallbackNode = { id: string; label: string; color: string; x: number; y: number }
 type FallbackLink = { id: string; from: { x: number; y: number }; to: { x: number; y: number }; color: string }
@@ -165,8 +160,6 @@ const knowledgeMapViewGroups: Array<{
   ] },
 ]
 
-const knowledgeMapViewCount = knowledgeMapViewGroups.reduce((count, group) => count + group.views.length, 0)
-
 function mapViewLabel(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en') {
   const view = knowledgeMapViewGroups.flatMap(group => group.views).find(item => item.id === viewId)
   return language === 'en' ? view?.en || viewId : view?.zh || viewId
@@ -244,7 +237,8 @@ function mapTitle(data: KnowledgeMapData, language: 'zh-CN' | 'en') {
 }
 
 function shortLabel(label: string, limit = 12) {
-  return label.length > limit ? `${label.slice(0, limit - 1)}…` : label
+  const readable = readableFormulaText(label)
+  return readable.length > limit ? `${readable.slice(0, limit - 1)}…` : readable
 }
 
 function roleLabel(node: KnowledgeMapNode, language: 'zh-CN' | 'en') {
@@ -281,7 +275,11 @@ function profileFor(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en'): Graph
     // contain cross-links. A fixed fishbone grammar keeps the official visual
     // language while accepting any valid knowledge payload.
     fishbone: { semanticType: 'causal_map', nodeType: 'rect', edgeType: 'line', usesTree: false, visual: 'fishbone' },
-    indented: { semanticType: 'concept_tree', nodeType: 'circle', edgeType: 'polyline', usesTree: true, visual: 'index', layout: { type: 'indented', direction: 'LR', indent: 112, getHeight: () => 30, getWidth: () => 42 } },
+    // The upstream indented layout computes a very narrow bounding box for
+    // sparse generated trees, so fitView scales the whole map into a tiny
+    // strip. This view keeps the indented grammar but uses explicit rows below
+    // so it fills the same readable canvas as the other views.
+    indented: { semanticType: 'concept_tree', nodeType: 'circle', edgeType: 'polyline', usesTree: true, visual: 'index' },
     'org-chart': { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'org' },
     'radial-tree': { semanticType: 'concept_tree', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'radial-tree' },
     'outline-tree': { semanticType: 'concept_tree', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'outline' },
@@ -415,7 +413,9 @@ function fallbackMapFor(
       coordinates.set(node.id, { x: side ? 77 : 23, y: spread })
     })
   } else if (profile.id === 'dendrogram') {
-    core = { ...core, x: 9, y: 50 }
+    // Keep the wide core node inside the surface on narrow screens. At 9%
+    // its left half was clipped by the surface's overflow boundary.
+    core = { ...core, x: 18, y: 50 }
     const groups = hierarchyGroupsFor(leaves, 'dendrogram', language)
     sourceLinks = []
     groups.forEach((group, groupIndex) => {
@@ -445,7 +445,7 @@ function fallbackMapFor(
       })
     })
   } else if (profile.id === 'snake') {
-    core = { ...core, x: 10, y: 24 }
+    core = { ...core, x: 18, y: 24 }
     const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(leaves.length * 1.6))))
     leaves.forEach((node, index) => {
       const row = Math.floor(index / columns)
@@ -457,7 +457,7 @@ function fallbackMapFor(
       })
     })
   } else if (['process_flow', 'timeline_map', 'causal_map'].includes(mapType)) {
-    core = { ...core, x: 9, y: 50 }
+    core = { ...core, x: 18, y: 50 }
     leaves.forEach((node, index) => {
       const ratio = count === 1 ? .5 : index / (count - 1)
       coordinates.set(node.id, { x: 23 + ratio * 66, y: mapType === 'timeline_map' ? (index % 2 ? 65 : 35) : (index % 2 ? 58 : 42) })
@@ -714,7 +714,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
           ? { size: [150, 46], radius: 23, labelPlacement: 'center', labelFontSize: 14, labelFontWeight: 760 }
           : { size: [34, 34], radius: 5, fill: color, stroke: color, labelPlacement: sequenceIndex % 2 ? 'top' : 'bottom', labelFill: '#303540', labelFontSize: 11, labelFontWeight: 650, labelOffsetY: sequenceIndex % 2 ? -8 : 8, halo: false }
       } else if (profile.visual === 'index') {
-        visualStyle = { size: isRoot ? 24 : 13, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 2, labelPlacement: 'right', labelFill: '#343a47', labelFontSize: isRoot ? 14 : 12, labelFontWeight: 650, labelBackground: true, labelBackgroundFill: '#ffffff', labelPadding: [3, 6], halo: false }
+        visualStyle = { size: isRoot ? 24 : 13, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 2, labelPlacement: 'right', labelFill: '#343a47', labelFontSize: isRoot ? 14 : 12, labelFontWeight: 650, labelBackground: true, labelBackgroundFill: '#ffffff', labelPadding: [3, 6], labelMaxWidth: 188, labelWordWrap: true, labelLineHeight: 15, halo: false }
       } else if (profile.visual === 'decision') {
         visualStyle = { size: isRoot ? 100 : 76, fill: isRoot ? '#252c42' : `${color}18`, stroke: isRoot ? '#252c42' : color, lineWidth: 2, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelMaxWidth: isRoot ? 70 : 56, labelLineHeight: 15 }
       } else if (profile.visual === 'tokens') {
@@ -949,6 +949,37 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         edges: [...ribs, ...spine],
       }
     }
+    if (profile.id === 'indented' && graphTree) {
+      const entries: Array<{ entry: MapTreeNode; depth: number; row: number }> = []
+      const visit = (entry: MapTreeNode, depth: number) => {
+        entries.push({ entry, depth, row: entries.length })
+        entry.children?.forEach(child => visit(child, depth + 1))
+      }
+      visit(graphTree, 0)
+      const rowCount = Math.max(1, entries.length)
+      const rowGap = rowCount === 1 ? 0 : Math.min(66, 486 / (rowCount - 1))
+      // On narrow screens the horizontal room is consumed by labels and the
+      // canvas fit would otherwise shrink the whole tree. Stack the rows with
+      // a small visual indent there; desktop keeps the wide two-column spread.
+      const indent = window.matchMedia('(max-width: 760px)').matches ? 64 : 520
+      const nodes: any[] = entries.map(({ entry, depth, row }) => {
+        // Keep the indentation legible even when most generated atoms are
+        // direct children. A small indent leaves the whole tree as a narrow
+        // vertical strip after fitView; wider columns make the hierarchy use
+        // the available canvas without relying on an unstable physics layout.
+        const x = Math.min(1050, 104 + depth * indent)
+        const y = rowCount === 1 ? 300 : 48 + row * rowGap
+        const branchIndex = entry.data.branchIndex < 0 ? 0 : entry.data.branchIndex
+        return {
+          ...positionedNode(entry.data.node, branchIndex, x, y, row),
+          children: entry.children?.map(child => child.id),
+        }
+      })
+      const edges = entries.flatMap(({ entry }) => (entry.children || []).map((child, childIndex) => (
+        hierarchyEdge(entry.id, child.id, child.data.color, entry.data.branchIndex + childIndex + 1)
+      )))
+      return { nodes, edges }
+    }
     if (profile.usesTree && graphTree) {
       return treeToGraphData(graphTree, {
         getNodeData: datum => {
@@ -1041,17 +1072,18 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     }
     let destroyed = false
     let graph: Graph | null = null
+    let graphHost: HTMLDivElement | null = null
     let retryTimer: number | undefined
     let motionFrame: number | undefined
     setRenderState('booting')
     setMotionSegments([])
     setMotionCore(null)
-    const restoreCanvasFrame = () => {
-      container.style.position = 'absolute'
-      container.style.display = 'grid'
-      container.style.inset = '0'
-      container.style.width = 'auto'
-      container.style.height = 'auto'
+    const restoreCanvasFrame = (element: HTMLElement) => {
+      element.style.position = 'absolute'
+      element.style.display = 'grid'
+      element.style.inset = '0'
+      element.style.width = 'auto'
+      element.style.height = 'auto'
     }
     const motionEdges = graphData.edges
       .filter((edge: any) => !String(edge.source).startsWith('__') && !String(edge.target).startsWith('__'))
@@ -1112,22 +1144,35 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     }
     const createGraph = () => {
       if (destroyed) return
-      // G6 writes inline positioning styles onto its host. After an instance is
-      // destroyed those styles remain, collapsing the next layout to 0px high.
-      // Restore the host frame before measuring and again after construction.
-      // Some G6 renderers retain their layered canvases after destroy(); clear
-      // the host only after the previous cleanup promise has settled so a new
-      // view never inherits ghost nodes or labels from the old one.
+      // Give every G6 instance its own host. The renderer destroys canvases
+      // asynchronously; sharing the parent made a fast style switch possible
+      // to remove the next instance's children and surface React removeChild
+      // errors. An isolated host lets each cleanup finish in its own subtree.
       container.replaceChildren()
-      restoreCanvasFrame()
+      const mount = document.createElement('div')
+      mount.className = 'g6-map-instance'
+      restoreCanvasFrame(mount)
+      container.appendChild(mount)
+      graphHost = mount
       const { width, height } = container.getBoundingClientRect()
       if (width < 20 || height < 20) {
+        mount.remove()
+        graphHost = null
         retryTimer = window.setTimeout(createGraph, 90)
         return
       }
       try {
+        // Reserve a little more room on the left for the wide root node. The
+        // asymmetric padding keeps flow/dendrogram layouts readable when the
+        // viewport is narrower than their desktop coordinate system.
+        const graphPadding = window.matchMedia('(max-width: 760px)').matches
+          ? [48, 68, 48, 108]
+          : [58, 62, 64, 62]
+        const graphZoomRange: [number, number] = window.matchMedia('(max-width: 760px)').matches
+          ? [0.16, maxCanvasZoom]
+          : [0.25, maxCanvasZoom]
         graph = new Graph({
-          container, data: graphData, autoResize: true, autoFit: 'view', padding: [58, 62, 64, 62], zoomRange: [0.25, maxCanvasZoom],
+          container: mount, data: graphData, autoResize: true, autoFit: 'view', padding: graphPadding, zoomRange: graphZoomRange,
           animation: { duration: 520, easing: 'ease-out' },
           node: {
             type: ((datum: any) => datum.data?.virtual ? 'rect' : profile.nodeType) as never,
@@ -1147,7 +1192,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
             },
             animation: { enter: 'path-in', update: [{ fields: ['sourceNode', 'targetNode', 'stroke'], duration: 520, easing: 'ease-out' }] },
           } as never,
-          layout: profile.layout as never,
+          layout: profile.id === 'indented' ? undefined : profile.layout as never,
           ...(profile.plugins ? { plugins: profile.plugins as never } : {}),
           behaviors: [
             { type: 'drag-canvas' },
@@ -1156,7 +1201,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
             ...(profile.usesTree ? [{ type: 'collapse-expand', trigger: 'dblclick', animation: true }] : []),
           ],
         })
-        restoreCanvasFrame()
+        restoreCanvasFrame(mount)
         graphRef.current = graph
         graph.on(GraphEvent.AFTER_TRANSFORM, scheduleMotionUpdate)
         graph.on(GraphEvent.AFTER_LAYOUT, scheduleMotionUpdate)
@@ -1189,18 +1234,22 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame)
       if (retryTimer) window.clearTimeout(retryTimer)
       if (motionFrame !== undefined) window.cancelAnimationFrame(motionFrame)
+      const activeHost = graphHost
+      graphHost = null
+      if (graphRef.current === graph) graphRef.current = null
       if (graph) {
         graph.off(GraphEvent.AFTER_TRANSFORM, scheduleMotionUpdate)
         graph.off(GraphEvent.AFTER_LAYOUT, scheduleMotionUpdate)
         graph.off(GraphEvent.AFTER_SIZE_CHANGE, scheduleMotionUpdate)
-        graphCleanupRef.current = Promise.resolve(graph.destroy())
+        graphCleanupRef.current = Promise.resolve()
+          .then(() => graph?.destroy())
           .catch(() => undefined)
           .then(() => {
-            container.replaceChildren()
-            restoreCanvasFrame()
+            activeHost?.remove()
           })
+      } else {
+        activeHost?.remove()
       }
-      if (graphRef.current === graph) graphRef.current = null
     }
   }, [currentRoot, graphData, graphKey, hasLearnableAtoms, maxCanvasZoom, profile])
 
@@ -1266,7 +1315,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       <div className="g6-map-heading">
         {frames.length > 0 && <button type="button" className="g6-map-back" onClick={goBack}><ArrowLeftRegular />{zh ? '返回主题总览' : 'Back to overview'}</button>}
         <span>{profile.label}</span>
-        <h1>{currentTitle}</h1>
+        <h1><FormulaText>{currentTitle}</FormulaText></h1>
       </div>
       <div className="g6-map-header-actions">
         <label className="g6-map-type-picker">
@@ -1346,10 +1395,10 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         <button type="button" className="g6-map-inspector-close" onClick={() => setSelectedId(null)} aria-label={zh ? '关闭' : 'Close'}><DismissRegular /></button>
         <div className="g6-map-inspector-icon"><NodeGlyph node={selectedNode} /></div>
         <span>{roleLabel(selectedNode, language)}</span>
-        <h2>{selectedNode.label}</h2>
-        <p>{selectedNode.detail || (zh ? '暂无补充说明。' : 'No extra note yet.')}</p>
-        {selectedNode.example && <small><BookOpenRegular /><b>{zh ? '例子' : 'Example'}</b>{selectedNode.example}</small>}
-        {selectedNode.mistake && <small className="is-warning"><WarningRegular /><b>{zh ? '易错点' : 'Pitfall'}</b>{selectedNode.mistake}</small>}
+        <h2><FormulaText>{selectedNode.label}</FormulaText></h2>
+        <p><FormulaText>{selectedNode.detail || (zh ? '暂无补充说明。' : 'No extra note yet.')}</FormulaText></p>
+        {selectedNode.example && <small><BookOpenRegular /><b>{zh ? '例子' : 'Example'}</b><FormulaText>{selectedNode.example}</FormulaText></small>}
+        {selectedNode.mistake && <small className="is-warning"><WarningRegular /><b>{zh ? '易错点' : 'Pitfall'}</b><FormulaText>{selectedNode.mistake}</FormulaText></small>}
         {canOpenDeepDive && <button type="button" className="g6-map-enter" disabled={expanding} onClick={() => void openDeepDive()}><BranchRegular />{expanding ? (zh ? '正在生成专题图…' : 'Building deep map…') : (zh ? '展开这条知识支路' : 'Open this branch')}<ArrowRightRegular /></button>}
         {props.onStatusChange && selectedNode.id !== currentRoot?.id && <div className="g6-map-status-actions">
           <button type="button" className={selectedStatus === 'review' ? 'is-active review' : ''} disabled={props.progressSavingNodeId === selectedNode.id} onClick={() => props.onStatusChange?.(selectedNode.id, 'review')}><WarningRegular />{zh ? '需要复习' : 'Review'}</button>

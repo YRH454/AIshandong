@@ -11,6 +11,7 @@ import { RelationshipNetworkMap } from './RelationshipNetworkMap'
 import { TermFieldMap } from './TermFieldMap'
 import { TimelineChronicleMap } from './TimelineChronicleMap'
 import { knowledgeMapSemanticRoles, type KnowledgeMapSemanticRole } from './knowledgeMapSemantic'
+import { FormulaText } from './FormulaText'
 
 export type KnowledgeMapNode = {
   id: string
@@ -603,14 +604,14 @@ function MapVisual({ node, index, compact = false }: { node: KnowledgeMapNode; i
   const kind = visualKindFor(node, index)
   const headline = visual.headline || visualFallback(kind, node)
   const items = (visual.items || []).filter(Boolean).slice(0, compact ? 2 : 3)
-  if (kind === 'formula') return <div className="map-visual visual-formula"><strong>{visual.formula || headline}</strong><span>{visual.formula ? headline : ''}</span></div>
-  if (kind === 'comparison') return <div className="map-visual visual-comparison"><span>{visual.before || items[0] || '原状态'}</span><ArrowRight size={14} /><strong>{visual.after || items[1] || headline}</strong></div>
-  if (kind === 'stack') return <div className="map-visual visual-stack">{(items.length ? items : [headline]).map((item, step) => <span key={`${node.id}-${item}`}><i>{step + 1}</i>{item}</span>)}</div>
-  if (kind === 'sequence') return <div className="map-visual visual-sequence">{(items.length ? items : [headline]).map((item, step) => <span key={`${node.id}-${item}`}><i>{step + 1}</i>{item}</span>)}</div>
-  if (kind === 'code') return <div className="map-visual visual-code"><Braces size={14} /><code>{visual.code || headline}</code></div>
-  if (kind === 'input_output') return <div className="map-visual visual-io"><span>{visual.input || items[0] || '输入'}</span><ArrowRight size={14} /><strong>{visual.output || items[1] || headline}</strong></div>
-  if (kind === 'warning') return <div className="map-visual visual-warning"><AlertTriangle size={14} /><span>{headline}</span></div>
-  return <div className="map-visual visual-definition"><Lightbulb size={14} /><span>{headline}</span></div>
+  if (kind === 'formula') return <div className="map-visual visual-formula"><strong><FormulaText>{visual.formula || headline}</FormulaText></strong><span><FormulaText>{visual.formula ? headline : ''}</FormulaText></span></div>
+  if (kind === 'comparison') return <div className="map-visual visual-comparison"><span><FormulaText>{visual.before || items[0] || '原状态'}</FormulaText></span><ArrowRight size={14} /><strong><FormulaText>{visual.after || items[1] || headline}</FormulaText></strong></div>
+  if (kind === 'stack') return <div className="map-visual visual-stack">{(items.length ? items : [headline]).map((item, step) => <span key={`${node.id}-${item}`}><i>{step + 1}</i><FormulaText>{item}</FormulaText></span>)}</div>
+  if (kind === 'sequence') return <div className="map-visual visual-sequence">{(items.length ? items : [headline]).map((item, step) => <span key={`${node.id}-${item}`}><i>{step + 1}</i><FormulaText>{item}</FormulaText></span>)}</div>
+  if (kind === 'code') return <div className="map-visual visual-code"><Braces size={14} /><code><FormulaText>{visual.code || headline}</FormulaText></code></div>
+  if (kind === 'input_output') return <div className="map-visual visual-io"><span><FormulaText>{visual.input || items[0] || '输入'}</FormulaText></span><ArrowRight size={14} /><strong><FormulaText>{visual.output || items[1] || headline}</FormulaText></strong></div>
+  if (kind === 'warning') return <div className="map-visual visual-warning"><AlertTriangle size={14} /><span><FormulaText>{headline}</FormulaText></span></div>
+  return <div className="map-visual visual-definition"><Lightbulb size={14} /><span><FormulaText>{headline}</FormulaText></span></div>
 }
 
 function MapNodeGlyph({ kind }: { kind: TeachingKind }) {
@@ -1364,12 +1365,12 @@ export function EditableKnowledgeMap({
 
   const focusSheet = mode === 'read' && focusOpen ? <section className="map-focus-sheet" aria-live="polite">
     <button className="map-focus-close" type="button" onClick={() => setFocusOpen(false)} aria-label={copy.close}><X size={15} /></button>
-    <div className="map-focus-heading"><span>{groupFor(selectedNode, selectedIndex, zh)}</span><h2>{selectedNode.label}</h2></div>
-    <p>{selectedNode.detail}</p>
+    <div className="map-focus-heading"><span>{groupFor(selectedNode, selectedIndex, zh)}</span><h2><FormulaText>{selectedNode.label}</FormulaText></h2></div>
+    <p><FormulaText>{selectedNode.detail}</FormulaText></p>
     <MapVisual node={selectedNode} index={selectedIndex} />
-    {selectedNode.example && <small><b>{copy.example}</b>{selectedNode.example}</small>}
-    {selectedNode.mistake && <small className="focus-mistake"><b>{copy.mistake}</b>{selectedNode.mistake}</small>}
-    {selectedConnections.length > 0 && <div className="map-focus-links"><b>{copy.linked}</b><span>{selectedConnections.map(node => <button type="button" key={node.id} onClick={() => { if (studyMode === 'recall') { revealRecallNode(node.id); setFocusOpen(false) } else exploreNode(node.id) }}>{node.label}</button>)}</span></div>}
+    {selectedNode.example && <small><b>{copy.example}</b><FormulaText>{selectedNode.example}</FormulaText></small>}
+    {selectedNode.mistake && <small className="focus-mistake"><b>{copy.mistake}</b><FormulaText>{selectedNode.mistake}</FormulaText></small>}
+    {selectedConnections.length > 0 && <div className="map-focus-links"><b>{copy.linked}</b><span>{selectedConnections.map(node => <button type="button" key={node.id} onClick={() => { if (studyMode === 'recall') { revealRecallNode(node.id); setFocusOpen(false) } else exploreNode(node.id) }}><FormulaText>{node.label}</FormulaText></button>)}</span></div>}
     {onStatusChange && <div className="map-focus-actions"><button type="button" className={nodeStatus(progressState, selectedNode.id) === 'review' ? 'review active' : ''} disabled={progressSavingNodeId === selectedNode.id} onClick={() => onStatusChange(selectedNode.id, 'review')}>{copy.toReview}</button><button type="button" className={nodeStatus(progressState, selectedNode.id) === 'mastered' ? 'mastered active' : ''} disabled={progressSavingNodeId === selectedNode.id} onClick={() => onStatusChange(selectedNode.id, 'mastered')}><Check size={13} />{studyMode === 'recall' ? copy.recalled : copy.understood}</button></div>}
   </section> : null
 
@@ -1499,7 +1500,7 @@ export function EditableKnowledgeMap({
     <div className="knowledge-map-overview">
       <span>{copy.progress}</span>
       {progressLoading ? <small>{zh ? '正在载入…' : 'Loading…'}</small> : <div><b>{summary.mastered}/{summary.total}</b><small>{copy.mastered}</small>{summary.review > 0 && <em>{summary.review} {copy.review}</em>}</div>}
-      {mapFocusNode && <div className="map-explorer-nav" aria-label={zh ? '图谱层级导航' : 'Map hierarchy navigation'}><button type="button" onClick={returnFromFocusedMap}><ArrowLeft size={13} />{parentFor(positioned, mapFocusNode, core) === core.id ? copy.backToOverview : copy.backToParent}</button><span>{copy.focusedOn} “{mapFocusNode.label}”</span></div>}
+      {mapFocusNode && <div className="map-explorer-nav" aria-label={zh ? '图谱层级导航' : 'Map hierarchy navigation'}><button type="button" onClick={returnFromFocusedMap}><ArrowLeft size={13} />{parentFor(positioned, mapFocusNode, core) === core.id ? copy.backToOverview : copy.backToParent}</button><span>{copy.focusedOn} “<FormulaText>{mapFocusNode.label}</FormulaText>”</span></div>}
       {mode === 'read' && <div className="map-study-switcher" role="tablist" aria-label={zh ? '图解学习方式' : 'Map study modes'}>
         {studyTabs.filter(tab => tab.available).map(tab => {
           const Icon = tab.icon
@@ -1552,8 +1553,8 @@ export function EditableKnowledgeMap({
           </> : <>
             <MapNodeGlyph kind={displayKind} />
             <span className="map-node-group">{groupFor(node, index, zh)}</span>
-            <strong>{node.label}</strong>
-            <p>{shortText(node.detail || (zh ? '点击查看说明。' : 'Click for an explanation.'), displayKind === 'core' ? 116 : depth > 1 ? 52 : 72)}</p>
+            <strong><FormulaText>{node.label}</FormulaText></strong>
+            <p><FormulaText>{shortText(node.detail || (zh ? '点击查看说明。' : 'Click for an explanation.'), displayKind === 'core' ? 116 : depth > 1 ? 52 : 72)}</FormulaText></p>
             <MapVisual node={node} index={index} compact={mode === 'edit'} />
             {mode === 'read' && studyMode === 'overview' && <span className="map-node-enter"><GitBranchPlus size={12} />{isDeepDiveView ? (zh ? '查看说明' : 'Read details') : (zh ? '展开专题图' : 'Open deep map')}</span>}
           </>}
@@ -1566,9 +1567,9 @@ export function EditableKnowledgeMap({
       {mode === 'read' && studyMode === 'process' && currentProcessNode && <section className="map-process-sheet" aria-live="polite">
         <button className="map-process-close" type="button" onClick={() => chooseStudyMode('overview')} aria-label={copy.close}><X size={15} /></button>
         <span>{copy.processTitle} · {processIndex + 1}/{processNodes.length}</span>
-        <h2>{currentProcessNode.label}</h2>
+        <h2><FormulaText>{currentProcessNode.label}</FormulaText></h2>
         <small className="map-process-hint">{copy.processHint}</small>
-        <p>{currentProcessNode.detail}</p>
+        <p><FormulaText>{currentProcessNode.detail}</FormulaText></p>
         <MapVisual node={currentProcessNode} index={nodeIndex(currentProcessNode)} />
         <div className="map-process-actions"><button type="button" onClick={() => advanceProcess(-1)} disabled={processIndex === 0}><ArrowLeft size={13} />{copy.previous}</button><button type="button" onClick={() => setProcessIndex(0)}><RotateCcw size={13} />{copy.reset}</button><button type="button" className="primary" onClick={() => advanceProcess(1)} disabled={processIndex === processNodes.length - 1}>{copy.next}<ArrowRight size={13} /></button></div>
       </section>}
@@ -1621,6 +1622,6 @@ export function EditableKnowledgeMap({
       </div>
     </div>
 
-    <div className="map-learning-track" aria-label={copy.path}><span>{copy.path}</span>{positioned.learning_path.map((id, index) => { const node = positioned.nodes.find(item => item.id === id); return node && <button type="button" className={selectedNode.id === id ? 'active' : ''} key={id} onClick={() => { if (mode === 'read') exploreNode(id); else setSelectedId(id) }}>{index + 1}. {node.label}</button> })}</div>
+    <div className="map-learning-track" aria-label={copy.path}><span>{copy.path}</span>{positioned.learning_path.map((id, index) => { const node = positioned.nodes.find(item => item.id === id); return node && <button type="button" className={selectedNode.id === id ? 'active' : ''} key={id} onClick={() => { if (mode === 'read') exploreNode(id); else setSelectedId(id) }}>{index + 1}. <FormulaText>{node.label}</FormulaText></button> })}</div>
   </section>
 }

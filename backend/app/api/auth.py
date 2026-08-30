@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -373,6 +374,80 @@ def ensure_primary_admin() -> None:
     )
 
 
+def _is_legacy_demo_account(row: dict) -> bool:
+    """Recognise only the old, unmistakable local fixture accounts.
+
+    These rows were created by the pre-auth smoke/demo runs and are not part
+    of the product's registration flow.  Paired fixture accounts must match
+    both username and email; the four one-off fixture emails are unique enough
+    to identify their records even when a legacy client mangled the username.
+    """
+    username = str(row.get("username") or "").strip().lower()
+    email = str(row.get("email") or "").strip().lower()
+    # The profile-test username was written with a legacy GBK client and is
+    # stored as replacement characters in one local database, so exact
+    # fixture emails are sufficient for these four one-off accounts.
+    exact_emails = {
+        "profile-test@example.com",
+        "smoke@test.com",
+        "demo@test.com",
+        "fb29@t.com",
+    }
+    if email in exact_emails:
+        return True
+    paired_patterns = (
+        (r"testuser(\d+)", "t{}@x.com"),
+        (r"dashuser(\d+)", "dash{}@t.com"),
+        (r"fbuser(\d+)", "fb{}@t.com"),
+        (r"wbuser(\d+)", "wb{}@t.com"),
+    )
+    for username_pattern, email_template in paired_patterns:
+        match = re.fullmatch(username_pattern, username)
+        if match and email == email_template.format(match.group(1)):
+            return True
+    return False
+
+
+def mark_legacy_demo_accounts() -> int:
+    """Hide known fixture accounts from operational administrator views.
+
+    We deliberately soft-mark rather than delete these rows: an old local
+    workspace can still be recovered, while the administrator only sees
+    accounts and activity that came through the real product flow.  A durable
+    marker makes this a one-time upgrade, so a future real registration that
+    happens to use a similar name is never reclassified on a later restart.
+    """
+    execute("""
+        CREATE TABLE IF NOT EXISTS maintenance_markers (
+            name VARCHAR(120) PRIMARY KEY,
+            applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    marker = "legacy_demo_accounts_hidden_v1"
+    if query("SELECT name FROM maintenance_markers WHERE name = %s", (marker,)):
+        return 0
+
+    rows = query(
+        "SELECT id, username, email FROM users WHERE lower(email) <> %s",
+        (ADMIN_EMAIL,),
+    )
+    marked = 0
+    for row in rows:
+        if not _is_legacy_demo_account(row):
+            continue
+        execute("UPDATE users SET is_demo = TRUE WHERE id = %s", (row["id"],))
+        marked += 1
+    try:
+        execute("INSERT INTO maintenance_markers (name) VALUES (%s)", (marker,))
+    except Exception as exc:
+        # Two workers can start together.  Both may safely perform the same
+        # idempotent updates; only the marker insert needs race tolerance.
+        message = str(exc).lower()
+        if "duplicate" not in message and "unique constraint" not in message:
+            raise
+    return marked
+
+
 async def enforce_registered_request(
     request: Request,
     user: dict = Depends(get_current_user),
@@ -722,13 +797,15 @@ def list_users(user: dict = Depends(get_admin_user), limit: int = 100, offset: i
     offset = max(0, offset)
     rows = query(
         "SELECT id, username, email, role, avatar_url, is_active, email_verified, created_at "
-        "FROM users ORDER BY created_at DESC LIMIT %s OFFSET %s",
+        "FROM users WHERE COALESCE(is_demo, FALSE) = FALSE "
+        "ORDER BY created_at DESC LIMIT %s OFFSET %s",
         (limit, offset),
     )
     counts = query(
         "SELECT COUNT(*) AS total, "
         "SUM(CASE WHEN is_active = TRUE THEN 1 ELSE 0 END) AS active, "
-        "SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins FROM users"
+        "SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins FROM users "
+        "WHERE COALESCE(is_demo, FALSE) = FALSE"
     )
     return {"users": rows, "total": int((counts[0] if counts else {}).get("total") or 0), "summary": counts[0] if counts else {}}
 
@@ -740,21 +817,29 @@ def admin_overview(user: dict = Depends(get_admin_user)):
         "SELECT COUNT(*) AS total, "
         "SUM(CASE WHEN is_active = TRUE THEN 1 ELSE 0 END) AS active, "
         "SUM(CASE WHEN is_active = FALSE THEN 1 ELSE 0 END) AS inactive "
-        "FROM users"
+        "FROM users WHERE COALESCE(is_demo, FALSE) = FALSE"
     )
     sessions = query(
-        "SELECT COUNT(*) AS active_sessions FROM auth_sessions "
-        "WHERE revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"
+        "SELECT COUNT(*) AS active_sessions FROM auth_sessions s "
+        "JOIN users u ON u.id = s.user_id "
+        "WHERE s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP "
+        "AND COALESCE(u.is_demo, FALSE) = FALSE"
     )
     try:
         jobs = query(
-            "SELECT status, COUNT(*) AS count FROM generation_jobs "
-            "GROUP BY status ORDER BY status"
+            "SELECT j.status, COUNT(*) AS count FROM generation_jobs j "
+            "LEFT JOIN users u ON u.id = j.user_id "
+            "WHERE u.id IS NULL OR COALESCE(u.is_demo, FALSE) = FALSE "
+            "GROUP BY j.status ORDER BY j.status"
         )
     except Exception:
         jobs = []
     try:
-        audit = query("SELECT COUNT(*) AS count FROM audit_logs")
+        audit = query(
+            "SELECT COUNT(*) AS count FROM audit_logs a "
+            "LEFT JOIN users u ON u.id = a.user_id "
+            "WHERE u.id IS NULL OR COALESCE(u.is_demo, FALSE) = FALSE"
+        )
         audit_count = int((audit[0] if audit else {}).get("count") or 0)
     except Exception:
         audit_count = 0
@@ -772,9 +857,11 @@ def list_generation_jobs(user: dict = Depends(get_admin_user), limit: int = 80):
     limit = max(1, min(limit, 200))
     try:
         rows = query(
-            "SELECT job_id, user_id, kind, status, error_code, retryable, progress, "
-            "created_at, started_at, finished_at FROM generation_jobs "
-            "ORDER BY created_at DESC LIMIT %s",
+            "SELECT j.job_id, j.user_id, u.username, j.kind, j.status, j.error_code, "
+            "j.retryable, j.progress, j.created_at, j.started_at, j.finished_at "
+            "FROM generation_jobs j LEFT JOIN users u ON u.id = j.user_id "
+            "WHERE u.id IS NULL OR COALESCE(u.is_demo, FALSE) = FALSE "
+            "ORDER BY j.created_at DESC LIMIT %s",
             (limit,),
         )
     except Exception:
@@ -795,8 +882,11 @@ def list_audit_events(user: dict = Depends(get_admin_user), limit: int = 80):
     limit = max(1, min(limit, 200))
     try:
         rows = query(
-            "SELECT id, user_id, agent_name, passed, score, detail, created_at "
-            "FROM audit_logs ORDER BY created_at DESC LIMIT %s",
+            "SELECT a.id, a.user_id, u.username, a.agent_name, a.passed, a.score, "
+            "a.detail, a.created_at FROM audit_logs a "
+            "LEFT JOIN users u ON u.id = a.user_id "
+            "WHERE u.id IS NULL OR COALESCE(u.is_demo, FALSE) = FALSE "
+            "ORDER BY a.created_at DESC LIMIT %s",
             (limit,),
         )
     except Exception:
@@ -814,10 +904,12 @@ def list_audit_events(user: dict = Depends(get_admin_user), limit: int = 80):
 @router.patch("/admin/users/{user_id}")
 def update_user(user_id: int, req: AdminUserUpdateRequest, user: dict = Depends(get_admin_user)):
     """Enable/disable accounts while keeping the configured owner protected."""
-    rows = query("SELECT id, email, role, is_active FROM users WHERE id = %s", (user_id,))
+    rows = query("SELECT id, email, role, is_active, is_demo FROM users WHERE id = %s", (user_id,))
     if not rows:
         raise HTTPException(404, "用户不存在")
     target = rows[0]
+    if bool(target.get("is_demo")):
+        raise HTTPException(404, "用户不存在")
     target_email = str(target.get("email", "")).lower()
     if target_email == ADMIN_EMAIL:
         if req.role == "user" or req.is_active is False:
@@ -840,7 +932,8 @@ def update_user(user_id: int, req: AdminUserUpdateRequest, user: dict = Depends(
     params.append(user_id)
     execute(f"UPDATE users SET {', '.join(fields)} WHERE id = %s", tuple(params))
     updated = query(
-        "SELECT id, username, email, role, avatar_url, is_active, email_verified, created_at FROM users WHERE id = %s",
+        "SELECT id, username, email, role, avatar_url, is_active, email_verified, created_at "
+        "FROM users WHERE id = %s AND COALESCE(is_demo, FALSE) = FALSE",
         (user_id,),
     )
     if req.is_active is False:

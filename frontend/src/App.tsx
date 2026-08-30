@@ -2876,9 +2876,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     + backgroundDynamicTasks.filter(task => task.failed).length
   const backgroundCompletedTaskCount = backgroundGenerationTaskViews.filter(task => task.complete).length
     + backgroundDynamicTasks.filter(task => task.complete).length
+  const backgroundTaskBadgeCount = backgroundRunningTaskCount || backgroundAttentionTaskCount || backgroundCompletedTaskCount
   const foregroundDynamicTask = backgroundDynamicTasks[0]
-  const foregroundBackgroundGenerationTask = backgroundGenerationTaskViews[0]
-  const hasForegroundTaskDock = Boolean(!backgroundTasksOpen && (foregroundBackgroundGenerationTask || foregroundDynamicTask))
   const mapWorkspaceSavingNodeId = mapWorkspaceArtifact && mapProgressSavingKey?.startsWith(`${mapWorkspaceArtifact.id}:`)
     ? mapProgressSavingKey.slice(mapWorkspaceArtifact.id.length + 1)
     : null
@@ -3061,6 +3060,13 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     [libraryItems, saveCourse],
   )
   const t = (chinese: string, english: string) => interfaceLanguage === 'en' ? english : chinese
+  const backgroundTaskTriggerLabel = backgroundRunningTaskCount
+    ? t(`${backgroundRunningTaskCount} 个后台任务正在运行`, `${backgroundRunningTaskCount} background tasks running`)
+    : backgroundAttentionTaskCount
+      ? t(`${backgroundAttentionTaskCount} 个后台任务需要处理`, `${backgroundAttentionTaskCount} background tasks need attention`)
+      : backgroundCompletedTaskCount
+        ? t(`${backgroundCompletedTaskCount} 个后台任务已完成`, `${backgroundCompletedTaskCount} background tasks complete`)
+        : t('后台任务', 'Background tasks')
   const focusDeskSeedTasks = useMemo<FocusDeskSeedTask[]>(() => {
     const topic = learningState.current_topic || learningState.subject || '当前学习主题'
     const seeds: FocusDeskSeedTask[] = [
@@ -7696,7 +7702,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
   }
 
   return (
-    <div className={`app-frame ${view === 'map-workspace' ? 'map-studio-frame' : ''}${hasForegroundTaskDock ? ' has-task-dock' : ''}${notice ? ' has-feedback-toast' : ''}`} data-style={interfaceStyle} data-language={interfaceLanguage} style={appFrameStyle}>
+    <div className={`app-frame ${view === 'map-workspace' ? 'map-studio-frame' : ''}${notice ? ' has-feedback-toast' : ''}`} data-style={interfaceStyle} data-language={interfaceLanguage} style={appFrameStyle}>
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} aria-label={t('主导航', 'Main navigation')}>
         <div className="brand-row">
           <span className="brand-mark"><BrandSymbol /></span>
@@ -7840,24 +7846,16 @@ function App({ currentUser, onLogout }: AppProps = {}) {
 
         <div className="sidebar-footer">
           <button
-            className={`background-task-trigger${backgroundRunningTaskCount ? ' is-running' : ''}${backgroundAttentionTaskCount ? ' needs-attention' : ''}${backgroundCompletedTaskCount ? ' has-complete' : ''}`}
+            className={`background-task-trigger${backgroundTaskBadgeCount ? ' has-tasks' : ''}${backgroundRunningTaskCount ? ' is-running' : ''}${backgroundAttentionTaskCount ? ' needs-attention' : ''}${backgroundCompletedTaskCount ? ' has-complete' : ''}`}
             type="button"
-            title={t('后台任务', 'Background tasks')}
-            aria-label={backgroundRunningTaskCount
-              ? t(`${backgroundRunningTaskCount} 个后台任务正在运行`, `${backgroundRunningTaskCount} background tasks running`)
-              : backgroundAttentionTaskCount
-                ? t(`${backgroundAttentionTaskCount} 个后台任务需要处理`, `${backgroundAttentionTaskCount} background tasks need attention`)
-                : backgroundCompletedTaskCount
-                  ? t(`${backgroundCompletedTaskCount} 个后台任务已完成`, `${backgroundCompletedTaskCount} background tasks complete`)
-                  : t('后台任务', 'Background tasks')}
+            title={backgroundTaskTriggerLabel}
+            aria-label={backgroundTaskTriggerLabel}
             aria-expanded={backgroundTasksOpen}
             aria-haspopup="dialog"
             onClick={toggleBackgroundTasks}
           >
             <ListChecks size={18} strokeWidth={1.9} />
-            {(backgroundRunningTaskCount > 0 || backgroundAttentionTaskCount > 0 || backgroundCompletedTaskCount > 0) && (
-              <span>{backgroundRunningTaskCount || backgroundAttentionTaskCount || backgroundCompletedTaskCount}</span>
-            )}
+            {backgroundTaskBadgeCount > 0 && <span>{backgroundTaskBadgeCount}</span>}
           </button>
           <div className="profile-menu-root" data-profile-menu-root>
             <button
@@ -7912,14 +7910,15 @@ function App({ currentUser, onLogout }: AppProps = {}) {
             {view === 'library' ? t('资料库', 'Library') : view === 'map-workspace' ? t('知识图解', 'Knowledge map') : view === 'chat' ? conversationTitle : ''}
           </strong>
           <button
-            className={`mobile-background-task-trigger icon-button${backgroundRunningTaskCount ? ' is-running' : ''}${backgroundAttentionTaskCount ? ' needs-attention' : ''}${backgroundCompletedTaskCount ? ' has-complete' : ''}`}
+            className={`mobile-background-task-trigger icon-button${backgroundTaskBadgeCount ? ' has-tasks' : ''}${backgroundRunningTaskCount ? ' is-running' : ''}${backgroundAttentionTaskCount ? ' needs-attention' : ''}${backgroundCompletedTaskCount ? ' has-complete' : ''}`}
             type="button"
-            aria-label={t('后台任务', 'Background tasks')}
+            title={backgroundTaskTriggerLabel}
+            aria-label={backgroundTaskTriggerLabel}
             aria-expanded={backgroundTasksOpen}
             onClick={toggleBackgroundTasks}
           >
             <ListChecks size={17} strokeWidth={1.9} />
-            {(backgroundRunningTaskCount > 0 || backgroundAttentionTaskCount > 0 || backgroundCompletedTaskCount > 0) && <span>{backgroundRunningTaskCount || backgroundAttentionTaskCount || backgroundCompletedTaskCount}</span>}
+            {backgroundTaskBadgeCount > 0 && <span>{backgroundTaskBadgeCount}</span>}
           </button>
           <button
             className="learning-guide-toggle icon-button"
@@ -9945,66 +9944,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
           storageMode={isGuest ? 'session' : 'local'}
           onClose={() => setFocusDeskOpen(false)}
         />
-      )}
-
-      {foregroundBackgroundGenerationTask && !backgroundTasksOpen && (
-        <aside
-          className={`dynamic-task-dock${foregroundBackgroundGenerationTask.running ? ' running' : foregroundBackgroundGenerationTask.failed ? ' failed' : ' complete'}${foregroundBackgroundGenerationTask.running && typeof foregroundBackgroundGenerationTask.task.progress?.percent === 'number' ? ' has-progress' : ''}`}
-          aria-label={backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}
-          style={{ '--task-progress': Math.max(0, Math.min(1, (foregroundBackgroundGenerationTask.task.progress?.percent || 0) / 100)) } as CSSProperties}
-        >
-          <span className="dynamic-task-dock-icon" aria-hidden="true">
-            {foregroundBackgroundGenerationTask.running ? <RotateCcw size={16} /> : foregroundBackgroundGenerationTask.failed ? <X size={16} /> : <Check size={16} />}
-          </span>
-          <div>
-            <b>{foregroundBackgroundGenerationTask.running
-              ? foregroundBackgroundGenerationTask.task.progress?.label || t(`${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}正在后台生成`, `${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)} is generating`)
-              : foregroundBackgroundGenerationTask.failed
-                ? t(`${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}生成失败`, `${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)} failed`)
-                : t(`${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)}已经完成`, `${backgroundGenerationTaskLabel(foregroundBackgroundGenerationTask.task.kind)} is ready`)}</b>
-            <span>{foregroundBackgroundGenerationTask.running
-              ? foregroundBackgroundGenerationTask.task.progress?.message || foregroundBackgroundGenerationTask.task.title
-              : foregroundBackgroundGenerationTask.artifact?.title || foregroundBackgroundGenerationTask.task.title}</span>
-          </div>
-          <button className="dynamic-task-dock-action" type="button" onClick={() => foregroundBackgroundGenerationTask.failed ? retryBackgroundGenerationTask(foregroundBackgroundGenerationTask.task) : openBackgroundGenerationTask(foregroundBackgroundGenerationTask.task)}>
-            {foregroundBackgroundGenerationTask.running
-              ? t('查看进度', 'View progress')
-              : foregroundBackgroundGenerationTask.failed
-                ? t('立即重试', 'Retry now')
-                : backgroundGenerationTaskAction(foregroundBackgroundGenerationTask.task.kind)}
-          </button>
-          {!foregroundBackgroundGenerationTask.running && (
-            <button className="dynamic-task-dock-dismiss" type="button" aria-label={t('关闭任务提醒', 'Dismiss task reminder')} onClick={() => dismissBackgroundGenerationTask(foregroundBackgroundGenerationTask.task.loadingId)}><Icon name="x" size={13} /></button>
-          )}
-          {foregroundBackgroundGenerationTask.running && <i aria-hidden="true"><span /></i>}
-        </aside>
-      )}
-
-      {foregroundDynamicTask && !foregroundBackgroundGenerationTask && !backgroundTasksOpen && (
-        <aside
-          className={`dynamic-task-dock${foregroundDynamicTask.running ? ' running' : foregroundDynamicTask.failed ? ' failed' : ' complete'}${foregroundDynamicTask.running && typeof foregroundDynamicTask.artifact.generationProgress?.percent === 'number' ? ' has-progress' : ''}`}
-          aria-label={t('动态讲解任务', 'Dynamic lesson task')}
-          style={{ '--task-progress': Math.max(0, Math.min(1, (foregroundDynamicTask.artifact.generationProgress?.percent || 0) / 100)) } as CSSProperties}
-        >
-          <span className="dynamic-task-dock-icon" aria-hidden="true">
-            {foregroundDynamicTask.running ? <RotateCcw size={16} /> : foregroundDynamicTask.failed ? <X size={16} /> : <Check size={16} />}
-          </span>
-          <div>
-            <b>{foregroundDynamicTask.running
-              ? foregroundDynamicTask.artifact.generationProgress?.label || t('动态讲解正在后台生成', 'Dynamic lesson is generating')
-              : foregroundDynamicTask.failed
-                ? t('动态讲解生成失败', 'Dynamic lesson failed')
-                : t('动态讲解已经完成', 'Dynamic lesson is ready')}</b>
-            <span>{foregroundDynamicTask.running ? foregroundDynamicTask.artifact.generationProgress?.message || foregroundDynamicTask.artifact.title : foregroundDynamicTask.artifact.title}</span>
-          </div>
-          <button className="dynamic-task-dock-action" type="button" onClick={() => openBackgroundDynamicTask(foregroundDynamicTask.artifact)}>
-            {foregroundDynamicTask.running ? t('查看进度', 'View progress') : foregroundDynamicTask.failed ? t('查看并重试', 'View and retry') : t('立即进入', 'Open now')}
-          </button>
-          {!foregroundDynamicTask.running && (
-            <button className="dynamic-task-dock-dismiss" type="button" aria-label={t('关闭任务提醒', 'Dismiss task reminder')} onClick={() => dismissBackgroundDynamicTask(foregroundDynamicTask.artifact)}><Icon name="x" size={13} /></button>
-          )}
-          {foregroundDynamicTask.running && <i aria-hidden="true"><span /></i>}
-        </aside>
       )}
 
       {adminConsoleOpen && currentUser?.role === 'admin' && currentUser.email?.toLowerCase() === '3539921167@qq.com' && (

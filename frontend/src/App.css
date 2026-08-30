@@ -252,6 +252,12 @@ button { color: inherit; }
 .sidebar-footer { display: flex; align-items: center; gap: 3px; padding-top: 8px; border-top: 1px solid var(--line); }
 .background-task-trigger { width: 31px; height: 31px; position: relative; display: grid; flex: 0 0 31px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
 .background-task-trigger:hover, .background-task-trigger[aria-expanded='true'] { background: var(--hover); color: var(--text); }
+.background-task-trigger.has-tasks, .mobile-background-task-trigger.has-tasks { border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 76%, var(--surface)); color: var(--accent-deep); box-shadow: 0 5px 14px color-mix(in srgb, var(--shadow) 82%, transparent); }
+.background-task-trigger.has-tasks:hover, .background-task-trigger.has-tasks[aria-expanded='true'], .mobile-background-task-trigger.has-tasks:hover, .mobile-background-task-trigger.has-tasks[aria-expanded='true'] { border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); background: var(--accent-soft); color: var(--accent-deep); }
+.background-task-trigger.has-tasks::after, .mobile-background-task-trigger.has-tasks::after { width: 5px; height: 5px; position: absolute; right: 4px; bottom: 4px; border: 1px solid var(--surface); border-radius: 50%; background: var(--accent); content: ''; }
+.background-task-trigger.needs-attention.has-tasks, .mobile-background-task-trigger.needs-attention.has-tasks { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); color: var(--danger); }
+.background-task-trigger.needs-attention.has-tasks:hover, .background-task-trigger.needs-attention.has-tasks[aria-expanded='true'], .mobile-background-task-trigger.needs-attention.has-tasks:hover, .mobile-background-task-trigger.needs-attention.has-tasks[aria-expanded='true'] { border-color: color-mix(in srgb, var(--danger) 58%, var(--line)); background: color-mix(in srgb, var(--danger) 15%, var(--surface)); color: var(--danger); }
+.background-task-trigger.needs-attention.has-tasks::after, .mobile-background-task-trigger.needs-attention.has-tasks::after { background: var(--danger); }
 .background-task-trigger > span, .mobile-background-task-trigger > span { min-width: 14px; height: 14px; position: absolute; top: -2px; right: -2px; display: grid; place-items: center; padding-inline: 3px; border: 2px solid var(--sidebar); border-radius: 99px; background: var(--accent); color: var(--on-accent); font-size: 8px; font-weight: 750; font-variant-numeric: tabular-nums; line-height: 1; }
 .background-task-trigger.is-running > svg, .mobile-background-task-trigger.is-running > svg { animation: task-center-breathe 1.4s ease-in-out infinite; }
 .background-task-trigger.needs-attention > span, .mobile-background-task-trigger.needs-attention > span { background: var(--danger); color: #fff; }
@@ -308,9 +314,7 @@ button { color: inherit; }
 .learning-guide-empty { display: grid; justify-items: start; gap: 7px; margin: auto 2px; padding: 9px 1px; }.learning-guide-empty > span { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }.learning-guide-empty b { margin-top: 3px; font-size: 12px; }.learning-guide-empty p { margin: 0 0 3px; color: var(--muted); font-size: 10.5px; line-height: 1.65; }
 
 .conversation { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 24px 28px 16px; scrollbar-gutter: stable; }
-.app-frame.has-task-dock .conversation { margin-bottom: 70px; }
 .app-frame.has-feedback-toast .conversation { margin-bottom: 64px; }
-.app-frame.has-task-dock.has-feedback-toast .conversation { margin-bottom: 130px; }
 .workbench-welcome .conversation { min-height: 0; flex: 0 0 auto; margin-top: auto; padding: 0 24px; overflow: visible; }
 .welcome-state { text-align: center; }
 .welcome-state h1 { max-width: 14ch; margin: 0 auto; font-size: clamp(29px, 3vw, 36px); line-height: 1.18; letter-spacing: -.035em; text-wrap: balance; }
@@ -1055,22 +1059,6 @@ body.interactive-presentation-open { overflow: hidden; }
 .background-task-item.failed .background-task-progress > span { background: var(--danger); }
 .background-task-item.dynamic.complete .background-task-item-status { background: var(--accent-soft); color: var(--accent-deep); }
 .background-task-progress.indeterminate > span { width: 42% !important; animation: dynamic-task-progress 1.25s cubic-bezier(.4, 0, .2, 1) infinite; }
-.dynamic-task-dock { width: min(520px, calc((100vw - 28px) / var(--ui-scale))); min-height: 54px; position: fixed; left: 50%; bottom: calc(var(--task-dock-bottom, 72px) / var(--ui-scale)); z-index: 38; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 8px 9px 8px 10px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); box-shadow: 0 14px 36px var(--shadow); color: var(--text); pointer-events: none; transform: translateX(-50%); transition: bottom .18s ease; animation: dynamic-task-dock-in .2s cubic-bezier(.16, 1, .3, 1) both; }
-.dynamic-task-dock-action, .dynamic-task-dock-dismiss { pointer-events: auto; }
-.dynamic-task-dock-icon { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 8px; background: var(--accent-soft); color: var(--accent-deep); }
-.dynamic-task-dock.running .dynamic-task-dock-icon svg { animation: map-package-spin 1.15s linear infinite; }
-.dynamic-task-dock.failed .dynamic-task-dock-icon { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); color: var(--danger); }
-.dynamic-task-dock > div { min-width: 0; display: grid; gap: 2px; }
-.dynamic-task-dock b { font-size: 10.5px; line-height: 1.35; }
-.dynamic-task-dock > div > span { overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.dynamic-task-dock-action { min-height: 31px; padding: 0 10px; border: 0; border-radius: 8px; background: var(--accent); color: var(--on-accent); cursor: pointer; font-size: 9.5px; font-weight: 720; white-space: nowrap; }
-.dynamic-task-dock-action:hover { background: var(--accent-deep); }
-.dynamic-task-dock-dismiss { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
-.dynamic-task-dock-dismiss:hover { background: var(--hover); color: var(--text); }
-.dynamic-task-dock > i { height: 2px; position: absolute; right: 10px; bottom: -1px; left: 10px; overflow: hidden; border-radius: 99px; background: var(--line); }
-.dynamic-task-dock > i > span { width: 34%; height: 100%; display: block; border-radius: inherit; background: var(--accent); animation: dynamic-task-progress 1.25s cubic-bezier(.4, 0, .2, 1) infinite; }
-.dynamic-task-dock.has-progress > i > span { width: 100%; animation: none; transform: scaleX(var(--task-progress)); transform-origin: left center; transition: transform .35s cubic-bezier(.16, 1, .3, 1); }
-@keyframes dynamic-task-dock-in { from { opacity: 0; transform: translate(-50%, 7px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .background-task-item > p { grid-column: 2; margin: 7px 0 0; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .background-task-item-actions { grid-column: 2; display: flex; align-items: center; gap: 5px; margin-top: 9px; }
 .background-task-item-actions button { min-height: 27px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 9px; font-weight: 650; }
@@ -1192,7 +1180,6 @@ body.interactive-presentation-open { overflow: hidden; }
 .style-preview[data-preview="blueprint"] { background: linear-gradient(#2b5e84 1px, transparent 1px), linear-gradient(90deg, #2b5e84 1px, transparent 1px), #0b2945; background-size: 8px 8px; }
 
 .feedback-toast { max-width: min(440px, calc(100vw - 24px)); min-height: 38px; display: flex; align-items: center; gap: 7px; position: fixed; left: 50%; bottom: calc(var(--task-dock-bottom, 72px) / var(--ui-scale)); z-index: 50; padding: 7px 8px 7px 10px; border-radius: 10px; background: var(--toast); color: var(--toast-text); box-shadow: 0 10px 26px var(--shadow); font-size: 10.5px; transform: translateX(-50%); }
-.app-frame.has-task-dock .feedback-toast { bottom: calc((var(--task-dock-bottom, 72px) + 64px) / var(--ui-scale)); }
 .feedback-toast > span { min-width: 0; overflow-wrap: anywhere; }
 .feedback-toast button { flex: 0 0 auto; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .toast-action { min-height: 25px; padding: 0 6px; border-radius: 6px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
@@ -1371,9 +1358,6 @@ body.interactive-presentation-open { overflow: hidden; }
 @media (max-width: 640px) {
   .dynamic-explanation-compact { grid-template-columns: 1fr; padding: 16px; }
   .dynamic-compact-open { width: 100%; }
-  .dynamic-task-dock { width: calc((100vw - 16px) / var(--ui-scale)); grid-template-columns: 28px minmax(0, 1fr) auto; }
-  .dynamic-task-dock-action { padding-inline: 8px; }
-  .dynamic-task-dock-dismiss { display: none; }
   .topbar { height: 48px; flex-basis: 48px; }
   .conversation { padding: 17px 13px 9px; scrollbar-gutter: auto; }
   .workbench-welcome .conversation { padding: 0 18px; }

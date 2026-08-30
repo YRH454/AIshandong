@@ -267,7 +267,11 @@ def init_core_tables():
             session_type VARCHAR(40) NOT NULL,
             title VARCHAR(160) DEFAULT '',
             messages TEXT NOT NULL,
-            learning_state TEXT NOT NULL DEFAULT '{}',
+            -- MySQL rejects DEFAULT values on TEXT columns (error 1101).
+            -- The API already supplies an explicit JSON value when it needs
+            -- learning state, while legacy session writers may omit it, so
+            -- keep this column nullable for both SQLite and MySQL.
+            learning_state TEXT,
             is_pinned TINYINT DEFAULT 0,
             is_active TINYINT DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -275,7 +279,8 @@ def init_core_tables():
         )
     """)
     _ensure_column("chat_sessions", "title", "VARCHAR(160) DEFAULT ''")
-    _ensure_column("chat_sessions", "learning_state", "TEXT NOT NULL DEFAULT '{}'")
+    # Do not add a TEXT default here: MySQL rejects defaults on TEXT columns.
+    _ensure_column("chat_sessions", "learning_state", "TEXT")
     _ensure_column("chat_sessions", "is_pinned", "TINYINT DEFAULT 0")
 
 

@@ -276,39 +276,96 @@ def _fallback_objective_questions(
         learning_state.get("current_topic") or learning_state.get("knowledge_points", [""])[0] or question,
         70,
     ) or "当前主题"
-    choice_prompts = [
-        f"关于“{topic}”，下列哪项最符合当前学习内容中的核心判断？",
-        f"如果题目中的条件发生变化，处理“{topic}”时最合理的做法是什么？",
-        f"学习“{topic}”后，最适合用来检验自己是否理解的方法是什么？",
-        f"在“{topic}”的实际应用中，出现异常结果时首先应该回看什么？",
+    # Keep the local fallback useful even when a provider is unavailable. The
+    # old four-question cycle made a 12-question mock repeat the same wording
+    # three times, which looked like a rendering bug and weakened the review.
+    templates = [
+        {
+            "type": "fill_blank",
+            "prompt": f"填空：处理“{topic}”时，应先明确 ______ ，再按照过程逐步验证。",
+            "options": [], "answer": "适用条件", "accepted_answers": ["适用条件", "条件", "边界条件"],
+            "explanation": "先确认适用条件，才能判断方法是否能够正确使用。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"关于“{topic}”，下列哪项最符合当前学习内容中的核心判断？",
+            "options": ["先核对题目条件与核心过程", "直接套用记住的答案", "忽略边界情况", "只比较最后结果"],
+            "answer": "先核对题目条件与核心过程",
+            "explanation": "稳定理解需要先确认条件，再核对当前过程是否符合核心方法。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"如果题目中的条件发生变化，处理“{topic}”时最合理的做法是什么？",
+            "options": ["重新检查条件并调整推理", "沿用原题的每个数字", "跳过条件直接写结论", "只看题目最后一句"],
+            "answer": "重新检查条件并调整推理",
+            "explanation": "条件变化可能影响适用范围和步骤，不能机械复用原题答案。",
+        },
+        {
+            "type": "true_false",
+            "prompt": f"请判断：只记住“{topic}”的结论，而不检查适用条件，也能稳定解决相关问题。",
+            "options": ["正确", "错误"], "answer": "错误",
+            "explanation": "理解知识点还需要结合条件和过程验证，不能只记住结论。",
+        },
+        {
+            "type": "fill_blank",
+            "prompt": f"填空：解释“{topic}”时，除了结论，还要说明关键 ______ 和推导过程。",
+            "options": [], "answer": "依据", "accepted_answers": ["依据", "理由", "条件"],
+            "explanation": "把依据和过程说清楚，才能判断结论是否真的成立。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"学习“{topic}”后，哪种方式最能检验自己是否真正理解？",
+            "options": ["换一个情境独立说明步骤", "只重复课本定义", "只记住示例数字", "只看最后答案"],
+            "answer": "换一个情境独立说明步骤",
+            "explanation": "在新情境中复述条件、过程和结论，才能检验迁移能力。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"在“{topic}”的实际应用中出现异常结果时，首先应该回看什么？",
+            "options": ["输入条件和关键步骤", "显示颜色是否醒目", "答案的排版顺序", "是否跳过了总结"],
+            "answer": "输入条件和关键步骤",
+            "explanation": "异常通常先来自条件理解或步骤执行，应该沿过程定位原因。",
+        },
+        {
+            "type": "true_false",
+            "prompt": f"请判断：只要最终答案看起来合理，就可以省略“{topic}”的中间验证步骤。",
+            "options": ["正确", "错误"], "answer": "错误",
+            "explanation": "中间步骤用于检查条件、方法和单位，不能仅凭结果判断正确性。",
+        },
+        {
+            "type": "fill_blank",
+            "prompt": f"填空：面对“{topic}”的新题，完成计算后还应进行结果 ______ 。",
+            "options": [], "answer": "检验", "accepted_answers": ["检验", "检查", "验证"],
+            "explanation": "最后检验可以发现单位、方向或边界条件上的遗漏。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"要把“{topic}”迁移到另一道题，下面哪项最重要？",
+            "options": ["识别相同的关系和不同的条件", "把原题文字逐句复制", "只寻找相同的数字", "忽略题目背景"],
+            "answer": "识别相同的关系和不同的条件",
+            "explanation": "迁移依赖结构关系，同时要重新判断新条件是否满足方法要求。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"下列哪种做法最容易造成“{topic}”的判断错误？",
+            "options": ["把相近概念当成同一个概念", "先列出已知条件", "用反例检查结论", "写出每一步的依据"],
+            "answer": "把相近概念当成同一个概念",
+            "explanation": "相近概念的适用条件可能不同，混淆边界会让后续推理失效。",
+        },
+        {
+            "type": "single_choice",
+            "prompt": f"如果要向同学讲清“{topic}”，最完整的表达顺序是什么？",
+            "options": ["先说对象和条件，再讲过程，最后给出结论", "先报结论，再补任何条件", "只展示公式不解释符号", "只讲一个例子不说适用范围"],
+            "answer": "先说对象和条件，再讲过程，最后给出结论",
+            "explanation": "对象、条件、过程和结论形成完整链条，听者才能判断方法是否适用。",
+        },
     ]
     questions: list[dict] = []
     for index in range(question_count):
-        if index % 4 == 3:
-            questions.append({
-                "id": f"q{index + 1}", "type": "true_false",
-                "prompt": f"请判断：只记住结论，而不检查适用条件，也能稳定解决“{topic}”相关问题。",
-                "options": ["正确", "错误"], "answer": "错误",
-                "explanation": "理解知识点还需要结合条件和过程验证，不能只记住结论。",
-                "knowledge_point": topic,
-            })
-        elif index % 4 == 0:
-            questions.append({
-                "id": f"q{index + 1}", "type": "fill_blank",
-                "prompt": f"填空：处理“{topic}”时，应先明确 ______ ，再按照过程逐步验证。",
-                "options": [], "answer": "适用条件", "accepted_answers": ["适用条件", "条件", "边界条件"],
-                "explanation": "先确认适用条件，才能判断方法是否能够正确使用。",
-                "knowledge_point": topic,
-            })
-        else:
-            questions.append({
-                "id": f"q{index + 1}", "type": "single_choice",
-                "prompt": choice_prompts[index % len(choice_prompts)],
-                "options": ["先核对题目条件与核心过程", "直接套用记住的答案", "忽略边界情况", "只比较最后结果"],
-                "answer": "先核对题目条件与核心过程",
-                "explanation": "稳定迁移知识需要先确认条件，再核对当前过程是否符合核心方法。",
-                "knowledge_point": topic,
-            })
+        template = templates[index % len(templates)].copy()
+        template["id"] = f"q{index + 1}"
+        template["knowledge_point"] = topic
+        questions.append(template)
     return questions
 
 
@@ -365,11 +422,17 @@ def generate_practice_set(
         # Keep the learning flow available when one provider request is slow,
         # temporarily unavailable, or returns malformed structured content.
         logger.warning("practice generation fell back to local objective questions", exc_info=True)
-    normalized = [
-        item
-        for index, raw in enumerate(result.get("questions") or [], start=1)
-        if (item := _normalize_question(raw, index))
-    ]
+    normalized: list[dict] = []
+    seen_prompts: set[str] = set()
+    for index, raw in enumerate(result.get("questions") or [], start=1):
+        item = _normalize_question(raw, index)
+        if not item:
+            continue
+        fingerprint = re.sub(r"\s+", " ", str(item.get("prompt") or "")).strip().casefold()
+        if fingerprint in seen_prompts:
+            continue
+        seen_prompts.add(fingerprint)
+        normalized.append(item)
     if len(normalized) < question_count and practice_mode in {"coding", "oral"}:
         normalized = _fallback_experimental_questions(practice_mode, question, answer, learning_state)
     if len(normalized) < question_count:

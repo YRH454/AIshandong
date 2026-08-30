@@ -58,7 +58,6 @@ import {
   recordLearningActivity,
   restoreLearningArtifact,
   restoreLearningArtifactVersion,
-  resolveApiAssetUrl,
   saveExternalVideoResource,
   saveLearningArtifact,
   saveDocumentPack,
@@ -66,7 +65,6 @@ import {
   saveLearningLoop,
   searchExternalVideos,
   speechToText,
-  textToSpeech,
   startTopicStudyPlan,
   submitPracticeAttempt,
   streamTutorChat,
@@ -157,7 +155,7 @@ type DeleteMode = 'trash' | 'permanent'
 type GenerationCategory = 'universal' | 'quick' | 'deep' | 'practice' | 'review' | 'submit'
 type ArtifactKind =
   | 'notes' | 'practice' | 'map' | 'interactive' | 'video' | 'external_video'
-  | 'summary' | 'question' | 'compare' | 'audio'
+  | 'summary' | 'question' | 'compare'
   | 'chapter' | 'page-guide' | 'formula' | 'glossary' | 'study-pack' | 'plan'
   | 'similar' | 'variants' | 'special' | 'mock' | 'coding' | 'oral'
   | 'cards' | 'review' | 'mistakes' | 'cram' | 'checklist'
@@ -312,14 +310,6 @@ type VoiceDraft = {
   dataUrl: string
   durationSeconds: number
   mimeType: string
-}
-
-type AudioNarration = {
-  status: 'generating' | 'ready' | 'fallback'
-  script: string
-  audioUrl?: string
-  error?: string
-  createdAt: number
 }
 
 const MAP_PACK_JOBS_STORAGE_KEY = 'rhyme-map-pack-jobs'
@@ -630,6 +620,10 @@ const practiceProfiles: Record<PracticeMode, PracticeProfile> = {
 
 const practiceSetupModes: Array<Exclude<PracticeMode, 'standard'>> = ['similar', 'variants', 'special', 'mock', 'coding', 'oral']
 
+function isPracticePackMode(value: unknown): value is Exclude<PracticeMode, 'standard'> {
+  return typeof value === 'string' && practiceSetupModes.includes(value as Exclude<PracticeMode, 'standard'>)
+}
+
 function createPracticeRun(
   artifact: Artifact,
   practice: PracticeSetRecord,
@@ -728,29 +722,6 @@ function readBlobAsDataUrl(blob: Blob) {
     }
     reader.readAsDataURL(blob)
   })
-}
-
-function buildAudioNarrationScript(prompt: string, response: string) {
-  const source = response
-    .replace(/```[\s\S]*?```/g, '（代码示例略）')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/[>*_~`|]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  const promptPart = prompt.trim() ? `问题是：${prompt.trim().slice(0, 180)}。` : ''
-  const full = `${promptPart}${source || '这份资料暂时没有可朗读的正文。'}`
-  if (full.length <= 980) return full
-  const clipped = full.slice(0, 980)
-  const boundary = Math.max(
-    clipped.lastIndexOf('。'),
-    clipped.lastIndexOf('！'),
-    clipped.lastIndexOf('？'),
-    clipped.lastIndexOf('. '),
-  )
-  return `${clipped.slice(0, boundary > 420 ? boundary + 1 : 980)}（后续内容可回到页面继续阅读。）`
 }
 
 function preferredVoiceMimeType() {
@@ -994,8 +965,6 @@ const artifactOptions: GeneratorOption[] = [
   { kind: 'summary', label: '一页速览', description: '快速抓住核心内容', icon: 'file', category: 'quick', format: '在线 · PDF', title: '一页速览', summary: '核心结论 · 阅读顺序 · 约 2 分钟', details: ['压缩为一页重点', '标出必须先懂的概念', '给出下一步阅读建议'] },
   { kind: 'question', label: '题目讲解单', description: '从题意到反思完整拆解', icon: 'file-question', category: 'quick', format: '在线 · Word · PDF', title: '题目讲解单', summary: '题意 · 思路 · 步骤 · 反思', details: ['定位考查知识点', '分步解释关键推理', '补充常见错误与自检问题'] },
   { kind: 'compare', label: '概念对比', description: '分清相近概念和使用条件', icon: 'layout', category: 'quick', format: '表格 · 图片', title: '概念对比表', summary: '定义 · 差异 · 适用场景', details: ['对齐比较维度', '突出易混点', '附带判断示例'] },
-  { kind: 'audio', label: '音频讲解', description: '把当前回答变成可播放的听力笔记', icon: 'audio', category: 'quick', format: '在线音频 · MP3', title: '音频讲解', summary: '可播放 · 可下载 · 支持浏览器朗读', details: ['从当前回答整理自然口语讲稿', '云端音频完成后可直接播放或下载', '云端不可用时保留讲稿并支持浏览器朗读'] },
-
   { kind: 'chapter', label: '完整章节讲义', description: '系统整理知识、例题和易错点', icon: 'notebook', category: 'deep', format: 'Word · PDF', title: '完整章节讲义', summary: '知识结构 · 例题 · 易错点 · 自检', details: ['建立完整章节结构', '加入典型例题和解析', '结尾提供掌握检查'] },
   { kind: 'page-guide', label: '逐页讲解', description: '沿着原资料逐页说明', icon: 'book', category: 'deep', format: '在线 · PDF', title: '逐页讲解', summary: '保留页码 · 原文引用 · 补充解释', details: ['按原资料顺序讲解', '保留页码和引用位置', '对难点补充通俗解释'] },
   { kind: 'formula', label: '公式手册', description: '公式、条件和典型用法', icon: 'clipboard', category: 'deep', format: 'Word · PDF', title: '公式手册', summary: '公式 · 符号 · 条件 · 例题', details: ['统一公式符号', '说明适用条件', '每个公式附典型用法'] },
@@ -1749,6 +1718,37 @@ function dedupeArtifacts(artifacts: Artifact[]) {
   return [...byId.values()]
 }
 
+function practiceArtifactTimestamp(artifact: Artifact) {
+  return new Date(artifact.updatedAt || artifact.createdAt || 0).getTime() || 0
+}
+
+/**
+ * A pack can briefly contain a generating placeholder and its completed
+ * backend artifact at the same time (for example while a background task is
+ * being restored after switching conversations). A pack has exactly one
+ * entry per training mode, so prefer the most useful lifecycle state and
+ * retain only the winner for each mode.
+ */
+function dedupePracticePackArtifacts(artifacts: Artifact[]) {
+  const byMode = new Map<Exclude<PracticeMode, 'standard'>, Artifact>()
+  artifacts.forEach(artifact => {
+    const mode = artifact.practicePackMode
+    if (!isPracticePackMode(mode)) return
+    const previous = byMode.get(mode)
+    if (!previous) {
+      byMode.set(mode, artifact)
+      return
+    }
+    const stateDelta = artifactStatePriority(artifact) - artifactStatePriority(previous)
+    const backendDelta = Number(Boolean(artifact.backendId)) - Number(Boolean(previous.backendId))
+    const timestampDelta = practiceArtifactTimestamp(artifact) - practiceArtifactTimestamp(previous)
+    if (stateDelta > 0 || (stateDelta === 0 && (backendDelta > 0 || (backendDelta === 0 && timestampDelta >= 0)))) {
+      byMode.set(mode, artifact)
+    }
+  })
+  return [...byMode.values()].sort((left, right) => practiceSetupModes.indexOf(left.practicePackMode!) - practiceSetupModes.indexOf(right.practicePackMode!))
+}
+
 function legacyPracticeMode(artifact: Artifact): Exclude<PracticeMode, 'standard'> | undefined {
   if (artifact.practicePackMode) return artifact.practicePackMode
   const text = `${artifact.title} ${artifact.summary}`
@@ -1930,7 +1930,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
   const [selectedKind, setSelectedKind] = useState<ArtifactKind | null>(null)
   const [generateOpen, setGenerateOpen] = useState(false)
   const [generatorCatalogOpen, setGeneratorCatalogOpen] = useState(false)
-  const [generatorTurnId, setGeneratorTurnId] = useState<string | null>(null)
+  const [generatorTurnId] = useState<string | null>(null)
   const [generatorCategory, setGeneratorCategory] = useState<Exclude<GenerationCategory, 'universal'>>('quick')
   const [generatorSearch, setGeneratorSearch] = useState('')
   const [inlineVideoSearches, setInlineVideoSearches] = useState<Record<string, InlineVideoSearch>>({})
@@ -1947,10 +1947,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
   const voiceStopRequestedRef = useRef(false)
   const voiceStartedAtRef = useRef<number | null>(null)
   const voiceRequestAbortRef = useRef<AbortController | null>(null)
-  const [audioNarrationsByTurnId, setAudioNarrationsByTurnId] = useState<Record<string, AudioNarration>>({})
-  const [audioSpeechTurnId, setAudioSpeechTurnId] = useState<string | null>(null)
-  const audioGenerationRequestRef = useRef(0)
-  const audioGenerationAbortRef = useRef<AbortController | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('rhyme-sidebar-collapsed') === 'true')
   const [learningHouseOpen, setLearningHouseOpen] = useState(false)
@@ -2632,11 +2628,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     voiceStartedAtRef.current = null
   }, [])
 
-  useEffect(() => () => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
-    audioGenerationAbortRef.current?.abort()
-  }, [])
-
   useEffect(() => {
     if (!pendingMapGenerationTurnId || !sessionId || !turns.some(turn => turn.id === pendingMapGenerationTurnId)) return
     setPendingMapGenerationTurnId(null)
@@ -2753,7 +2744,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
         if (/word|文档/.test(query) && /Word/.test(item.format)) return true
         if (/pdf|打印/.test(query) && /PDF/.test(item.format)) return true
         if (/图片|图像|png|svg/.test(query) && /PNG|SVG|图片/.test(item.format)) return true
-        if (/音频|mp3|听/.test(query) && /MP3|语音/.test(item.format)) return true
         if (/视频|mp4/.test(query) && /MP4/.test(item.format)) return true
         if (/网页|html|互动/.test(query) && /HTML|互动页/.test(item.format)) return true
         return false
@@ -2996,11 +2986,15 @@ function App({ currentUser, onLogout }: AppProps = {}) {
       return result
     }, {})
     return Object.entries(groups)
-      .map(([id, artifacts]) => ({
-        id,
-        artifacts,
-        newestAt: Math.max(...artifacts.map(item => new Date(item.updatedAt || item.createdAt || 0).getTime() || 0)),
-      }))
+      .map(([id, artifacts]) => {
+        const uniqueArtifacts = dedupePracticePackArtifacts(artifacts)
+        return {
+          id,
+          artifacts: uniqueArtifacts,
+          newestAt: Math.max(...uniqueArtifacts.map(practiceArtifactTimestamp), 0),
+        }
+      })
+      .filter(pack => pack.artifacts.length > 0)
       .sort((first, second) => second.newestAt - first.newestAt)
   })()
   const documentPackBookletDocuments = documentPackBooklet
@@ -3031,8 +3025,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
           ...trashedItems,
           ...practicePackBooklet.artifacts,
         ].filter(artifact => artifact.practicePackId === practicePackBooklet.packId || practicePackBooklet.artifactIds.includes(artifact.id))
-        return [...new Map(candidates.map(artifact => [artifact.id, artifact])).values()]
-          .filter((artifact): artifact is Artifact & { practicePackMode: Exclude<PracticeMode, 'standard'> } => Boolean(artifact.practicePackMode))
+        return dedupePracticePackArtifacts([...new Map(candidates.map(artifact => [artifact.id, artifact])).values()])
+          .filter((artifact): artifact is Artifact & { practicePackMode: Exclude<PracticeMode, 'standard'> } => isPracticePackMode(artifact.practicePackMode))
           .map((artifact): PracticePackEntry => {
             const profile = practiceProfiles[artifact.practicePackMode]
             return {
@@ -3190,7 +3184,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     practice: 'Practice quiz',
     map: 'Knowledge map',
     interactive: 'Interactive explanation',
-    audio: 'Audio lesson',
     video: 'Video lesson',
     external_video: 'Course video',
   } as Partial<Record<ArtifactKind, string>>)[kind] || chinese)
@@ -3398,7 +3391,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     artifacts: Artifact[]
     persisted: boolean
   }) {
-    const first = artifacts[0]
+    const orderedArtifacts = dedupePracticePackArtifacts(artifacts)
+    const first = orderedArtifacts[0]
     if (!first) return
     const course = first.course && first.course !== '未分类课程'
       ? first.course
@@ -3406,8 +3400,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     const topic = first.topic && first.topic !== '未分类主题' && first.topic !== '本次学习'
       ? first.topic
       : first.recommendedTopic || '未分类主题'
-    setPracticePackBooklet({ packId, turnId, artifactIds: artifacts.map(artifact => artifact.id), artifacts, course, topic, persisted })
-    setPracticePackBookletActiveId(current => artifacts.some(artifact => artifact.id === current) ? current : artifacts[0].id)
+    setPracticePackBooklet({ packId, turnId, artifactIds: orderedArtifacts.map(artifact => artifact.id), artifacts: orderedArtifacts, course, topic, persisted })
+    setPracticePackBookletActiveId(current => orderedArtifacts.some(artifact => artifact.id === current) ? current : orderedArtifacts[0].id)
     setExpandedArtifactId(null)
   }
 
@@ -3831,14 +3825,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-wrap > textarea')?.focus())
   }
 
-  function openGeneratorCatalog(turnId: string | null = null) {
-    setGeneratorTurnId(turnId || (composerHasReadyContext ? latestReadyTurn?.id || null : null))
-    setGeneratorSearch('')
-    setGeneratorCategory('quick')
-    setGenerateOpen(false)
-    setGeneratorCatalogOpen(true)
-  }
-
   function chooseFromCatalog(kind: ArtifactKind) {
     if (generatorTurnId) {
       generateForTurn(generatorTurnId, kind)
@@ -4186,9 +4172,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
             setPracticeSetupMode(practiceModeByArtifactKind[requestedKind]!)
             setPracticeSetupTurnId(streamEvent.qa_id)
           }
-          else if (requestedKind === 'audio') {
-            void runAudioGeneration(streamEvent.qa_id, prompt, completedResponse)
-          }
           else if (requestedKind && documentTemplateByArtifactKind[requestedKind]) {
             setDocumentSetup({ turnId: streamEvent.qa_id, template: documentTemplateByArtifactKind[requestedKind]! })
           }
@@ -4232,10 +4215,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     }
     if (kind === 'interactive') {
       void runDynamicExplanationGeneration(turnId)
-      return
-    }
-    if (kind === 'audio') {
-      void runAudioGeneration(turnId)
       return
     }
     if (kind === 'study-pack') {
@@ -6562,7 +6541,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     return (
       <>
         {packIds.map(packId => {
-          const artifacts = turn.artifacts.filter(artifact => artifact.practicePackId === packId)
+          const artifacts = dedupePracticePackArtifacts(turn.artifacts.filter(artifact => artifact.practicePackId === packId))
           const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
           const complete = artifacts.length === practiceSetupModes.length && readyArtifacts.length === practiceSetupModes.length
           const persisted = complete && artifacts.every(artifact => artifact.saved)
@@ -7090,7 +7069,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
   function openPracticePackSave(turn: ChatTurn, requestedPackId?: string) {
     const packId = requestedPackId || [...turn.artifacts].reverse().find(artifact => artifact.practicePackId)?.practicePackId
     if (!packId) return
-    const artifacts = turn.artifacts.filter(artifact => artifact.practicePackId === packId)
+    const artifacts = dedupePracticePackArtifacts(turn.artifacts.filter(artifact => artifact.practicePackId === packId))
     const readyArtifacts = artifacts.filter(artifact => artifact.status !== 'generating' && artifact.status !== 'error')
     if (readyArtifacts.length !== practiceSetupModes.length || artifacts.length !== practiceSetupModes.length) {
       setNotice('请等待六种训练都生成完成后，再统一保存练习资源包。')
@@ -7532,81 +7511,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
     setLibraryTopic(null)
     await openSession(artifact.sessionId)
     setNotice('已回到生成这份资料的对话。')
-  }
-
-  function toggleBrowserNarration(turnId: string, script: string) {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setNotice('当前浏览器不支持在线朗读，请使用系统或浏览器的朗读功能。')
-      return
-    }
-    if (audioSpeechTurnId === turnId && window.speechSynthesis.speaking) {
-      window.speechSynthesis.cancel()
-      setAudioSpeechTurnId(null)
-      return
-    }
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(script)
-    utterance.lang = interfaceLanguage === 'en' ? 'en-US' : 'zh-CN'
-    utterance.rate = 0.96
-    utterance.onend = () => setAudioSpeechTurnId(current => current === turnId ? null : current)
-    utterance.onerror = () => {
-      setAudioSpeechTurnId(current => current === turnId ? null : current)
-      setNotice('在线朗读没有完成，你仍可以直接阅读讲稿。')
-    }
-    setAudioSpeechTurnId(turnId)
-    window.speechSynthesis.speak(utterance)
-  }
-
-  async function runAudioGeneration(turnId: string, sourcePrompt?: string, sourceResponse?: string) {
-    const turn = turns.find(item => item.id === turnId)
-    const prompt = sourcePrompt ?? turn?.prompt ?? ''
-    const response = sourceResponse ?? turn?.response ?? ''
-    if (!response.trim()) {
-      setNotice('这条回答还没有完成，完成后才能生成音频讲解。')
-      return
-    }
-    const script = buildAudioNarrationScript(prompt, response)
-    const requestId = audioGenerationRequestRef.current + 1
-    audioGenerationRequestRef.current = requestId
-    audioGenerationAbortRef.current?.abort()
-    const controller = new AbortController()
-    audioGenerationAbortRef.current = controller
-    setAudioSpeechTurnId(null)
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
-    setAudioNarrationsByTurnId(current => ({
-      ...current,
-      [turnId]: { status: 'generating', script, createdAt: Date.now() },
-    }))
-    setNotice('音频讲稿正在生成，完成后可直接播放。')
-    let timedOut = false
-    const timeoutId = window.setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, 135_000)
-    try {
-      const result = await textToSpeech(LOCAL_USER_ID, script, controller.signal) as { audio_url?: string }
-      if (requestId !== audioGenerationRequestRef.current) return
-      const audioUrl = resolveApiAssetUrl(result.audio_url || '')
-      if (!audioUrl) throw new Error('服务没有返回可播放的音频')
-      setAudioNarrationsByTurnId(current => ({
-        ...current,
-        [turnId]: { status: 'ready', script, audioUrl, createdAt: Date.now() },
-      }))
-      setNotice('音频讲解已准备好，可以直接播放或下载。')
-    } catch (error) {
-      if (requestId !== audioGenerationRequestRef.current) return
-      const message = timedOut
-        ? '音频生成等待超时'
-        : error instanceof Error && error.message ? error.message : '云端音频暂时不可用'
-      setAudioNarrationsByTurnId(current => ({
-        ...current,
-        [turnId]: { status: 'fallback', script, error: message, createdAt: Date.now() },
-      }))
-      setNotice('云端音频暂时不可用，已保留讲稿，可用浏览器朗读。')
-    } finally {
-      window.clearTimeout(timeoutId)
-      if (audioGenerationAbortRef.current === controller) audioGenerationAbortRef.current = null
-    }
   }
 
   function releaseVoiceCapture() {
@@ -8163,63 +8067,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
 
                       {renderLearningLoop(turn)}
 
-                      {audioNarrationsByTurnId[turn.id] && (() => {
-                        const narration = audioNarrationsByTurnId[turn.id]
-                        const browserSpeechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
-                        const isBrowserSpeaking = audioSpeechTurnId === turn.id
-                        return (
-                          <section className={`audio-narration-card audio-narration-${narration.status}`} aria-label={t('音频讲解', 'Audio lesson')}>
-                            <div className="audio-narration-head">
-                              <span className="audio-narration-icon"><AudioLines size={17} /></span>
-                              <div>
-                                <span>{t('音频讲解', 'Audio lesson')}</span>
-                                <h3>{narration.status === 'generating' ? t('正在整理可朗读讲稿', 'Preparing a narration script') : t('当前回答的音频讲解', 'Audio lesson for this answer')}</h3>
-                              </div>
-                              <button type="button" className="icon-button" aria-label={t('关闭音频讲解', 'Close audio lesson')} onClick={() => {
-                                audioGenerationRequestRef.current += 1
-                                audioGenerationAbortRef.current?.abort()
-                                audioGenerationAbortRef.current = null
-                                if (isBrowserSpeaking && browserSpeechSupported) window.speechSynthesis.cancel()
-                                setAudioSpeechTurnId(current => current === turn.id ? null : current)
-                                setAudioNarrationsByTurnId(current => {
-                                  const next = { ...current }
-                                  delete next[turn.id]
-                                  return next
-                                })
-                              }}><X size={15} /></button>
-                            </div>
-                            {narration.status === 'generating' ? (
-                              <div className="audio-narration-loading" role="status"><span className="stream-dots" aria-hidden="true"><i /><i /><i /></span>{t('正在请求语音合成，完成后会自动出现播放器。', 'Requesting speech synthesis; the player will appear when ready.')}</div>
-                            ) : narration.status === 'ready' && narration.audioUrl ? (
-                              <>
-                                <p className="audio-narration-note">{t('音频已经生成，点击播放即可听讲。', 'The audio is ready. Press play to listen.')}</p>
-                                <audio className="audio-narration-player" controls preload="metadata" src={narration.audioUrl} onError={() => setAudioNarrationsByTurnId(current => ({
-                                  ...current,
-                                  [turn.id]: { ...narration, status: 'fallback', error: '音频文件加载失败' },
-                                }))} />
-                              </>
-                            ) : (
-                              <div className="audio-narration-fallback">
-                                <p className="audio-narration-note">{narration.error || t('云端音频暂时不可用，已保留讲稿。', 'Cloud audio is unavailable; the narration script is preserved.')}</p>
-                                {browserSpeechSupported && <button type="button" onClick={() => toggleBrowserNarration(turn.id, narration.script)}><Icon name={isBrowserSpeaking ? 'x' : 'play'} size={14} />{isBrowserSpeaking ? t('停止朗读', 'Stop reading') : t('浏览器朗读', 'Read aloud')}</button>}
-                              </div>
-                            )}
-                            {narration.status !== 'generating' && (
-                              <>
-                                <details className="audio-narration-script">
-                                  <summary>{t('查看讲稿', 'View script')}</summary>
-                                  <p>{narration.script}</p>
-                                </details>
-                                <div className="audio-narration-actions">
-                                  <button type="button" onClick={() => void runAudioGeneration(turn.id)}><RotateCcw size={14} />{t('重新生成', 'Regenerate')}</button>
-                                  {narration.status === 'ready' && narration.audioUrl && <a href={narration.audioUrl} download={`rhyme-audio-${turn.id}.mp3`}><Icon name="download" size={14} />{t('下载音频', 'Download MP3')}</a>}
-                                </div>
-                              </>
-                            )}
-                          </section>
-                        )
-                      })()}
-
                       {(resolvedPackArtifactsByTurnId.get(turn.id) || turn.artifacts).filter(artifact => !artifact.documentPackId && !artifact.practicePackId).map(artifact => {
                         const option = artifactOptions.find(item => item.kind === artifact.kind)
                         const mapData = artifact.kind === 'map' ? parseKnowledgeMap(artifact.content) : null
@@ -8373,11 +8220,6 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                             </button>
                           ))}
                         </div>
-                        <button className="more-generation" type="button" onClick={() => openGeneratorCatalog(turn.id)}>
-                          <Sparkles aria-hidden="true" size={15} strokeWidth={1.8} />
-                          <span>{t('生成更多内容', 'Generate more')}</span>
-                          <ChevronRight aria-hidden="true" size={14} strokeWidth={1.8} />
-                        </button>
                         {documentSetup?.turnId === turn.id && (
                           <section className="document-setup" aria-label="设置学习文档">
                             <div className="document-setup-head">
@@ -8906,8 +8748,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                     <section className="library-topic-review library-topic-review-detail" aria-label="主题复盘">
                       <div className="library-topic-review-summary">
                         <b>{t(`最近练习 ${libraryTopicReview.recent_score} 分 · 已完成 ${libraryTopicReview.attempt_count} 次`, `Latest practice: ${libraryTopicReview.recent_score}/100 · ${libraryTopicReview.attempt_count} attempts`)}</b>
-                         <span>{libraryTopicReview.weak_points.length
-                           ? <>{t('待复习：', 'Review: ')}<FormulaText>{interfaceLanguage === 'en' ? libraryTopicReview.weak_points.join(', ') : libraryTopicReview.weak_points.join('、')}</FormulaText></>
+                         <span className="library-topic-review-copy">{libraryTopicReview.weak_points.length
+                           ? <>{t('待复习：', 'Review: ')}<FormulaText className="practice-inline-formula">{interfaceLanguage === 'en' ? libraryTopicReview.weak_points.join(', ') : libraryTopicReview.weak_points.join('、')}</FormulaText></>
                            : t('最近一次练习没有发现集中的薄弱点。', 'No concentrated weak points were found in the latest practice.')}</span>
                       </div>
                       {libraryTopicReview.weak_points.length > 0 && (
@@ -9042,7 +8884,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                                         </button>
                                         {topicReview?.weak_points.length ? (
                                           <div className="library-topic-review">
-                                             <div><b>待复习</b><span><FormulaText>{topicReview.weak_points.join('、')}</FormulaText></span></div>
+                                             <div><b>待复习</b><span className="library-topic-review-copy"><FormulaText className="practice-inline-formula">{topicReview.weak_points.join('、')}</FormulaText></span></div>
                                             <button
                                               type="button"
                                               onClick={() => void startTopicWeakPractice(course, topic, items)}
@@ -9345,7 +9187,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                 <div className="practice-result-copy">
                   <h3>{practiceRun.result.score >= 80 ? '这一轮掌握得不错' : practiceRun.result.score >= 60 ? '核心内容正在形成' : '建议先补齐薄弱点再练一次'}</h3>
                    {practiceRun.result.weak_points.length > 0 ? (
-                     <p>本次需要回看的知识点：<FormulaText>{practiceRun.result.weak_points.join('、')}</FormulaText></p>
+                   <p>本次需要回看的知识点：<FormulaText className="practice-inline-formula">{practiceRun.result.weak_points.join('、')}</FormulaText></p>
                   ) : <p>这次没有发现集中的薄弱点，可以尝试更高难度的练习。</p>}
                   {practiceRun.topicMastery !== null
                     ? <small>已回写主题掌握情况：{practiceRun.topicMastery}%</small>
@@ -9373,7 +9215,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                 {practiceRun.result.weak_points.length > 0 && (
                   <section className="practice-recovery" aria-label="错题复盘下一步">
                     <div><b>本轮错题复盘</b><p>先围绕薄弱点补一轮，再回到当前训练验证是否真的掌握。</p></div>
-                    <div className="practice-recovery-points">{practiceRun.result.weak_points.map(point => <span key={point}><FormulaText>{point}</FormulaText></span>)}</div>
+                 <div className="practice-recovery-points">{practiceRun.result.weak_points.map(point => <span className="practice-recovery-point" key={point}><FormulaText className="practice-inline-formula">{point}</FormulaText></span>)}</div>
                     <div className="practice-recovery-actions">
                       {practiceRun.artifact.sourceMapArtifactId && (
                         <button type="button" onClick={() => {
@@ -9459,8 +9301,8 @@ function App({ currentUser, onLogout }: AppProps = {}) {
 
                   <main className="practice-workspace-main">
                     <article className="practice-question">
-                  <div className="practice-question-meta"><span>{activePracticeQuestion.type === 'fill_blank' ? '短填空' : activePracticeQuestion.type === 'true_false' ? '判断题' : activePracticeQuestion.type === 'code_task' ? '编程实验' : activePracticeQuestion.type === 'oral_response' ? '口述回答' : '单选题'}</span><b><FormulaText>{activePracticeQuestion.knowledge_point}</FormulaText></b></div>
-                  <h3><FormulaText>{activePracticeQuestion.prompt}</FormulaText></h3>
+                  <div className="practice-question-meta"><span>{activePracticeQuestion.type === 'fill_blank' ? '短填空' : activePracticeQuestion.type === 'true_false' ? '判断题' : activePracticeQuestion.type === 'code_task' ? '编程实验' : activePracticeQuestion.type === 'oral_response' ? '口述回答' : '单选题'}</span><b className="practice-question-topic"><FormulaText className="practice-inline-formula">{activePracticeQuestion.knowledge_point}</FormulaText></b></div>
+                  <h3><FormulaText className="practice-question-formula">{activePracticeQuestion.prompt}</FormulaText></h3>
                   {activePracticeQuestion.type === 'code_task' ? (
                     <div className="practice-code-task">
                       <div className="practice-code-head"><span>{activePracticeQuestion.language || 'code'}</span><small>请在本地或课程环境中运行，网页不会代替你执行代码。</small></div>
@@ -9470,14 +9312,14 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                         onChange={event => updatePracticeCode(activePracticeQuestion.id, event.target.value)}
                         spellCheck={false}
                       />
-                      {(activePracticeQuestion.hints || []).length > 0 && <details className="practice-hints"><summary>逐步提示</summary><ol>{activePracticeQuestion.hints?.map(hint => <li key={hint}><FormulaText>{hint}</FormulaText></li>)}</ol></details>}
+                      {(activePracticeQuestion.hints || []).length > 0 && <details className="practice-hints"><summary>逐步提示</summary><ol>{activePracticeQuestion.hints?.map(hint => <li key={hint}><FormulaText className="practice-inline-formula">{hint}</FormulaText></li>)}</ol></details>}
                       <section className="practice-tests" aria-label="测试用例">
                         <b>本地测试确认</b>
                         {(activePracticeQuestion.tests || []).map(test => {
                           const checked = (practiceRun.codeTestChecks[activePracticeQuestion.id] || []).includes(test.label)
                           return <label key={test.label}>
                             <input type="checkbox" checked={checked} onChange={() => togglePracticeTest(activePracticeQuestion.id, test.label)} />
-                             <span><strong><FormulaText>{test.label}</FormulaText></strong>{test.input && <small>输入：<FormulaText>{test.input}</FormulaText></small>}<small>期望：<FormulaText>{test.expected_output}</FormulaText></small></span>
+                             <span className="practice-test-copy"><strong><FormulaText className="practice-inline-formula">{test.label}</FormulaText></strong>{test.input && <small>输入：<FormulaText className="practice-inline-formula">{test.input}</FormulaText></small>}<small>期望：<FormulaText className="practice-inline-formula">{test.expected_output}</FormulaText></small></span>
                           </label>
                         })}
                       </section>
@@ -9494,7 +9336,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                         <small>也可以直接输入。提交后按关键词反馈表达是否完整。</small>
                       </div>
                       <label className="practice-oral-input"><span>你的口述内容</span><textarea value={practiceRun.answers[activePracticeQuestion.id] || ''} onChange={event => answerPracticeQuestion(activePracticeQuestion.id, event.target.value)} placeholder="用自己的话解释原因、条件和过程…" /></label>
-                       {(activePracticeQuestion.target_keywords || []).length > 0 && <p className="practice-keyword-note">本题会关注：<FormulaText>{activePracticeQuestion.target_keywords?.join('、')}</FormulaText></p>}
+                       {(activePracticeQuestion.target_keywords || []).length > 0 && <p className="practice-keyword-note">本题会关注：<FormulaText className="practice-inline-formula">{activePracticeQuestion.target_keywords?.join('、')}</FormulaText></p>}
                     </div>
                   ) : activePracticeQuestion.type === 'fill_blank' ? (
                     <label className="practice-fill">
@@ -9519,7 +9361,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
                               checked={selected}
                               onChange={() => answerPracticeQuestion(activePracticeQuestion.id, option)}
                             />
-                           <span>{String.fromCharCode(65 + index)}</span><b><FormulaText>{option}</FormulaText></b>
+                            <span className="practice-option-letter">{String.fromCharCode(65 + index)}</span><b className="practice-option-copy"><FormulaText className="practice-option-formula">{option}</FormulaText></b>
                           </label>
                         )
                       })}
@@ -9530,7 +9372,7 @@ function App({ currentUser, onLogout }: AppProps = {}) {
 
                   <aside className="practice-workspace-context" aria-label="本题信息">
                     <span>本题目标</span>
-                     <h3><FormulaText>{activePracticeQuestion.knowledge_point}</FormulaText></h3>
+                     <h3><FormulaText className="practice-inline-formula">{activePracticeQuestion.knowledge_point}</FormulaText></h3>
                     <p>{activePracticeQuestion.type === 'code_task'
                       ? '完成代码并确认测试结果，重点检查边界条件。'
                       : activePracticeQuestion.type === 'oral_response'

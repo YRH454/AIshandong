@@ -1,4 +1,5 @@
 import { Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, Library, Play, RefreshCw, Save, Sparkles, X } from 'lucide-react'
+import { FormulaText } from './FormulaText'
 import type { PracticeMode } from '../services/api'
 
 export type PracticePackEntry = {
@@ -42,6 +43,13 @@ function isReady(entry: PracticePackEntry) {
   return entry.status !== 'generating' && entry.status !== 'error'
 }
 
+function entryStatePriority(entry: PracticePackEntry) {
+  if (entry.status === 'saved') return 4
+  if (entry.status === 'draft' || !entry.status) return 3
+  if (entry.status === 'error') return 2
+  return 1
+}
+
 export function PracticePackBooklet({
   course,
   topic,
@@ -56,7 +64,15 @@ export function PracticePackBooklet({
   onSave,
   onOpenLibrary,
 }: PracticePackBookletProps) {
-  const ordered = [...entries].sort((left, right) => order.indexOf(left.mode) - order.indexOf(right.mode))
+  // Keep the booklet stable if a restored placeholder and its backend result
+  // arrive in the same render. The parent already deduplicates artifacts, but
+  // this last guard prevents duplicate mode buttons from ever reaching the UI.
+  const uniqueEntries = new Map<PracticePackEntry['mode'], PracticePackEntry>()
+  entries.filter(entry => order.includes(entry.mode)).forEach(entry => {
+    const previous = uniqueEntries.get(entry.mode)
+    if (!previous || entryStatePriority(entry) >= entryStatePriority(previous)) uniqueEntries.set(entry.mode, entry)
+  })
+  const ordered = [...uniqueEntries.values()].sort((left, right) => order.indexOf(left.mode) - order.indexOf(right.mode))
   const activeIndex = Math.max(0, ordered.findIndex(entry => entry.id === activeEntryId))
   const active = ordered[activeIndex] || ordered[0]
   const readyCount = ordered.filter(isReady).length
@@ -99,7 +115,7 @@ export function PracticePackBooklet({
         <main className="practice-pack-booklet-page">
           <div className="practice-pack-booklet-page-scroll">
             <header className="practice-pack-booklet-page-head">
-              <div><span>{language === 'en' ? activeMeta.labelEn : activeMeta.label}</span><h1>{active.title}</h1><p>{active.summary}</p></div>
+              <div><span>{language === 'en' ? activeMeta.labelEn : activeMeta.label}</span><h1><FormulaText className="practice-pack-title-formula">{active.title}</FormulaText></h1><p><FormulaText className="practice-pack-summary-formula">{active.summary}</FormulaText></p></div>
               <span className={isReady(active) ? 'practice-pack-booklet-state ready' : active.status === 'error' ? 'practice-pack-booklet-state failed' : 'practice-pack-booklet-state'}>{isReady(active) ? copy('已就绪', 'Ready') : active.status === 'error' ? copy('未完成', 'Not completed') : copy('正在生成', 'Preparing')}</span>
             </header>
             <div className="practice-pack-booklet-page-body">

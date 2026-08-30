@@ -21,6 +21,7 @@ dist/
 backend/data/embeddings/
 backend/data/chroma/
 backend/data/*.db
+backend/static/audio/
 backend/*.log
 *.log
 

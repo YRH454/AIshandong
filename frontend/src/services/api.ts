@@ -505,27 +505,6 @@ export async function visionAnalyze(userId: number, message: string, images: str
   return res.json()
 }
 
-export async function textToSpeech(userId: number, text: string, signal?: AbortSignal) {
-  const res = await apiFetch(`${API_BASE}/audio/tts`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId, text }),
-    signal,
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as { detail?: string }
-    throw new Error(body.detail || '语音合成失败')
-  }
-  return res.json()
-}
-
-/** Resolve media paths returned by the local API (for example /static/audio/...). */
-export function resolveApiAssetUrl(url: string) {
-  const value = String(url || '').trim()
-  if (!value || /^(?:data|blob|https?):/i.test(value)) return value
-  const origin = API_BASE.replace(/\/api\/v1\/?$/, '')
-  return `${origin}/${value.replace(/^\/+/, '')}`
-}
-
 export async function speechToText(userId: number, audio: string, signal?: AbortSignal) {
   const res = await apiFetch(`${API_BASE}/audio/asr`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

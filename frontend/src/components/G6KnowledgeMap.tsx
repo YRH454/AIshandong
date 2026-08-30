@@ -241,6 +241,31 @@ function shortLabel(label: string, limit = 12) {
   return readable.length > limit ? `${readable.slice(0, limit - 1)}…` : readable
 }
 
+/**
+ * Canvas labels need a little more care than their HTML counterparts.  G6
+ * receives a single string and scales it with the graph, so a long one-line
+ * label quickly becomes either unreadable or clipped by a neighbouring node.
+ * Keep the useful part of the label, wrap it into a small number of lines and
+ * let G6 handle the final ellipsis inside the node's measured box.
+ */
+function canvasLabel(value: string, maxChars = 24, lineWidth = 8) {
+  const readable = readableFormulaText(value).replace(/\s+/g, ' ').trim()
+  if (!readable) return ''
+  const characters = Array.from(readable)
+  const clipped = characters.length > maxChars
+    ? [...characters.slice(0, Math.max(1, maxChars - 1)), '…']
+    : characters
+  const lines: string[] = []
+  for (let index = 0; index < clipped.length; index += lineWidth) {
+    lines.push(clipped.slice(index, index + lineWidth).join(''))
+  }
+  return lines.slice(0, 3).join('\n')
+}
+
+function edgeLabel(value: string, maxChars = 12) {
+  return canvasLabel(value, maxChars, 6).replace(/\n/g, ' ')
+}
+
 function roleLabel(node: KnowledgeMapNode, language: 'zh-CN' | 'en') {
   const kind = node.kind || (node.role === 'core' ? 'core' : 'foundation')
   const labels = language === 'en'
@@ -310,7 +335,7 @@ function profileFor(viewId: KnowledgeMapViewId, language: 'zh-CN' | 'en'): Graph
     'chord-ring': { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'quadratic', usesTree: false, visual: 'chord' },
     grid: { semanticType: 'comparison_map', nodeType: 'rect', edgeType: 'line', usesTree: false, visual: 'grid', layout: { type: 'grid', sortBy: 'order', nodeSize: [136, 58], cols: 3, preventOverlap: true } },
     'arc-dependency': { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'quadratic', usesTree: false, visual: 'arc' },
-    'edge-bundling': { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'circular', nodeSize: 34, nodeSpacing: 42 }, plugins: [{ key: 'knowledge-edge-bundling', type: 'edge-bundling', bundleThreshold: 0.12, cycles: 5 }] },
+    'edge-bundling': { semanticType: 'relationship_map', nodeType: 'circle', edgeType: 'line', usesTree: false, visual: 'tokens', layout: { type: 'circular', nodeSize: 34, nodeSpacing: 42 }, plugins: [{ key: 'knowledge-edge-bundling', type: 'edge-bundling', bundleThreshold: 0.12, cycles: 3 }] },
     'split-comparison': { semanticType: 'comparison_map', nodeType: 'rect', edgeType: 'cubic-horizontal', usesTree: false, visual: 'split' },
     quadrant: { semanticType: 'comparison_map', nodeType: 'rect', edgeType: 'line', usesTree: false, visual: 'quadrant' },
     pyramid: { semanticType: 'comparison_map', nodeType: 'rect', edgeType: 'polyline', usesTree: false, visual: 'pyramid' },
@@ -549,6 +574,42 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   const [lowMotion] = useState(reducedMapMotion)
   const [reducedMotion] = useState(prefersReducedMotion)
   const [pageVisible, setPageVisible] = useState(() => !document.hidden)
+  const [surfaceSize, setSurfaceSize] = useState({ width: 0, height: 0 })
+  const [taskDockVisible, setTaskDockVisible] = useState(false)
+
+  // The graph is rendered into a canvas, so a viewport change cannot be
+  // detected by CSS alone.  Measuring the actual surface lets us rebuild the
+  // preset positions at the mobile breakpoint and prevents a previously
+  // fitted desktop camera from leaving labels outside the new viewport.
+  useEffect(() => {
+    const surface = surfaceRef.current
+    if (!surface) return
+    const updateSize = () => {
+      const rect = surface.getBoundingClientRect()
+      const next = { width: Math.round(rect.width), height: Math.round(rect.height) }
+      setSurfaceSize(previous => previous.width === next.width && previous.height === next.height ? previous : next)
+    }
+    updateSize()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(surface)
+    return () => observer.disconnect()
+  }, [])
+
+  // The global background-task dock is intentionally outside this component,
+  // but it still occupies the lower edge of the map on small screens. Track
+  // the ancestor class so G6 can fit the graph into the unobstructed region
+  // whenever a task starts, completes, or is dismissed.
+  useEffect(() => {
+    const surface = surfaceRef.current
+    const frame = surface?.closest('.app-frame')
+    if (!frame) return
+    const updateTaskDock = () => setTaskDockVisible(frame.classList.contains('has-task-dock'))
+    updateTaskDock()
+    const observer = new MutationObserver(updateTaskDock)
+    observer.observe(frame, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
 
   const current = frames.at(-1)?.data || props.data
   const recommendedMapType = (current.map_type || (current.layout === 'flow' ? 'process_flow' : 'concept_tree')) as KnowledgeMapType
@@ -583,6 +644,8 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
   const surfaceStyle = motionCore
     ? { '--g6-focus-x': `${motionCore.x}px`, '--g6-focus-y': `${motionCore.y}px` } as CSSProperties
     : undefined
+  const viewportWidth = surfaceSize.width || (typeof window === 'undefined' ? 1280 : window.innerWidth)
+  const compactViewport = viewportWidth < 760
 
   const graphData = useMemo<any>(() => {
     const indexById = new Map(viewData.nodes.map((node, index) => [node.id, index]))
@@ -593,13 +656,100 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       const totalNodes = Math.max(2, viewData.nodes.length)
       const leafIndex = leafIndexById.get(node.id) || 0
       const leafCount = Math.max(1, leafNodes.length)
+      if (profile.visual === 'flow') {
+        if (isRoot) return { x: compactViewport ? 72 : 88, y: compactViewport ? 300 : 304 }
+        const columns = compactViewport ? 2 : Math.min(5, Math.max(3, leafCount))
+        const slot = leafIndex % columns
+        const row = Math.floor(leafIndex / columns)
+        const visualSlot = row % 2 ? columns - 1 - slot : slot
+        const x = compactViewport ? 208 + visualSlot * 182 : 250 + visualSlot * 166
+        const y = compactViewport ? 118 + row * 126 : (row % 2 ? 438 : 170)
+        return { x, y }
+      }
+      if (profile.visual === 'decision') {
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 62 : 72 }
+        const columns = compactViewport ? 2 : 3
+        const slot = leafIndex % columns
+        const row = Math.floor(leafIndex / columns)
+        return {
+          x: compactViewport ? 118 + slot * 184 : 250 + slot * 250,
+          y: compactViewport ? 166 + row * 116 : 188 + row * 126,
+        }
+      }
+      if (profile.id === 'circular' || profile.id === 'edge-bundling') {
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 310 : 300 }
+        const angle = -Math.PI / 2 + leafIndex / leafCount * Math.PI * 2
+        const radius = compactViewport ? 142 : (profile.id === 'edge-bundling' ? 258 : 244)
+        return {
+          x: (compactViewport ? 210 : 500) + Math.cos(angle) * radius,
+          y: (compactViewport ? 310 : 300) + Math.sin(angle) * radius * (compactViewport ? .82 : .76),
+        }
+      }
+      if (profile.id === 'radial') {
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 300 : 300 }
+        const angle = -Math.PI / 2 + leafIndex / leafCount * Math.PI * 2
+        const radius = compactViewport ? 146 : 244
+        return {
+          x: (compactViewport ? 210 : 500) + Math.cos(angle) * radius,
+          y: (compactViewport ? 300 : 300) + Math.sin(angle) * radius * (compactViewport ? .82 : .76),
+        }
+      }
+      if (profile.id === 'concentric') {
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 300 : 300 }
+        const ringIndex = leafIndex < Math.ceil(leafCount / 2) ? 0 : 1
+        const ringCount = ringIndex === 0 ? Math.ceil(leafCount / 2) : Math.floor(leafCount / 2)
+        const ringSlot = ringIndex === 0 ? leafIndex : leafIndex - Math.ceil(leafCount / 2)
+        const angle = -Math.PI / 2 + ringSlot / Math.max(1, ringCount) * Math.PI * 2
+        // Keep the two rings clear of the core and of one another on narrow
+        // canvases. The previous radii collapsed after fitView, so the
+        // top/bottom circles touched and their labels merged into one stack.
+        const radius = compactViewport ? (ringIndex === 0 ? 154 : 246) : (ringIndex === 0 ? 148 : 252)
+        return {
+          x: (compactViewport ? 210 : 500) + Math.cos(angle) * radius,
+          y: (compactViewport ? 300 : 300) + Math.sin(angle) * radius * (compactViewport ? .9 : .82),
+        }
+      }
+      if (profile.id === 'mds') {
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 300 : 300 }
+        const columns = compactViewport ? 2 : 3
+        const slot = leafIndex % columns
+        const row = Math.floor(leafIndex / columns)
+        return {
+          x: compactViewport ? 112 + slot * 196 : 220 + slot * 280,
+          y: compactViewport ? 138 + row * 118 : 150 + row * 146,
+        }
+      }
+      if (profile.visual === 'grid') {
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 58 : 68 }
+        const columns = compactViewport ? 2 : 3
+        const slot = leafIndex % columns
+        const row = Math.floor(leafIndex / columns)
+        return {
+          x: compactViewport ? 118 + slot * 184 : 245 + slot * 255,
+          y: compactViewport ? 126 + row * 94 : 172 + row * 122,
+        }
+      }
       if (profile.visual === 'arc') {
-        return { x: 90 + index * (820 / (totalNodes - 1)), y: 420 }
+        if (isRoot) return { x: compactViewport ? 82 : 104, y: compactViewport ? 274 : 300 }
+        if (compactViewport) {
+          const columns = Math.min(3, Math.max(2, Math.ceil(Math.sqrt(leafCount * 1.35))))
+          const slot = leafIndex % columns
+          const row = Math.floor(leafIndex / columns)
+          return { x: 136 + slot * 154, y: 146 + row * 164 + (slot % 2 ? 34 : 0) }
+        }
+        const ratio = leafIndex / Math.max(1, leafCount - 1)
+        return { x: 190 + ratio * 680, y: 300 + Math.sin(ratio * Math.PI * 2) * 72 }
       }
       if (profile.visual === 'timeline') {
-        if (isRoot) return { x: 74, y: 290 }
+        if (isRoot) return { x: compactViewport ? 70 : 74, y: compactViewport ? 300 : 290 }
         const orderedIndex = Math.max(0, index - 1)
         const count = Math.max(1, totalNodes - 2)
+        if (compactViewport) {
+          const columns = 2
+          const slot = orderedIndex % columns
+          const row = Math.floor(orderedIndex / columns)
+          return { x: 168 + slot * 178, y: 116 + row * 88 }
+        }
         return { x: 190 + orderedIndex * (690 / count), y: orderedIndex % 2 === 0 ? 222 : 358 }
       }
       if (profile.visual === 'split') {
@@ -610,12 +760,18 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         return { x: side ? 790 : 210, y: 145 + row * 104 }
       }
       if (profile.visual === 'fishbone') {
-        if (isRoot) return { x: 920, y: 300 }
+        if (isRoot) return { x: compactViewport ? 560 : 920, y: 300 }
         const column = Math.floor(leafIndex / 2)
-        return { x: 150 + column * 185, y: leafIndex % 2 ? 455 : 145 }
+        return { x: compactViewport ? 166 + column * 86 : 150 + column * 185, y: leafIndex % 2 ? (compactViewport ? 410 : 455) : (compactViewport ? 190 : 145) }
       }
       if (profile.visual === 'org') {
-        if (isRoot) return { x: 500, y: 82 }
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 66 : 82 }
+        if (compactViewport) {
+          if (leafIndex < 2) return { x: 122 + leafIndex * 176, y: 176 }
+          const slot = (leafIndex - 2) % 2
+          const row = Math.floor((leafIndex - 2) / 2)
+          return { x: 122 + slot * 176, y: 296 + row * 76 }
+        }
         if (leafIndex < 3) return { x: 245 + leafIndex * 255, y: 235 }
         const rowCount = Math.max(1, leafCount - 3)
         return { x: 150 + (leafIndex - 3) * (700 / Math.max(1, rowCount - 1)), y: 430 }
@@ -627,12 +783,20 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         return { x: 500 + Math.cos(angle) * radius, y: 300 + Math.sin(angle) * radius * .72 }
       }
       if (profile.visual === 'outline') {
-        if (isRoot) return { x: 92, y: 78 }
+        if (isRoot) return { x: compactViewport ? 62 : 92, y: compactViewport ? 62 : 78 }
+        if (compactViewport) {
+          const columns = 2
+          return { x: 118 + (leafIndex % columns) * 190, y: 132 + Math.floor(leafIndex / columns) * 82 }
+        }
         return { x: 250 + (leafIndex % 3) * 205, y: 118 + leafIndex * 54 }
       }
       if (profile.visual === 'funnel') {
-        if (isRoot) return { x: 500, y: 64 }
+        if (isRoot) return { x: compactViewport ? 210 : 500, y: compactViewport ? 62 : 64 }
         const progress = leafIndex / Math.max(1, leafCount - 1)
+        if (compactViewport) {
+          const spread = 78 * (1 - progress * .72)
+          return { x: 210 + (leafIndex % 2 ? spread : -spread), y: 132 + leafIndex * 48 }
+        }
         const spread = 245 * (1 - progress * .78)
         return { x: 500 + (leafIndex % 2 ? spread : -spread), y: 142 + leafIndex * (410 / leafCount) }
       }
@@ -643,13 +807,20 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         return { x: 500 + Math.cos(angle) * radius, y: 300 + Math.sin(angle) * radius * .82 }
       }
       if (profile.visual === 'lanes') {
-        if (isRoot) return { x: 96, y: 300 }
+        if (isRoot) return { x: compactViewport ? 48 : 96, y: compactViewport ? 300 : 300 }
         const lane = leafIndex % 3
         const column = Math.floor(leafIndex / 3)
+        if (compactViewport) return { x: 204 + column * 128, y: 130 + lane * 82 }
         return { x: 305 + column * 250, y: 145 + lane * 155 }
       }
       if (profile.visual === 'stairs') {
-        if (isRoot) return { x: 94, y: 505 }
+        if (isRoot) return { x: compactViewport ? 68 : 94, y: compactViewport ? 472 : 505 }
+        if (compactViewport) {
+          const columns = 2
+          const slot = leafIndex % columns
+          const row = Math.floor(leafIndex / columns)
+          return { x: 156 + slot * 186, y: 150 + row * 84 + (slot ? -26 : 0) }
+        }
         return { x: 215 + leafIndex * (690 / Math.max(1, leafCount - 1)), y: 465 - leafIndex * (350 / Math.max(1, leafCount - 1)) }
       }
       if (profile.visual === 'orbit') {
@@ -682,8 +853,17 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         return { x: position[0], y: position[1] }
       }
       if (profile.visual === 'spectrum') {
-        if (isRoot) return { x: 78, y: 300 }
-        return { x: 190 + leafIndex * (720 / Math.max(1, leafCount - 1)), y: 300 }
+        if (isRoot) return { x: compactViewport ? 78 : 96, y: compactViewport ? 274 : 300 }
+        if (compactViewport) {
+          const columns = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(leafCount * 1.2))))
+          const slot = leafIndex % columns
+          const row = Math.floor(leafIndex / columns)
+          // Leave a deliberate gutter between the left-anchored core and the
+          // first spectrum column so the second-row node cannot touch it.
+          return { x: 156 + slot * 126, y: 154 + row * 166 + (slot % 2 ? 34 : 0) }
+        }
+        const ratio = leafIndex / Math.max(1, leafCount - 1)
+        return { x: 190 + ratio * 680, y: 300 + (leafIndex % 2 ? 66 : -66) }
       }
       if (profile.visual === 'heatmap') {
         if (isRoot) return { x: 500, y: 68 }
@@ -696,8 +876,9 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       const color = isRoot ? '#252c42' : branchPalette[Math.max(0, branchIndex) % branchPalette.length]
       const common = {
         fill: isRoot ? '#252c42' : '#ffffff', stroke: isRoot ? '#252c42' : color, lineWidth: isRoot ? 0 : 2,
-        labelText: shortLabel(node.label, isRoot ? 14 : 12), labelFill: isRoot ? '#ffffff' : '#293044',
-        labelFontFamily: 'Inter, PingFang SC, Microsoft YaHei, sans-serif', labelWordWrap: true, cursor: 'pointer',
+        labelText: canvasLabel(node.label, isRoot ? 18 : 24, isRoot ? 9 : 8), labelFill: isRoot ? '#ffffff' : '#293044',
+        labelFontFamily: 'Inter, PingFang SC, Microsoft YaHei, sans-serif', labelWordWrap: true, labelMaxLines: 3,
+        labelTextAlign: 'center', labelTextBaseline: 'middle', textOverflow: 'ellipsis', cursor: 'pointer',
         halo: true, haloFill: color, haloOpacity: isRoot ? 0.16 : 0.07, haloLineWidth: isRoot ? 18 : 12,
       }
       let visualStyle: Record<string, unknown>
@@ -711,31 +892,61 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         visualStyle = { size: isRoot ? [132, 42] : [108, 34], radius: 7, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelMaxWidth: 94, labelLineHeight: 15 }
       } else if (profile.visual === 'fishbone') {
         visualStyle = isRoot
-          ? { size: [150, 46], radius: 23, labelPlacement: 'center', labelFontSize: 14, labelFontWeight: 760 }
-          : { size: [34, 34], radius: 5, fill: color, stroke: color, labelPlacement: sequenceIndex % 2 ? 'top' : 'bottom', labelFill: '#303540', labelFontSize: 11, labelFontWeight: 650, labelOffsetY: sequenceIndex % 2 ? -8 : 8, halo: false }
+          ? { size: compactViewport ? [128, 44] : [150, 46], radius: 23, labelPlacement: 'center', labelFontSize: 14, labelFontWeight: 760, labelMaxWidth: compactViewport ? 108 : 132, labelMaxLines: 2 }
+          : compactViewport
+            ? { size: [72, 38], radius: 7, fill: '#ffffff', stroke: color, lineWidth: 2, labelPlacement: 'center', labelFill: '#303540', labelFontSize: 10, labelFontWeight: 680, labelMaxWidth: 56, labelMaxLines: 2, labelLineHeight: 12, labelWordWrap: true, halo: false }
+            : { size: [34, 34], radius: 5, fill: color, stroke: color, labelPlacement: sequenceIndex % 2 ? 'top' : 'bottom', labelFill: '#303540', labelFontSize: 11, labelFontWeight: 650, labelOffsetY: sequenceIndex % 2 ? -8 : 8, labelMaxWidth: 112, labelMaxLines: 2, labelWordWrap: true, labelBackground: true, labelBackgroundFill: 'rgba(255,255,255,.86)', labelPadding: [2, 3], halo: false }
       } else if (profile.visual === 'index') {
         visualStyle = { size: isRoot ? 24 : 13, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 2, labelPlacement: 'right', labelFill: '#343a47', labelFontSize: isRoot ? 14 : 12, labelFontWeight: 650, labelBackground: true, labelBackgroundFill: '#ffffff', labelPadding: [3, 6], labelMaxWidth: 188, labelWordWrap: true, labelLineHeight: 15, halo: false }
       } else if (profile.visual === 'decision') {
-        visualStyle = { size: isRoot ? 100 : 76, fill: isRoot ? '#252c42' : `${color}18`, stroke: isRoot ? '#252c42' : color, lineWidth: 2, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelMaxWidth: isRoot ? 70 : 56, labelLineHeight: 15 }
+        visualStyle = { size: isRoot ? 100 : 76, fill: isRoot ? '#252c42' : `${color}18`, stroke: isRoot ? '#252c42' : color, lineWidth: 2, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelMaxWidth: isRoot ? 76 : 62, labelLineHeight: 15, labelMaxLines: 3, labelWordWrap: true }
+      } else if (profile.visual === 'flow') {
+        visualStyle = { size: isRoot ? [168, 54] : [compactViewport ? 128 : 146, compactViewport ? 44 : 48], radius: 12, fill: isRoot ? '#252c42' : `${color}12`, stroke: isRoot ? '#252c42' : color, lineWidth: isRoot ? 0 : 2, labelPlacement: 'center', labelFontSize: isRoot ? 15 : 11, labelFontWeight: isRoot ? 750 : 680, labelMaxWidth: isRoot ? 144 : (compactViewport ? 108 : 124), labelLineHeight: 15, labelMaxLines: 2, labelWordWrap: true }
       } else if (profile.visual === 'tokens') {
-        visualStyle = { size: isRoot ? 78 : 38, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 3, labelPlacement: isRoot ? 'center' : 'bottom', labelFill: isRoot ? '#ffffff' : '#343a47', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelOffsetY: isRoot ? 0 : 8, labelMaxWidth: 110, haloLineWidth: 9 }
+        visualStyle = {
+          size: isRoot ? (compactViewport ? 84 : 78) : (compactViewport ? 44 : 38),
+          fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 3,
+          labelPlacement: isRoot ? 'center' : 'bottom', labelFill: isRoot ? '#ffffff' : '#343a47',
+          labelFontSize: isRoot ? 14 : (compactViewport ? 12 : 11), labelFontWeight: 700,
+          labelOffsetY: isRoot ? 0 : 9, labelMaxWidth: compactViewport ? 126 : 110,
+          labelMaxLines: 2, labelLineHeight: 14, labelBackground: !isRoot,
+          labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [3, 5], haloLineWidth: 9,
+        }
       } else if (profile.visual === 'bubbles') {
-        const bubbleSize = isRoot ? 112 : 46 + (sequenceIndex % 4) * 9
-        visualStyle = { size: bubbleSize, fill: isRoot ? '#252c42' : `${color}d9`, stroke: '#ffffff', lineWidth: 3, labelPlacement: 'center', labelFill: '#ffffff', labelFontSize: isRoot ? 15 : 10, labelFontWeight: 760, labelMaxWidth: bubbleSize - 10, labelLineHeight: 13, haloLineWidth: 10 }
+        const isConcentric = profile.id === 'concentric'
+        const bubbleSize = isRoot
+          ? (compactViewport ? (isConcentric ? 112 : 124) : 112)
+          : (compactViewport
+              ? (isConcentric ? 48 + (sequenceIndex % 3) * 4 : 58 + (sequenceIndex % 4) * 10)
+              : 46 + (sequenceIndex % 4) * 9)
+        visualStyle = {
+          size: bubbleSize, fill: isRoot ? '#252c42' : `${color}d9`, stroke: '#ffffff', lineWidth: 3,
+          labelPlacement: 'center', labelFill: '#ffffff', labelFontSize: isRoot ? 15 : (compactViewport ? (isConcentric ? 10 : 11) : 10),
+          labelFontWeight: 760, labelMaxWidth: bubbleSize - (compactViewport ? (isConcentric ? 8 : 12) : 10), labelLineHeight: 14,
+          labelMaxLines: 2, haloLineWidth: 10,
+        }
       } else if (profile.visual === 'grid') {
         visualStyle = { size: isRoot ? [150, 66] : [132, 56], radius: 4, fill: isRoot ? '#252c42' : `${color}10`, stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 15 : 12, labelFontWeight: 720, labelMaxWidth: 114, halo: false }
       } else if (profile.visual === 'arc') {
-        visualStyle = { size: isRoot ? 24 : 16, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 2, labelPlacement: 'bottom', labelFill: '#333946', labelFontSize: 10, labelFontWeight: 650, labelRotation: Math.PI / 2, labelOffsetY: 9, halo: false }
+        visualStyle = {
+          size: isRoot ? (compactViewport ? 28 : 24) : (compactViewport ? 20 : 16),
+          fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 2,
+          labelPlacement: sequenceIndex % 2 ? 'top' : 'bottom', labelFill: '#333946',
+          labelFontSize: compactViewport ? 11 : 10, labelFontWeight: 650,
+          labelOffsetY: sequenceIndex % 2 ? -9 : 9, labelMaxWidth: compactViewport ? 104 : 120,
+          labelMaxLines: 2, labelLineHeight: 13, labelBackground: !isRoot,
+          labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [2, 4], halo: false,
+        }
       } else if (profile.visual === 'timeline') {
         visualStyle = { size: isRoot ? 78 : 36, fill: isRoot ? '#252c42' : color, stroke: '#ffffff', lineWidth: 3, labelPlacement: sequenceIndex % 2 ? 'top' : 'bottom', labelFill: isRoot ? '#ffffff' : '#323844', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 700, labelOffsetY: sequenceIndex % 2 ? -9 : 9, labelBackground: !isRoot, labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [3, 5], haloLineWidth: 9 }
       } else if (profile.visual === 'split') {
         visualStyle = { size: isRoot ? [160, 62] : [144, 48], radius: isRoot ? 18 : 24, fill: isRoot ? '#252c42' : `${color}12`, stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 15 : 12, labelFontWeight: 720, labelMaxWidth: 126, haloLineWidth: 10 }
       } else if (profile.visual === 'org') {
-        visualStyle = { size: isRoot ? [190, 58] : [154, 50], radius: 8, fill: isRoot ? '#252c42' : '#fff', stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 15 : 12, labelFontWeight: 720, labelMaxWidth: 134, halo: false }
+        visualStyle = { size: isRoot ? [190, 58] : (compactViewport ? [136, 46] : [154, 50]), radius: 8, fill: isRoot ? '#252c42' : '#fff', stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 15 : (compactViewport ? 11 : 12), labelFontWeight: 720, labelMaxWidth: compactViewport ? 118 : 134, labelMaxLines: 2, labelLineHeight: 14, halo: false }
       } else if (profile.visual === 'radial-tree') {
         visualStyle = { size: isRoot ? 92 : 28, fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: isRoot ? 'center' : 'right', labelFill: isRoot ? '#fff' : '#323844', labelFontSize: isRoot ? 15 : 11, labelFontWeight: 700, labelOffsetX: isRoot ? 0 : 8, labelBackground: !isRoot, labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [3, 5], haloLineWidth: 8 }
       } else if (profile.visual === 'outline') {
-        visualStyle = { size: isRoot ? [158, 44] : [176, 34], radius: 3, fill: isRoot ? '#252c42' : `${color}0f`, stroke: isRoot ? '#252c42' : color, lineWidth: isRoot ? 0 : 1.5, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 690, labelMaxWidth: 156, halo: false }
+        visualStyle = { size: isRoot ? [158, 44] : (compactViewport ? [158, 36] : [176, 34]), radius: 3, fill: isRoot ? '#252c42' : `${color}0f`, stroke: isRoot ? '#252c42' : color, lineWidth: isRoot ? 0 : 1.5, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 690, labelMaxWidth: compactViewport ? 138 : 156, labelMaxLines: 2, labelLineHeight: 14, halo: false }
       } else if (profile.visual === 'funnel') {
         const funnelWidth = isRoot ? 240 : Math.max(96, 210 - sequenceIndex * 14)
         visualStyle = { size: [funnelWidth, isRoot ? 52 : 40], radius: 20, fill: isRoot ? '#252c42' : `${color}18`, stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 15 : 11, labelFontWeight: 720, labelMaxWidth: funnelWidth - 22, haloLineWidth: 8 }
@@ -746,20 +957,20 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       } else if (profile.visual === 'stairs') {
         visualStyle = { size: isRoot ? [142, 54] : [126, 44], radius: 5, fill: isRoot ? '#252c42' : `${color}14`, stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 720, labelMaxWidth: 108, halo: false }
       } else if (profile.visual === 'orbit') {
-        visualStyle = { size: isRoot ? 104 : 34, fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: isRoot ? 'center' : 'bottom', labelFill: isRoot ? '#fff' : '#333946', labelFontSize: isRoot ? 15 : 10, labelFontWeight: 720, labelOffsetY: isRoot ? 0 : 8, labelMaxWidth: 102, haloLineWidth: 8 }
+        visualStyle = { size: isRoot ? 104 : (compactViewport ? 40 : 34), fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: isRoot ? 'center' : 'bottom', labelFill: isRoot ? '#fff' : '#333946', labelFontSize: isRoot ? 15 : (compactViewport ? 11 : 10), labelFontWeight: 720, labelOffsetY: isRoot ? 0 : 9, labelMaxWidth: compactViewport ? 118 : 102, labelMaxLines: 2, labelLineHeight: 14, labelBackground: !isRoot, labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [3, 5], haloLineWidth: 8 }
       } else if (profile.visual === 'honeycomb') {
-        visualStyle = { size: isRoot ? 96 : 76, fill: isRoot ? '#252c42' : `${color}dd`, stroke: '#fff', lineWidth: 4, labelPlacement: 'center', labelFill: '#fff', labelFontSize: isRoot ? 14 : 10, labelFontWeight: 760, labelMaxWidth: isRoot ? 70 : 56, halo: false }
+        visualStyle = { size: isRoot ? (compactViewport ? 104 : 96) : (compactViewport ? 86 : 76), fill: isRoot ? '#252c42' : `${color}dd`, stroke: '#fff', lineWidth: 4, labelPlacement: 'center', labelFill: '#fff', labelFontSize: isRoot ? 14 : (compactViewport ? 11 : 10), labelFontWeight: 760, labelMaxWidth: isRoot ? (compactViewport ? 78 : 70) : (compactViewport ? 68 : 56), labelMaxLines: 2, labelLineHeight: 14, halo: false }
       } else if (profile.visual === 'bipartite') {
         visualStyle = { size: isRoot ? [170, 52] : [148, 44], radius: isRoot ? 18 : 7, fill: isRoot ? '#252c42' : '#fff', stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 720, labelMaxWidth: 128, halo: false }
       } else if (profile.visual === 'chord') {
-        visualStyle = { size: isRoot ? 52 : 28, fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: 'outside', labelFill: '#323844', labelFontSize: 10, labelFontWeight: 700, labelOffsetY: 8, labelBackground: true, labelBackgroundFill: 'rgba(255,255,255,.9)', labelPadding: [2, 4], halo: false }
+        visualStyle = { size: isRoot ? 52 : (compactViewport ? 32 : 28), fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: 'outside', labelFill: '#323844', labelFontSize: compactViewport ? 11 : 10, labelFontWeight: 700, labelOffsetY: 9, labelMaxWidth: compactViewport ? 110 : 130, labelMaxLines: 2, labelBackground: true, labelBackgroundFill: 'rgba(255,255,255,.9)', labelPadding: [2, 4], halo: false }
       } else if (profile.visual === 'quadrant') {
         visualStyle = { size: isRoot ? [148, 56] : [138, 48], radius: 12, fill: isRoot ? '#252c42' : `${color}12`, stroke: isRoot ? '#252c42' : color, labelPlacement: 'center', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 720, labelMaxWidth: 120, haloLineWidth: 7 }
       } else if (profile.visual === 'pyramid') {
         const pyramidWidth = isRoot ? 156 : 126 + (sequenceIndex % 4) * 12
         visualStyle = { size: [pyramidWidth, isRoot ? 52 : 46], radius: 4, fill: isRoot ? '#252c42' : `${color}d8`, stroke: '#fff', lineWidth: 3, labelPlacement: 'center', labelFill: '#fff', labelFontSize: isRoot ? 14 : 10, labelFontWeight: 760, labelMaxWidth: pyramidWidth - 18, halo: false }
       } else if (profile.visual === 'spectrum') {
-        visualStyle = { size: isRoot ? 70 : 28 + (sequenceIndex % 3) * 8, fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: isRoot ? 'center' : (sequenceIndex % 2 ? 'top' : 'bottom'), labelFill: isRoot ? '#fff' : '#323844', labelFontSize: isRoot ? 13 : 10, labelFontWeight: 720, labelOffsetY: sequenceIndex % 2 ? -8 : 8, labelBackground: !isRoot, labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [2, 4], halo: false }
+        visualStyle = { size: isRoot ? (compactViewport ? 74 : 70) : (compactViewport ? 34 + (sequenceIndex % 3) * 9 : 28 + (sequenceIndex % 3) * 8), fill: isRoot ? '#252c42' : color, stroke: '#fff', lineWidth: 3, labelPlacement: isRoot ? 'center' : (sequenceIndex % 2 ? 'top' : 'bottom'), labelFill: isRoot ? '#fff' : '#323844', labelFontSize: isRoot ? 13 : (compactViewport ? 11 : 10), labelFontWeight: 720, labelOffsetY: sequenceIndex % 2 ? -9 : 9, labelMaxWidth: compactViewport ? 112 : 124, labelMaxLines: 2, labelLineHeight: 13, labelBackground: !isRoot, labelBackgroundFill: 'rgba(255,255,255,.92)', labelPadding: [2, 4], halo: false }
       } else if (profile.visual === 'heatmap') {
         visualStyle = { size: isRoot ? [180, 50] : [150, 96], radius: isRoot ? 16 : 2, fill: isRoot ? '#252c42' : `${color}${sequenceIndex % 2 ? 'ba' : '7d'}`, stroke: isRoot ? '#252c42' : '#fff', lineWidth: isRoot ? 0 : 5, labelPlacement: 'center', labelFill: isRoot ? '#fff' : '#fff', labelFontSize: isRoot ? 14 : 11, labelFontWeight: 760, labelMaxWidth: isRoot ? 150 : 126, halo: false }
       } else {
@@ -803,7 +1014,11 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         data: { color: edgeColor },
         style: {
           stroke: edgeColor, lineCap: 'round', ...visualEdgeStyle,
-          ...(label && from !== currentRoot?.id && !profile.usesTree && !['arc', 'grid'].includes(profile.visual) ? { labelText: shortLabel(label, 6), labelFill: '#697086', labelFontSize: 10 } : {}),
+          ...(label && from !== currentRoot?.id && !profile.usesTree && !['arc', 'grid'].includes(profile.visual) ? {
+            labelText: edgeLabel(label), labelFill: '#697086', labelFontSize: 10, labelMaxWidth: 82,
+            labelMaxLines: 1, labelWordWrap: true, textOverflow: 'ellipsis', labelBackground: true,
+            labelBackgroundFill: 'rgba(255,255,255,.84)', labelPadding: [2, 4],
+          } : {}),
         },
       }
     }
@@ -823,11 +1038,16 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         fill: `${color}12`,
         stroke: color,
         lineWidth: 1.5,
-        labelText: label,
+        labelText: canvasLabel(label, 20, 8),
         labelPlacement: 'center',
         labelFill: '#303746',
         labelFontSize: 11,
         labelFontWeight: 720,
+        labelWordWrap: true,
+        labelMaxLines: 2,
+        labelMaxWidth: mode === 'columns' ? 142 : 116,
+        labelLineHeight: 14,
+        textOverflow: 'ellipsis',
         halo: false,
         cursor: 'default',
       },
@@ -839,13 +1059,18 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     if (currentRoot && profile.id === 'mindmap') {
       const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
       const perSide = [Math.ceil(atoms.length / 2), Math.floor(atoms.length / 2)]
-      const nodes = [positionedNode(currentRoot, 0, 500, 300, 0)]
+      const centerX = compactViewport ? 330 : 500
+      const leftX = compactViewport ? 112 : 210
+      const rightX = compactViewport ? 548 : 790
+      const top = compactViewport ? 94 : 118
+      const spread = compactViewport ? 410 : 364
+      const nodes = [positionedNode(currentRoot, 0, centerX, 300, 0)]
       const edges: any[] = []
       atoms.forEach((node, index) => {
         const side = index % 2
         const slot = Math.floor(index / 2)
-        const y = perSide[side] <= 1 ? 300 : 118 + slot * 364 / (perSide[side] - 1)
-        nodes.push(positionedNode(node, index, side ? 790 : 210, y, index + 1))
+        const y = perSide[side] <= 1 ? 300 : top + slot * spread / (perSide[side] - 1)
+        nodes.push(positionedNode(node, index, side ? rightX : leftX, y, index + 1))
         edges.push(hierarchyEdge(currentRoot.id, node.id, branchPalette[index % branchPalette.length], index))
       })
       return { nodes, edges }
@@ -853,16 +1078,16 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     if (currentRoot && profile.id === 'dendrogram') {
       const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
       const groups = hierarchyGroupsFor(atoms, 'dendrogram', language)
-      const nodes: any[] = [positionedNode(currentRoot, 0, 104, 300, 0)]
+      const nodes: any[] = [positionedNode(currentRoot, 0, compactViewport ? 78 : 104, 300, 0)]
       const edges: any[] = []
       groups.forEach((group, groupIndex) => {
-        const groupY = groups.length === 1 ? 300 : 132 + groupIndex * 336 / (groups.length - 1)
-        nodes.push(hierarchyGuideNode(group.id, group.label, group.color, 370, groupY, 'tree'))
+        const groupY = groups.length === 1 ? 300 : (compactViewport ? 112 : 132) + groupIndex * (compactViewport ? 364 : 336) / (groups.length - 1)
+        nodes.push(hierarchyGuideNode(group.id, group.label, group.color, compactViewport ? 214 : 370, groupY, 'tree'))
         edges.push(hierarchyEdge(currentRoot.id, group.id, group.color, groupIndex))
         group.nodes.forEach((node, nodeIndex) => {
           const branchIndex = atoms.indexOf(node)
-          const y = group.nodes.length === 1 ? groupY : groupY - 58 + nodeIndex * 116 / (group.nodes.length - 1)
-          nodes.push(positionedNode(node, branchIndex, 688, y, branchIndex + 1))
+          const y = group.nodes.length === 1 ? groupY : groupY - (compactViewport ? 48 : 58) + nodeIndex * (compactViewport ? 96 : 116) / (group.nodes.length - 1)
+          nodes.push(positionedNode(node, branchIndex, compactViewport ? 344 : 688, y, branchIndex + 1))
           edges.push(hierarchyEdge(group.id, node.id, group.color, branchIndex + groups.length))
         })
       })
@@ -871,15 +1096,15 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     if (currentRoot && profile.id === 'compact-box') {
       const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
       const groups = hierarchyGroupsFor(atoms, 'compact-box', language)
-      const nodes: any[] = [positionedNode(currentRoot, 0, 500, 76, 0)]
+      const nodes: any[] = [positionedNode(currentRoot, 0, compactViewport ? 210 : 500, compactViewport ? 68 : 76, 0)]
       const edges: any[] = []
       groups.forEach((group, groupIndex) => {
-        const groupX = groups.length === 1 ? 500 : 188 + groupIndex * 624 / (groups.length - 1)
-        nodes.push(hierarchyGuideNode(group.id, group.label, group.color, groupX, 212, 'columns'))
+        const groupX = groups.length === 1 ? (compactViewport ? 210 : 500) : (compactViewport ? 76 : 188) + groupIndex * (compactViewport ? 268 : 624) / (groups.length - 1)
+        nodes.push(hierarchyGuideNode(group.id, group.label, group.color, groupX, compactViewport ? 174 : 212, 'columns'))
         edges.push(hierarchyEdge(currentRoot.id, group.id, group.color, groupIndex))
         group.nodes.forEach((node, nodeIndex) => {
           const branchIndex = atoms.indexOf(node)
-          nodes.push(positionedNode(node, branchIndex, groupX, 330 + nodeIndex * 78, branchIndex + 1))
+          nodes.push(positionedNode(node, branchIndex, groupX, (compactViewport ? 274 : 330) + nodeIndex * (compactViewport ? 66 : 78), branchIndex + 1))
           edges.push(hierarchyEdge(group.id, node.id, group.color, branchIndex + groups.length))
         })
       })
@@ -887,13 +1112,15 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     }
     if (currentRoot && profile.id === 'snake') {
       const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
-      const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(atoms.length * 1.6))))
-      const nodes: any[] = [positionedNode(currentRoot, 0, 94, 300, 0)]
+      const columns = compactViewport ? 2 : Math.min(4, Math.max(1, Math.ceil(Math.sqrt(atoms.length * 1.6))))
+      const nodes: any[] = [positionedNode(currentRoot, 0, compactViewport ? 72 : 94, 300, 0)]
       atoms.forEach((node, index) => {
         const row = Math.floor(index / columns)
         const slot = index % columns
         const visualSlot = row % 2 ? columns - 1 - slot : slot
-        nodes.push(positionedNode(node, index, columns === 1 ? 520 : 248 + visualSlot * 650 / (columns - 1), row % 2 ? 428 : 178, index + 1))
+        const x = columns === 1 ? (compactViewport ? 210 : 520) : (compactViewport ? 196 + visualSlot * 178 : 248 + visualSlot * 650 / (columns - 1))
+        const y = compactViewport ? 128 + row * 126 : (row % 2 ? 428 : 178)
+        nodes.push(positionedNode(node, index, x, y, index + 1))
       })
       const path = [currentRoot, ...atoms]
       return {
@@ -927,9 +1154,11 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     if (profile.visual === 'fishbone' && currentRoot) {
       const atoms = [...leafNodes].sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
       const columnCount = Math.max(1, Math.ceil(atoms.length / 2))
+      const anchorStart = compactViewport ? 190 : 242
+      const anchorStep = compactViewport ? 88 : 185
       const anchors = Array.from({ length: columnCount }, (_value, index) => ({
         id: `__fishbone_anchor_${index}`,
-        style: { x: 242 + index * 185, y: 300, size: 2, opacity: 0, fillOpacity: 0, strokeOpacity: 0, label: false },
+        style: { x: anchorStart + index * anchorStep, y: 300, size: 2, opacity: 0, fillOpacity: 0, strokeOpacity: 0, label: false },
         data: { virtual: true },
       }))
       const ribs = atoms.map((node, index) => ({
@@ -951,7 +1180,14 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     }
     if (profile.id === 'indented' && graphTree) {
       const entries: Array<{ entry: MapTreeNode; depth: number; row: number }> = []
+      const seenNodes = new Set<string>()
       const visit = (entry: MapTreeNode, depth: number) => {
+        // A generated payload can describe the same atom through both
+        // `parent_id` and an explicit edge. Keep the first occurrence in the
+        // outline so G6 never receives duplicate node ids (which otherwise
+        // forces this view into the compatibility renderer).
+        if (seenNodes.has(entry.id)) return
+        seenNodes.add(entry.id)
         entries.push({ entry, depth, row: entries.length })
         entry.children?.forEach(child => visit(child, depth + 1))
       }
@@ -962,6 +1198,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       // canvas fit would otherwise shrink the whole tree. Stack the rows with
       // a small visual indent there; desktop keeps the wide two-column spread.
       const indent = window.matchMedia('(max-width: 760px)').matches ? 64 : 520
+      const positions = new Map<string, { x: number; y: number }>()
       const nodes: any[] = entries.map(({ entry, depth, row }) => {
         // Keep the indentation legible even when most generated atoms are
         // direct children. A small indent leaves the whole tree as a narrow
@@ -970,14 +1207,34 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         const x = Math.min(1050, 104 + depth * indent)
         const y = rowCount === 1 ? 300 : 48 + row * rowGap
         const branchIndex = entry.data.branchIndex < 0 ? 0 : entry.data.branchIndex
+        positions.set(entry.id, { x, y })
         return {
           ...positionedNode(entry.data.node, branchIndex, x, y, row),
           children: entry.children?.map(child => child.id),
         }
       })
-      const edges = entries.flatMap(({ entry }) => (entry.children || []).map((child, childIndex) => (
-        hierarchyEdge(entry.id, child.id, child.data.color, entry.data.branchIndex + childIndex + 1)
-      )))
+      const seenEdges = new Set<string>()
+      const edges = entries.flatMap(({ entry }) => (entry.children || []).flatMap((child, childIndex) => {
+        if (!seenNodes.has(child.id)) return []
+        const key = `${entry.id}|${child.id}`
+        if (seenEdges.has(key)) return []
+        seenEdges.add(key)
+        const parentPoint = positions.get(entry.id)
+        const childPoint = positions.get(child.id)
+        const edge = hierarchyEdge(entry.id, child.id, child.data.color, entry.data.branchIndex + childIndex + 1)
+        return [{
+          ...edge,
+          style: {
+            ...edge.style,
+            // Route each branch through the child's x-column. Direct
+            // children then share a quiet vertical trunk instead of drawing
+            // a bundle of long diagonals from the root to every row.
+            ...(parentPoint && childPoint ? { controlPoints: [[childPoint.x, parentPoint.y]] } : {}),
+            lineWidth: 1.25,
+            opacity: .5,
+          },
+        }]
+      }))
       return { nodes, edges }
     }
     if (profile.usesTree && graphTree) {
@@ -1004,18 +1261,28 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
     if (profile.visual === 'fishbone' && currentRoot) {
       edgeList = orderedLeaves.map(node => ({ from: node.id, to: currentRoot.id, label: '' }))
     }
-    if (['funnel', 'lanes', 'stairs', 'spectrum'].includes(profile.visual) || profile.id === 'snake') edgeList = sequenceEdges
+    if (profile.visual === 'decision' && currentRoot && orderedLeaves.length) {
+      const columns = compactViewport ? 2 : 3
+      edgeList = orderedLeaves.map((node, index) => {
+        if (index < columns) return { from: currentRoot.id, to: node.id, label: '' }
+        const parent = orderedLeaves[Math.floor((index - columns) / columns) % columns]
+        return { from: parent?.id || currentRoot.id, to: node.id, label: '' }
+      })
+    }
+    if (['flow', 'funnel', 'lanes', 'stairs', 'spectrum'].includes(profile.visual) || profile.id === 'snake') edgeList = sequenceEdges
     if (profile.visual === 'cycle' && currentRoot && orderedLeaves.length) {
       edgeList = [...sequenceEdges, { from: orderedLeaves.at(-1)!.id, to: currentRoot.id, label: '' }]
     }
     if (profile.visual === 'org' && currentRoot) {
-      edgeList = orderedLeaves.map((node, index) => ({ from: index < 3 ? currentRoot.id : orderedLeaves[(index - 3) % Math.min(3, orderedLeaves.length)].id, to: node.id, label: '' }))
+      const topCount = compactViewport ? 2 : 3
+      edgeList = orderedLeaves.map((node, index) => ({ from: index < topCount ? currentRoot.id : orderedLeaves[(index - topCount) % Math.min(topCount, orderedLeaves.length)].id, to: node.id, label: '' }))
     }
     if (profile.visual === 'radial-tree' && currentRoot) {
       edgeList = orderedLeaves.map((node, index) => ({ from: index < 4 ? currentRoot.id : orderedLeaves[index % 4].id, to: node.id, label: '' }))
     }
     if (profile.visual === 'outline' && currentRoot) {
-      edgeList = orderedLeaves.map((node, index) => ({ from: index < 3 ? currentRoot.id : orderedLeaves[index - 3].id, to: node.id, label: '' }))
+      const topCount = compactViewport ? 2 : 3
+      edgeList = orderedLeaves.map((node, index) => ({ from: index < topCount ? currentRoot.id : orderedLeaves[index - topCount].id, to: node.id, label: '' }))
     }
     if (profile.visual === 'bipartite' && currentRoot) {
       const left = orderedLeaves.filter((_node, index) => index % 2 === 0)
@@ -1043,11 +1310,22 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
       })
       edgeList = [...edgeList, ...extraEdges]
     }
+    const denseRelationViews: KnowledgeMapViewId[] = ['circular', 'concentric', 'radial', 'force', 'd3-bubble', 'fruchterman', 'atlas2', 'mds']
+    if (denseRelationViews.includes(profile.id) && orderedLeaves.length >= 4) {
+      const crossLinks = orderedLeaves.flatMap((node, index) => [
+        orderedLeaves[index + 2] ? { from: node.id, to: orderedLeaves[index + 2].id, label: '' } : null,
+        profile.id === 'atlas2' && orderedLeaves[index + 4] ? { from: node.id, to: orderedLeaves[index + 4].id, label: '' } : null,
+      ]).filter((edge): edge is { from: string; to: string; label: string } => Boolean(edge))
+      edgeList = [...edgeList, ...crossLinks]
+    }
+    const uniqueEdgeList = edgeList.filter((edge, index, items) => (
+      items.findIndex(candidate => candidate.from === edge.from && candidate.to === edge.to) === index
+    ))
     return {
       nodes: viewData.nodes.map((node, index) => nodeData(node, index, index)),
-      edges: edgeList.map((edge, index) => edgeData(edge.from, edge.to, indexById.get(edge.to) || 0, edge.label || '', index)),
+      edges: uniqueEdgeList.map((edge, index) => edgeData(edge.from, edge.to, indexById.get(edge.to) || 0, edge.label || '', index)),
     }
-  }, [currentRoot, graphTree, language, profile, viewData])
+  }, [compactViewport, currentRoot, graphTree, language, profile, viewData])
 
   useEffect(() => {
     const nextRootId = rootFor(props.data)?.id
@@ -1165,14 +1443,20 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         // Reserve a little more room on the left for the wide root node. The
         // asymmetric padding keeps flow/dendrogram layouts readable when the
         // viewport is narrower than their desktop coordinate system.
-        const graphPadding = window.matchMedia('(max-width: 760px)').matches
-          ? [48, 68, 48, 108]
-          : [58, 62, 64, 62]
-        const graphZoomRange: [number, number] = window.matchMedia('(max-width: 760px)').matches
+        const graphPadding = compactViewport
+          // Keep the floating zoom controls and the optional task dock out of
+          // the graph's label-safe area. A little extra right/bottom breathing
+          // room is cheaper than letting a node disappear underneath them.
+          ? [28, 84, taskDockVisible ? 204 : 146, 32]
+          : [48, 84, taskDockVisible ? 148 : 118, 52]
+        const graphZoomRange: [number, number] = compactViewport
           ? [0.16, maxCanvasZoom]
           : [0.25, maxCanvasZoom]
+        const hasPresetPositions = graphData.nodes.every((node: any) => (
+          Number.isFinite(Number(node?.style?.x)) && Number.isFinite(Number(node?.style?.y))
+        ))
         graph = new Graph({
-          container: mount, data: graphData, autoResize: true, autoFit: 'view', padding: graphPadding, zoomRange: graphZoomRange,
+          container: mount, data: graphData, autoResize: true, padding: graphPadding, zoomRange: graphZoomRange,
           animation: { duration: 520, easing: 'ease-out' },
           node: {
             type: ((datum: any) => datum.data?.virtual ? 'rect' : profile.nodeType) as never,
@@ -1192,7 +1476,11 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
             },
             animation: { enter: 'path-in', update: [{ fields: ['sourceNode', 'targetNode', 'stroke'], duration: 520, easing: 'ease-out' }] },
           } as never,
-          layout: profile.id === 'indented' ? undefined : profile.layout as never,
+          // Preset coordinates are authored for every visual grammar.  Only
+          // fall back to an external G6 layout when a future view genuinely
+          // has no coordinates; this avoids tiny auto-laid clusters and keeps
+          // text in a predictable safe area.
+          layout: hasPresetPositions || profile.id === 'indented' ? undefined : profile.layout as never,
           ...(profile.plugins ? { plugins: profile.plugins as never } : {}),
           behaviors: [
             { type: 'drag-canvas' },
@@ -1251,7 +1539,7 @@ export function G6KnowledgeMap(props: G6KnowledgeMapProps) {
         activeHost?.remove()
       }
     }
-  }, [currentRoot, graphData, graphKey, hasLearnableAtoms, maxCanvasZoom, profile])
+  }, [compactViewport, currentRoot, graphData, graphKey, hasLearnableAtoms, maxCanvasZoom, profile, taskDockVisible])
 
   useEffect(() => { setSelectedId(null); setExpandError(null) }, [graphKey])
 

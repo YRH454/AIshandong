@@ -69,6 +69,25 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
   const [error, setError] = useState('')
   const [success, setSuccess] = useState<AuthResponse | null>(null)
 
+  const validate = () => {
+    const normalizedEmail = email.trim()
+    if (!normalizedEmail) return '请输入邮箱'
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return '请输入有效邮箱'
+    if (mode === 'register') {
+      const normalizedUsername = username.trim()
+      if (normalizedUsername.length < 2 || normalizedUsername.length > 30) return '用户名长度需为2-30个字符'
+    }
+    if (mode !== 'reset' || Boolean(resetToken)) {
+      const minimumLength = mode === 'login' ? 6 : 8
+      if (!password) return '请输入密码'
+      if (password.length < minimumLength) return `密码至少${minimumLength}位`
+    }
+    if ((mode === 'register' || (mode === 'reset' && Boolean(resetToken))) && password !== confirmPassword) {
+      return '两次输入的密码不一致'
+    }
+    return ''
+  }
+
   const switchMode = (nextMode: AuthMode) => {
     if (busy) return
     setMode(nextMode)
@@ -82,8 +101,9 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
     event.preventDefault()
     if (busy) return
     setError('')
-    if ((mode === 'register' || (mode === 'reset' && Boolean(resetToken))) && password !== confirmPassword) {
-      setError('两次输入的密码不一致')
+    const validationError = validate()
+    if (validationError) {
+      setError(validationError)
       return
     }
 
@@ -115,6 +135,14 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
     } finally {
       setBusy(false)
     }
+  }
+
+  const submitOnEnter = (event: React.KeyboardEvent<HTMLFormElement>) => {
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+    const target = event.target as HTMLElement
+    if (target.closest('button')) return
+    event.preventDefault()
+    event.currentTarget.querySelector<HTMLButtonElement>('button[type="submit"]')?.click()
   }
 
   const enterAsGuest = async () => {
@@ -163,29 +191,29 @@ export default function AuthScreen({ initialMode = 'login', onAuthenticated }: A
                 <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')} role="tab" aria-selected={mode === 'register'}>注册</button>
               </div> : <button type="button" className="auth-reset-back" onClick={() => switchMode('login')}>← 返回登录</button>}
 
-              <form className="auth-form" onSubmit={submit}>
+              <form className="auth-form" onSubmit={submit} onKeyDown={submitOnEnter} noValidate>
                 {mode === 'register' && (
                   <label className="auth-field">
                     <span>用户名</span>
-                    <span className="auth-input-wrap"><UserRound size={17} /><input value={username} onChange={event => setUsername(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="用户名" autoComplete="username" required minLength={2} maxLength={30} /></span>
+                    <span className="auth-input-wrap"><UserRound size={17} /><input name="username" value={username} onChange={event => setUsername(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="用户名" autoComplete="username" required minLength={2} maxLength={30} /></span>
                   </label>
                 )}
                 <label className="auth-field">
                   <span>邮箱</span>
-                  <span className="auth-input-wrap"><Mail size={17} /><input type="email" value={email} onChange={event => setEmail(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="电子邮箱" autoComplete="email" autoFocus={mode === 'login'} required /></span>
+                  <span className="auth-input-wrap"><Mail size={17} /><input name="email" type="email" value={email} onChange={event => setEmail(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="电子邮箱" autoComplete="email" autoFocus={mode === 'login'} required /></span>
                 </label>
                 {mode === 'reset' && resetToken && <label className="auth-field">
                   <span>重置令牌</span>
-                  <span className="auth-input-wrap"><KeyRound size={17} /><input value={resetToken} onChange={event => setResetToken(event.target.value)} autoComplete="one-time-code" required /></span>
+                  <span className="auth-input-wrap"><KeyRound size={17} /><input name="resetToken" value={resetToken} onChange={event => setResetToken(event.target.value)} autoComplete="one-time-code" required /></span>
                 </label>}
                 {(mode !== 'reset' || Boolean(resetToken)) && <label className="auth-field">
                   <span>密码</span>
-                  <span className="auth-input-wrap"><LockKeyhole size={17} /><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder={mode === 'login' ? '密码' : '新密码（至少8位）'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={mode === 'login' ? 6 : 8} /><button type="button" className="auth-password-toggle" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? '隐藏密码' : '显示密码'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
+                  <span className="auth-input-wrap"><LockKeyhole size={17} /><input name="password" type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder={mode === 'login' ? '密码' : '新密码（至少8位）'} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required minLength={mode === 'login' ? 6 : 8} /><button type="button" className="auth-password-toggle" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? '隐藏密码' : '显示密码'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
                 </label>}
                 {(mode === 'register' || (mode === 'reset' && Boolean(resetToken))) && (
                   <label className="auth-field">
                     <span>确认密码</span>
-                    <span className="auth-input-wrap"><KeyRound size={17} /><input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="确认密码" autoComplete="new-password" required minLength={mode === 'reset' ? 8 : 8} /></span>
+                    <span className="auth-input-wrap"><KeyRound size={17} /><input name="confirmPassword" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} onFocus={() => setIsTyping(true)} onBlur={() => setIsTyping(false)} placeholder="确认密码" autoComplete="new-password" required minLength={mode === 'reset' ? 8 : 8} /></span>
                   </label>
                 )}
 

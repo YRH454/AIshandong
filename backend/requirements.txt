@@ -6,6 +6,10 @@ oss2==2.19.1
 python-dotenv==1.1.1
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
+# passlib 1.7.4 is not compatible with bcrypt 5.x (its backend self-test
+# raises on the long probe secret). Keep the runtime on the known-compatible
+# 4.x release used by local development and production authentication.
+bcrypt==4.0.1
 pydantic==2.12.3
 langgraph==1.0.1
 langchain==1.0.1

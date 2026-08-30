@@ -18,10 +18,34 @@ from app.config import (
 _limits = httpx.Limits(max_keepalive_connections=10, max_connections=20)
 http_client = httpx.Client(timeout=httpx.Timeout(90.0, connect=10.0), limits=_limits)
 
-qwen = OpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL, http_client=http_client)
-seedance = OpenAI(api_key=SEEDANCE_API_KEY, base_url=SEEDANCE_BASE_URL, http_client=http_client)
-deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, http_client=http_client)
-mimo = OpenAI(api_key=MIMO_API_KEY, base_url=MIMO_BASE_URL, http_client=http_client) if MIMO_BASE_URL else None
+
+def _build_openai_client(api_key: str | None, base_url: str | None):
+    """Build a provider client only when that provider is configured.
+
+    The service exposes several optional model providers.  Instantiating the
+    OpenAI SDK with an empty key raises during module import, which used to
+    make the whole API fail its health check even when only Qwen was needed.
+    Keeping unconfigured clients as ``None`` lets the service boot and lets
+    each request return a useful configuration error instead.
+    """
+    if not api_key:
+        return None
+    kwargs = {"api_key": api_key, "http_client": http_client}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return OpenAI(**kwargs)
+
+
+qwen = _build_openai_client(QWEN_API_KEY, QWEN_BASE_URL)
+seedance = _build_openai_client(SEEDANCE_API_KEY, SEEDANCE_BASE_URL)
+deepseek = _build_openai_client(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL)
+mimo = _build_openai_client(MIMO_API_KEY, MIMO_BASE_URL)
+
+
+def _require_client(client, provider: str):
+    if client is None:
+        raise RuntimeError(f"未配置 {provider} API Key")
+    return client
 
 
 def chat_qwen(
@@ -62,6 +86,7 @@ def chat_qwen_model(model: str, messages: list, temperature=0.3, max_tokens=4096
     model 可为 "qwen-max" / "qwen-coder" / "qwen-flash" / "qwen-long" 等（MODEL_REGISTRY 键）
     或完整的真实模型名。qwq 推理模型仅支持流式,这里自动处理。
     """
+    client_base = _require_client(qwen, "QWEN_API_KEY")
     real_model = MODEL_REGISTRY.get(model, model)
     kwargs = dict(
         model=real_model, messages=messages,
@@ -76,18 +101,18 @@ def chat_qwen_model(model: str, messages: list, temperature=0.3, max_tokens=4096
     # Some callers own their own retry/fallback policy.  Let them opt out of
     # the SDK's hidden retries so a short request timeout cannot silently turn
     # into several minutes of waiting.
-    client = qwen if request_max_retries is None else qwen.with_options(max_retries=request_max_retries)
+    client = client_base if request_max_retries is None else client_base.with_options(max_retries=request_max_retries)
     return client.chat.completions.create(**kwargs)
 
 
 def get_qwen_client(model: str):
     """获取指定千问模型的 OpenAI 客户端(供 LangChain ChatOpenAI 复用连接池)"""
-    return qwen
+    return _require_client(qwen, "QWEN_API_KEY")
 
 
 def chat_qwen_stream(messages: list, temperature=0.7, max_tokens=2048, model: str | None = None):
     """流式调用千问"""
-    return qwen.chat.completions.create(
+    return _require_client(qwen, "QWEN_API_KEY").chat.completions.create(
         model=MODEL_REGISTRY.get(model or QWEN_MODEL, model or QWEN_MODEL), messages=messages,
         temperature=temperature, max_tokens=max_tokens,
         stream=True,
@@ -96,6 +121,7 @@ def chat_qwen_stream(messages: list, temperature=0.7, max_tokens=2048, model: st
 
 def chat_deepseek(messages: list, temperature=0.3, max_tokens=4096, json_mode=False, tools: list = None, search_enable: bool = False):
     """调用 DeepSeek"""
+    deepseek_client = _require_client(deepseek, "DEEPSEEK_API_KEY")
     kwargs = dict(
         model=DEEPSEEK_MODEL, messages=messages,
         temperature=temperature, max_tokens=max_tokens,
@@ -106,12 +132,12 @@ def chat_deepseek(messages: list, temperature=0.3, max_tokens=4096, json_mode=Fa
         kwargs["tools"] = tools
     if search_enable:
         kwargs["extra_body"] = {"search_enable": True}
-    return deepseek.chat.completions.create(**kwargs)
+    return deepseek_client.chat.completions.create(**kwargs)
 
 
 def chat_deepseek_stream(messages: list, temperature=0.5, max_tokens=4096):
     """流式调用 DeepSeek"""
-    return deepseek.chat.completions.create(
+    return _require_client(deepseek, "DEEPSEEK_API_KEY").chat.completions.create(
         model=DEEPSEEK_MODEL, messages=messages,
         temperature=temperature, max_tokens=max_tokens,
         stream=True,

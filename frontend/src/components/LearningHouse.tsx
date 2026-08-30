@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Text, useTexture } from '@react-three/drei'
 import {
-  ArrowLeft, BookOpen, Box, BrainCircuit, Cpu, FileText, Orbit,
+  ArrowLeft, BookOpen, Box, BrainCircuit, ChevronDown, ChevronUp, Cpu, FileText, Orbit,
   Volume2, VolumeX, X,
 } from 'lucide-react'
 import * as THREE from 'three'
@@ -36,6 +36,10 @@ type Room = {
   side: 'left' | 'right'
   z: number
   icon: ComponentType<{ size?: number; strokeWidth?: number }>
+}
+
+type CameraMoveRef = {
+  current: ((distance: number) => void) | null
 }
 
 const assetBase = '/learning-house-reference'
@@ -115,7 +119,7 @@ function lerpVector(current: THREE.Vector3, target: THREE.Vector3, speed: number
   current.lerp(target, 1 - Math.exp(-speed * delta))
 }
 
-function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; activeRoomId: RoomId | null; onNearRoom: (id: RoomId) => void }) {
+function HouseCamera({ phase, activeRoomId, onNearRoom, moveRef }: { phase: Phase; activeRoomId: RoomId | null; onNearRoom: (id: RoomId) => void; moveRef: CameraMoveRef }) {
   const { camera, gl, pointer } = useThree()
   const targetPosition = useRef(new THREE.Vector3(0, .05, 5.6))
   const targetLook = useRef(new THREE.Vector3(0, .02, -1.5))
@@ -137,10 +141,15 @@ function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; active
   }, [phase])
 
   useEffect(() => {
-    if (phase !== 'corridor') return
     const move = (distance: number) => {
       const next = targetPosition.current.z + distance
       targetPosition.current.z = THREE.MathUtils.clamp(next, -62.5, 5.35)
+    }
+    moveRef.current = phase === 'corridor' ? move : null
+    if (phase !== 'corridor') {
+      return () => {
+        if (moveRef.current === move) moveRef.current = null
+      }
     }
     const wheel = (event: WheelEvent) => { event.preventDefault(); move(event.deltaY * .019) }
     const key = (event: KeyboardEvent) => {
@@ -150,8 +159,12 @@ function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; active
     }
     gl.domElement.addEventListener('wheel', wheel, { passive: false })
     window.addEventListener('keydown', key)
-    return () => { gl.domElement.removeEventListener('wheel', wheel); window.removeEventListener('keydown', key) }
-  }, [gl, phase])
+    return () => {
+      gl.domElement.removeEventListener('wheel', wheel)
+      window.removeEventListener('keydown', key)
+      if (moveRef.current === move) moveRef.current = null
+    }
+  }, [gl, moveRef, phase])
 
   useFrame((_, delta) => {
     if (phase === 'entrance') {
@@ -172,6 +185,78 @@ function HouseCamera({ phase, activeRoomId, onNearRoom }: { phase: Phase; active
     camera.lookAt(currentLook.current)
   })
   return null
+}
+
+function MobileHouseControls({ language, onMove }: { language: Language; onMove: (distance: number) => void }) {
+  const zh = language !== 'en'
+  const [pressed, setPressed] = useState<'forward' | 'backward' | null>(null)
+  const repeatStart = useRef<number | null>(null)
+  const repeatTimer = useRef<number | null>(null)
+
+  const stopHolding = () => {
+    if (repeatStart.current !== null) window.clearTimeout(repeatStart.current)
+    if (repeatTimer.current !== null) window.clearInterval(repeatTimer.current)
+    repeatStart.current = null
+    repeatTimer.current = null
+    setPressed(null)
+  }
+
+  useEffect(() => () => {
+    if (repeatStart.current !== null) window.clearTimeout(repeatStart.current)
+    if (repeatTimer.current !== null) window.clearInterval(repeatTimer.current)
+  }, [])
+
+  const startHolding = (distance: number, direction: 'forward' | 'backward') => {
+    stopHolding()
+    onMove(distance)
+    setPressed(direction)
+    repeatStart.current = window.setTimeout(() => {
+      repeatTimer.current = window.setInterval(() => onMove(distance * .55), 110)
+    }, 220)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, distance: number, direction: 'forward' | 'backward') => {
+    if (event.repeat || (event.key !== 'Enter' && event.key !== ' ')) return
+    event.preventDefault()
+    startHolding(distance, direction)
+  }
+
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      stopHolding()
+    }
+  }
+
+  const buttonProps = (distance: number, direction: 'forward' | 'backward') => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      event.currentTarget.setPointerCapture(event.pointerId)
+      startHolding(distance, direction)
+    },
+    onPointerUp: stopHolding,
+    onPointerCancel: stopHolding,
+    onLostPointerCapture: stopHolding,
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => handleKeyDown(event, distance, direction),
+    onKeyUp: handleKeyUp,
+  })
+
+  return <div className="learning-house-mobile-controls" aria-label={zh ? '手机移动控制' : 'Mobile movement controls'}>
+    <div className="learning-house-mobile-controls-copy">
+      <span>{zh ? '移动探索' : 'Explore'}</span>
+      <small>{zh ? '点按或长按' : 'Tap or hold'}</small>
+    </div>
+    <div className="learning-house-mobile-controls-pad">
+      <button className={`learning-house-mobile-control${pressed === 'forward' ? ' is-pressed' : ''}`} type="button" aria-label={zh ? '向前移动' : 'Move forward'} {...buttonProps(-2.75, 'forward')}>
+        <ChevronUp size={20} strokeWidth={2.4} />
+        <span>{zh ? '前进' : 'Forward'}</span>
+      </button>
+      <button className={`learning-house-mobile-control${pressed === 'backward' ? ' is-pressed' : ''}`} type="button" aria-label={zh ? '向后移动' : 'Move backward'} {...buttonProps(2.75, 'backward')}>
+        <ChevronDown size={20} strokeWidth={2.4} />
+        <span>{zh ? '后退' : 'Back'}</span>
+      </button>
+    </div>
+  </div>
 }
 
 function EntranceScene({ onEnter, soundOn, onMusicStart }: { onEnter: () => void; soundOn: boolean; onMusicStart: () => void }) {
@@ -385,6 +470,7 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
   const [phase, setPhase] = useState<Phase>('entrance')
   const [activeRoomId, setActiveRoomId] = useState<RoomId | null>('document')
   const [soundOn, setSoundOn] = useState(true)
+  const cameraMoveRef = useRef<CameraMoveRef['current']>(null)
   // A room opened above the corridor already has its own soundscape. Pause
   // the corridor loop while it is covered so it does not keep decoding audio.
   const music = useBackgroundMusic(soundOn, phase === 'corridor' && !suspended)
@@ -444,9 +530,10 @@ export default function LearningHouse({ language = 'zh-CN', onExit, onOpenPerson
             <Suspense fallback={null}>
               {phase === 'entrance' ? <EntranceScene soundOn={soundOn} onEnter={enterCorridor} onMusicStart={music.start} /> : <><Corridor soundOn={soundOn} />{rooms.map(room => <CorridorDoor key={room.id} room={room} active={activeRoomId === room.id} soundOn={soundOn} onSelect={() => { setActiveRoomId(room.id); if (room.id === 'document') onOpenStudyArchive?.(); if (room.id === 'profile') onOpenPersonalRoom?.(); if (room.id === 'map') onOpenMapHall?.(); if (room.id === 'practice') onOpenApexLab?.(); if (room.id === 'dynamic') onOpenSolarExplorer?.() }} />)}</>}
             </Suspense>
-            <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} />
+            <HouseCamera phase={phase} activeRoomId={activeRoomId} onNearRoom={setActiveRoomId} moveRef={cameraMoveRef} />
             <SceneRenderPulse active={canvasActive} fps={lowPower ? 24 : 42} />
           </Canvas> : <FlatFallback language={language} onEnter={enterCorridor} />}
+          {canUseWebGL && phase === 'corridor' && <MobileHouseControls language={language} onMove={distance => cameraMoveRef.current?.(distance)} />}
           <div className="learning-house-explorer" aria-live="polite">
             <b>{phase === 'entrance' ? 'EXPLORER' : 'WANDERER'}</b>
             <span>{status}</span>

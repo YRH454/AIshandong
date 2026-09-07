@@ -1,11 +1,13 @@
 """Regression coverage for persisted login and guest sessions."""
 
 import importlib
+from http.cookies import SimpleCookie
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException, Response
 
@@ -36,6 +38,49 @@ class AuthSessionTest(unittest.TestCase):
             os.remove(self.database_path)
         except FileNotFoundError:
             pass
+
+    def test_cross_site_cookie_deletion_matches_login_policy(self):
+        # Pages and Railway are different sites. A default SameSite=Lax
+        # deletion is ignored on these cross-site responses, leaving an old
+        # account cookie that can override the next guest login.
+        with patch.multiple(self.auth, COOKIE_SECURE=True, COOKIE_SAMESITE="none"):
+            registration_response = Response()
+            self.auth.register(
+                self.auth.RegisterRequest(
+                    username="CookiePolicy",
+                    email="cookie-policy@example.com",
+                    password="test-secret123",
+                ),
+                registration_response,
+            )
+            login_response = Response()
+            self.auth.login(
+                self.auth.LoginRequest(email="cookie-policy@example.com", password="test-secret123"),
+                login_response,
+            )
+            guest_response = Response()
+            guest = self.auth.guest_login(guest_response)
+            logout_response = Response()
+            self.auth.logout(logout_response, authorization=f"Guest {guest['token']}")
+
+            for action, response, names in (
+                ("register", registration_response, [self.auth.GUEST_COOKIE]),
+                ("login", login_response, [self.auth.GUEST_COOKIE]),
+                ("guest", guest_response, [self.auth.ACCESS_COOKIE]),
+                ("logout", logout_response, [self.auth.ACCESS_COOKIE, self.auth.GUEST_COOKIE]),
+            ):
+                cookies = SimpleCookie()
+                for key, value in response.raw_headers:
+                    if key.lower() == b"set-cookie":
+                        cookies.load(value.decode("latin-1"))
+                for name in names:
+                    with self.subTest(action=action, cookie=name):
+                        cookie = cookies[name]
+                        self.assertEqual(cookie["max-age"], "0")
+                        self.assertEqual(cookie["path"], "/")
+                        self.assertTrue(cookie["secure"])
+                        self.assertTrue(cookie["httponly"])
+                        self.assertEqual(cookie["samesite"].lower(), "none")
 
     def test_registered_session_is_cookie_backed_and_revocable(self):
         response = Response()

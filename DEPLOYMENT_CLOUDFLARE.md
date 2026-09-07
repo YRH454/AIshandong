@@ -65,3 +65,6 @@ PASSWORD_RESET_DEBUG=0
 - `python -m pytest backend/tests/test_database_pool.py -q` 覆盖新登录可见性、
   退出后的撤销可见性、查询异常清理和失效连接丢弃。SQLite 测试不能单独替代此项检查。
 - 发布后使用账号验证登录、连续读取资料、刷新页面和退出；退出后原令牌应始终被拒绝。
+- 跨站部署中，退出和账号/游客切换时删除 Cookie 也必须沿用 `Secure`、
+  `SameSite=None` 和相同的路径。默认 `SameSite=Lax` 的删除响应可能被浏览器忽略，
+  残留的已失效账号 Cookie 会优先于新的游客 Cookie，导致刷新后再次退回登录页。

@@ -159,9 +159,22 @@ def _set_cookie(response: Response, name: str, value: str, max_age: int) -> None
     )
 
 
+def _delete_cookie(response: Response, name: str) -> None:
+    # Deletion is also a Set-Cookie response. It needs the same cross-site
+    # policy as creation, otherwise browsers can ignore it on Pages -> API
+    # requests and leave a stale account cookie ahead of a new guest cookie.
+    response.delete_cookie(
+        key=name,
+        path="/",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+    )
+
+
 def _clear_cookies(response: Response) -> None:
-    response.delete_cookie(ACCESS_COOKIE, path="/")
-    response.delete_cookie(GUEST_COOKIE, path="/")
+    _delete_cookie(response, ACCESS_COOKIE)
+    _delete_cookie(response, GUEST_COOKIE)
 
 
 def _extract_access_token(authorization: str | None, access_cookie: str | None) -> str | None:
@@ -633,7 +646,7 @@ def register(
     )
     _purge_guest_token(guest_cookie)
     token = _issue_access_token(user_id, role, response)
-    response.delete_cookie(GUEST_COOKIE, path="/")
+    _delete_cookie(response, GUEST_COOKIE)
     return {
         "token": token,
         "user": {
@@ -668,7 +681,7 @@ def login(
     user["role"] = _effective_user_role(user)
     _purge_guest_token(guest_cookie)
     token = _issue_access_token(user["id"], user["role"], response)
-    response.delete_cookie(GUEST_COOKIE, path="/")
+    _delete_cookie(response, GUEST_COOKIE)
     return {
         "token": token,
         "user": {
@@ -703,7 +716,7 @@ def guest_login(
     )
     # Do not let a stale registered-user cookie take precedence over the new
     # guest session in the same browser.
-    response.delete_cookie(ACCESS_COOKIE, path="/")
+    _delete_cookie(response, ACCESS_COOKIE)
     _set_cookie(response, GUEST_COOKIE, token, 24 * 60 * 60)
     return {
         "token": token,

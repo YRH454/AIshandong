@@ -2,15 +2,64 @@ import type { DynamicExplanationCheckpoint, DynamicExplanationData, DynamicExpla
 import type { KnowledgeMapDeepDive } from '../components/EditableKnowledgeMap'
 
 // RHYME — API 封装（后端精简版）
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api/v1'
+//
+// Keep the local API on the same host name as the page.  Browsers treat
+// `localhost` and `127.0.0.1` as different cookie hosts, so a page opened at
+// http://localhost:4173 would otherwise receive a cookie for 127.0.0.1:8000
+// and immediately lose the session on its first protected request.  A
+// production deployment can still provide VITE_API_BASE for a dedicated API
+// origin; when it is omitted, a same-origin `/api/v1` fallback is used.
+function resolveApiBase() {
+  const configured = String(import.meta.env.VITE_API_BASE || '').trim().replace(/\/+$/, '')
+  if (typeof window === 'undefined') return configured || '/api/v1'
+
+  const pageHost = window.location.hostname
+  const isLocalPage = pageHost === 'localhost' || pageHost === '127.0.0.1'
+  if (isLocalPage) {
+    try {
+      const configuredUrl = configured ? new URL(configured) : null
+      const configuredHost = configuredUrl?.hostname || ''
+      const isLoopbackApi = !configuredHost || configuredHost === 'localhost' || configuredHost === '127.0.0.1'
+      if (isLoopbackApi) {
+        const protocol = configuredUrl?.protocol || window.location.protocol
+        const port = configuredUrl?.port || '8000'
+        const path = configuredUrl?.pathname && configuredUrl.pathname !== '/'
+          ? configuredUrl.pathname
+          : '/api/v1'
+        return `${protocol}//${pageHost}:${port}${path.replace(/\/+$/, '')}`
+      }
+    } catch {
+      // Fall through to the configured value so a malformed deployment
+      // override still produces a visible API error instead of hiding it.
+    }
+  }
+
+  return configured || '/api/v1'
+}
+
+export const API_BASE = resolveApiBase()
 
 /** All application calls use the HttpOnly session cookie by default. */
-async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  const response = await fetch(input, { ...init, credentials: init.credentials ?? 'include' })
-  if (response.status === 401 && typeof window !== 'undefined') {
+type ApiFetchInit = RequestInit & { skipAuthExpiredEvent?: boolean }
+
+async function apiFetch(input: RequestInfo | URL, init: ApiFetchInit = {}) {
+  const { skipAuthExpiredEvent = false, ...requestInit } = init
+  const response = await fetch(input, { ...requestInit, credentials: requestInit.credentials ?? 'include' })
+  if (response.status === 401 && !skipAuthExpiredEvent && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('rhyme-auth-expired'))
   }
   return response
+}
+
+/** A typed signal for a confirmed session expiry (as opposed to a network error). */
+export class AuthSessionError extends Error {
+  readonly status: number
+
+  constructor(status: number, detail?: unknown) {
+    super(typeof detail === 'string' && detail.trim() ? detail : '登录会话已失效')
+    this.name = 'AuthSessionError'
+    this.status = status
+  }
 }
 
 // ---- 认证 ----
@@ -65,8 +114,16 @@ export async function guestLoginApi(): Promise<AuthResponse> {
 }
 
 export async function getCurrentUserApi(): Promise<{ user: AuthUser; permissions?: Record<string, boolean>; notice?: string }> {
-  const res = await apiFetch(`${API_BASE}/auth/me`, { credentials: 'include' })
-  if (!res.ok) throw (await res.json().catch(() => ({})))
+  // A missing/expired session is the expected result during the initial
+  // anonymous check.  Do not turn that check into a second global logout
+  // event; protected requests can ask the AppEntry verifier to re-check the
+  // session when a 401 really occurs after sign-in.
+  const res = await apiFetch(`${API_BASE}/auth/me`, { credentials: 'include', skipAuthExpiredEvent: true })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { detail?: unknown }
+    if (res.status === 401) throw new AuthSessionError(res.status, body.detail)
+    throw body
+  }
   return res.json() as Promise<{ user: AuthUser; permissions?: Record<string, boolean>; notice?: string }>
 }
 

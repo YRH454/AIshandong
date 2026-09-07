@@ -1,10 +1,10 @@
 import { StrictMode } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import AuthScreen from './components/AuthScreen.tsx'
-import { getCurrentUserApi, logoutApi } from './services/api'
+import { AuthSessionError, getCurrentUserApi, logoutApi } from './services/api'
 import type { AuthUser } from './services/api'
 
 const root = createRoot(document.getElementById('root')!)
@@ -40,10 +40,17 @@ function clearGuestLocalState(user: AuthUser | null) {
   }
 }
 
+function isAuthenticatedUser(user: AuthUser | undefined | null): user is AuthUser {
+  return (user?.role === 'user' || user?.role === 'admin' || user?.role === 'guest')
+    && typeof user.id === 'number'
+}
+
 function AppEntry() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [checking, setChecking] = useState(true)
   const [connectionError, setConnectionError] = useState('')
+  const currentUserRef = useRef<AuthUser | null>(null)
+  const sessionRecheckInFlight = useRef(false)
 
   const loadSession = useCallback(async () => {
     setChecking(true)
@@ -51,13 +58,24 @@ function AppEntry() {
     try {
       const result = await getCurrentUserApi()
       const user = result.user
-      if ((user.role === 'user' || user.role === 'admin' || user.role === 'guest') && typeof user.id === 'number') {
+      if (isAuthenticatedUser(user)) {
+        currentUserRef.current = user
         setCurrentUser(user)
       } else {
+        currentUserRef.current = null
         setCurrentUser(null)
       }
-    } catch {
-      setConnectionError('暂时无法连接学习服务，请确认后端已启动。')
+    } catch (error) {
+      if (error instanceof AuthSessionError && error.status === 401) {
+        // No cookie is the normal state before login.  Keep the auth screen
+        // visible instead of showing a misleading connection-error page.
+        const previous = currentUserRef.current
+        clearGuestLocalState(previous)
+        currentUserRef.current = null
+        setCurrentUser(null)
+      } else {
+        setConnectionError('暂时无法连接学习服务，请确认后端已启动。')
+      }
     } finally {
       setChecking(false)
     }
@@ -66,10 +84,38 @@ function AppEntry() {
   useEffect(() => { void loadSession() }, [loadSession])
 
   useEffect(() => {
-    const handleExpired = () => setCurrentUser(previous => {
-      clearGuestLocalState(previous)
-      return null
-    })
+    const handleExpired = () => {
+      // A single optional/admin request must not blindly log the whole app
+      // out.  Re-check the authoritative session first; this also prevents a
+      // slow stale 401 from an earlier page load racing a fresh login.
+      if (!currentUserRef.current || sessionRecheckInFlight.current) return
+      sessionRecheckInFlight.current = true
+      void getCurrentUserApi()
+        .then(result => {
+          if (isAuthenticatedUser(result.user)) {
+            currentUserRef.current = result.user
+            setCurrentUser(result.user)
+            return
+          }
+          const previous = currentUserRef.current
+          clearGuestLocalState(previous)
+          currentUserRef.current = null
+          setCurrentUser(null)
+        })
+        .catch(error => {
+          if (error instanceof AuthSessionError && error.status === 401) {
+            const previous = currentUserRef.current
+            clearGuestLocalState(previous)
+            currentUserRef.current = null
+            setCurrentUser(null)
+          } else {
+            // A transient network failure is not proof that the session ended;
+            // leave the current workspace visible and let the next request
+            // retry the verification.
+          }
+        })
+        .finally(() => { sessionRecheckInFlight.current = false })
+    }
     window.addEventListener('rhyme-auth-expired', handleExpired)
     return () => window.removeEventListener('rhyme-auth-expired', handleExpired)
   }, [])
@@ -78,6 +124,7 @@ function AppEntry() {
     const previous = currentUser
     try { await logoutApi() } finally {
       clearGuestLocalState(previous)
+      currentUserRef.current = null
       setCurrentUser(null)
     }
   }, [currentUser])
@@ -87,7 +134,10 @@ function AppEntry() {
   if (!currentUser) {
     return <AuthScreen onAuthenticated={session => {
       const user = session.user
-      if ((user?.role === 'user' || user?.role === 'admin' || user?.role === 'guest') && typeof user.id === 'number') setCurrentUser(user)
+      if (isAuthenticatedUser(user)) {
+        currentUserRef.current = user
+        setCurrentUser(user)
+      }
     }} />
   }
   return <App currentUser={currentUser} onLogout={() => void signOut()} />

@@ -38,14 +38,20 @@ def get_connection():
         return _create_conn()
 
 def _return_conn(conn):
-    """将连接归还池中，池满则关闭"""
+    """结束事务后归还连接；无法清理或池满时关闭连接。"""
     if DB_BACKEND == "sqlite":
         conn.close()
         return
     try:
+        # MySQL uses REPEATABLE READ with autocommit disabled. Even SELECT
+        # opens a transaction, so returning it without rollback can keep an
+        # old snapshot that cannot see a newly committed login (or logout).
+        # Writers commit explicitly; rollback here only clears leftover work
+        # and read snapshots. Never reuse a connection if that reset fails.
+        conn.rollback()
         conn.ping(reconnect=True)
         _pool.put_nowait(conn)
-    except (queue.Full, Exception):
+    except Exception:
         try:
             conn.close()
         except Exception:
